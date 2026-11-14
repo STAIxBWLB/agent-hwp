@@ -10,8 +10,46 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [2.1.0]
+
+**Compatibility**
+
+- `edit-report-v1` reports now carry `schema_version` `1.5` (2.0.0 wrote `1.1`). 1.2 adds the
+  `document_protected` refusal code, 1.3 the `verify_mismatch` code, 1.4 the optional
+  `preservation` list and `values.missing_element`, and 1.5 the `raw_backed_edit` code. Every
+  earlier field and code is unchanged; a consumer that accepts only `"1.1"` must also accept
+  `"1.2"` to `"1.5"`, and one that branches on `unclassified` now sees `document_protected` or
+  `verify_mismatch` for those runs
+  ([#571](https://github.com/STAIxBWLB/agent-hwp/issues/571),
+  [#578](https://github.com/STAIxBWLB/agent-hwp/issues/578),
+  [#583](https://github.com/STAIxBWLB/agent-hwp/issues/583),
+  [#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
+- An `edit` of an HWP5 input written as `.hwp` whose change lies inside a text box or other shape,
+  a footnote, an endnote, a header or a footer now exits non-zero with `raw_backed_edit` and
+  publishes nothing. 2.0.0 exited 0 and kept the old text there. Write `.hwpx` to keep such an
+  edit ([#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
+- An `edit` from an HWP5 input to `.hwpx` now reports the losses `convert` reports for that pair
+  (stderr, MCP `preservation`, the report's `preservation` list), where 2.0.0 published them
+  silently. Whether it publishes is unchanged: the HWPX writer's own events still refuse it, and
+  `--verify` in that direction now accepts faithful output instead of refusing every run
+  ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
+- `keep_together` edit ops that 2.0.0 refused as unsupported now apply the supplied flags
+  ([#568](https://github.com/STAIxBWLB/agent-hwp/issues/568)).
+- Synthesized line caches change bytes for the same input: authored documents and native HWP5
+  edits read paragraph spacing at half the serialized value, and native edits keep unchanged
+  suffix paragraph records after height-neutral changes. Text and structure are unchanged
+  ([#570](https://github.com/STAIxBWLB/agent-hwp/issues/570),
+  [#584](https://github.com/STAIxBWLB/agent-hwp/issues/584), #540 G3).
+
 **Added**
 
+- `edit-report-v1` 1.5: an edit that would be dropped by the HWP5 writer now refuses as
+  `raw_backed_edit`, with `values.controls` listing `{kind, count}` for the controls whose text it
+  changed. A text box or other shape, a footnote, an endnote, a header and a footer read from a
+  saved HWP5 file are written from their saved records, so an `--replace`, `--set-cell` or typed
+  op inside one used to exit 0 and leave the old text, with or without `--verify`. Existing codes
+  and fields are unchanged, so a consumer that accepts `"1.4"` must also accept `"1.5"`
+  ([#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
 - `keep_together` now applies supplied `keep_with_next`, `keep_lines` and
   `break_before_shape` paragraph-shape flags through CLI edit-ops and MCP `hwp_edit`,
   preserving other bits and independent header breaks. Encoding follows Hangul 12.30.0
@@ -104,6 +142,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   (not person-run) Hancom Office Hangul 12.30.0 open/export receipt for a released ahwp 2.0.0 rerun,
   bound to that rerun's artifact and PDF hashes. The recorded reference run stays `not_run`; the
   editing recipes say so in both languages. Part of #540.
+
+<!-- verification:begin -->
+**Verification**
+
+- Release-readiness run: https://github.com/STAIxBWLB/agent-hwp/actions/runs/43611887000
+- The private PDF-parity profile excludes four gates. The public one-page gate declares none
+  (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
+  only.
+- `fonts`: the document declares its dominant body face through a `substFont`, and the oracle
+  host did not have that face either, so our substitutions resolve to the same faces the oracle
+  embedded. The gate's `substitution_free` criterion is unreachable for this case by
+  construction (section 4.5).
+- `text`: 1/13 pages byte-equal; the differences are pagination, not characters. Page 4's only
+  diff is one line that crosses a page boundary (section 4.6).
+- `raster`: `bad_pixel_pct` 0.1418-0.2332, MAE 18.5-27.9, ink ratio 0.854-1.435, max abs dx/dy
+  40px (section 4.6).
+- `roi`: 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892)
+  (section 4.6).
+- Provenance: these distances were measured by the private composite run of 2026-08-16, not by
+  the public one-page gate.
+<!-- verification:end -->
 
 ## [2.0.0]
 
