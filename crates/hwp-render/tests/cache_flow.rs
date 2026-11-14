@@ -1316,3 +1316,60 @@ fn native_new_successor_without_a_source_offset_uses_the_host_line_advance() {
         "host5400 plus stored line advance1600 and raw bottom600/2"
     );
 }
+
+fn native_grow_before_source_boundary(source: &Document) -> Document {
+    use hwp_render::lineseg::{BodyFlow, NativeBodyCache, synthesize_native_linesegs_seeded};
+    let mut edited = source.clone();
+    assert_eq!(
+        hwp_convert::replace_text(&mut edited, "Edited", "Edited\nAdded", false).unwrap(),
+        1
+    );
+    let matching = vec![
+        source.sections[0]
+            .paragraphs
+            .iter()
+            .enumerate()
+            .map(|(i, p)| NativeBodyCache {
+                original: Some(p),
+                unchanged: i != 0,
+                successor_v_pos: source.sections[0]
+                    .paragraphs
+                    .get(i + 1)
+                    .and_then(|p| p.line_segs.first())
+                    .map(|line| line.v_pos),
+            })
+            .collect(),
+    ];
+    let mut fonts = FontStore::new_isolated();
+    let mut issues = RenderIssueAccumulator::new();
+    synthesize_native_linesegs_seeded(
+        &mut edited,
+        &mut fonts,
+        &mut issues,
+        &BodyFlow::default(),
+        &matching,
+    );
+    edited
+}
+
+#[test]
+fn native_floating_translation_stops_at_a_source_page_start() {
+    let (mut source, _) = native_floating_edit(false, 0);
+    source.sections[0].paragraphs[4].header.break_type |= 4;
+    source.sections[0].paragraphs[4].line_segs[0].v_pos = 0;
+    source.sections[0].paragraphs[4].line_segs[0].flags |= 1;
+    source.sections[0].paragraphs[5].line_segs[0].v_pos = 1900;
+    let edited = native_grow_before_source_boundary(&source);
+    assert_eq!(
+        edited.sections[0].paragraphs[3].line_segs[0].v_pos, 6012,
+        "same-page successor still carries the host delta"
+    );
+    assert_eq!(
+        edited.sections[0].paragraphs[4].line_segs[0].v_pos, 0,
+        "the host delta must not move the source next-page start down"
+    );
+    assert_eq!(
+        edited.sections[0].paragraphs[5].line_segs[0].v_pos, 1900,
+        "translation stays disabled after the page boundary"
+    );
+}

@@ -2683,6 +2683,79 @@ mod tests {
 
     /// #590 exercises the native writer as well as its renderer metadata handoff.
     #[test]
+    fn native_insertion_before_floating_host_keeps_its_continued_position() {
+        let dir =
+            std::env::temp_dir().join(format!("ahwp-floating-insertion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_, mut seed) = native_suffix_source(&dir);
+        seed.sections[0].paragraphs[2].line_segs[0].seg_width = 0;
+        let table = seed.sections[0].paragraphs[2]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                hwp_model::Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.rows = 150;
+        table.cols = 1;
+        table.row_cell_counts = vec![1; 150];
+        let template = table.cells[0].clone();
+        table.cells = (0..150)
+            .map(|row| {
+                let mut cell = template.clone();
+                cell.row = row;
+                cell.col = 0;
+                cell
+            })
+            .collect();
+        let source = dir.join("floating-source.hwp");
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        assert_eq!(original.sections[0].paragraphs[2].line_segs[0].v_pos, 3800);
+        let mut edited = original.clone();
+        let mut inserted = original.sections[0].paragraphs[1].clone();
+        inserted.header.instance_id = 10000;
+        inserted.line_segs.clear();
+        edited.sections[0].paragraphs.insert(1, inserted);
+        let output = dir.join("inserted.hwp");
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(
+            current.sections[0].paragraphs.len(),
+            original.sections[0].paragraphs.len() + 1
+        );
+        assert_eq!(current.sections[0].paragraphs[2].line_segs[0].v_pos, 3800);
+        assert_eq!(
+            current.sections[0].paragraphs[3].line_segs[0].v_pos, 5700,
+            "shifted floating host continues after the inserted paragraph"
+        );
+        assert_eq!(current.sections[0].paragraphs[3].line_segs[0].seg_width, 0);
+        assert_eq!(
+            current.sections[0].paragraphs[4].line_segs[0].v_pos, 15900,
+            "successor offset comes from source host index2, not edited index3"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn native_growing_edit_writes_translated_floating_host_and_successors() {
         let dir = std::env::temp_dir().join(format!("ahwp-floating-reflow-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
