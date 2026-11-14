@@ -167,6 +167,35 @@ Where the host line sits relative to the table depends on wrap mode and is outsi
 The code's exclusions for pictures, GSO and unknown placement are conservative; this receipt
 makes no measured claim about those kinds.
 
+**Native floating-host reflow (#590, 2026-11-14):**
+The [saved-byte receipt](https://github.com/STAIxBWLB/agent-hwp/issues/590) uses owner-authored
+class D files and agent-operated Hangul 12.30.0 (6544). After a preceding line is added, the
+150-row floating-table host moves from 3800 to 5400 (previous paragraph 3500 + line advance
+1600 + raw bottom 600/2), retaining `seg_width=0`. A floating table's whole height must not
+reset that host to page top or become its body advance.
+
+The [source-preservation ruling](https://github.com/STAIxBWLB/agent-hwp/issues/590#issuecomment-6877345745)
+keeps unchanged same-position successor caches at their source offsets translated by the host's
+movement. A page/column-start flag, a non-increasing source line position (including a later line
+inside a paragraph), or a translated line bottom outside the body ends that run before the whole
+paragraph; ordinary synthesis resumes from the pending cursor. The host itself can be matched by
+source identity and unchanged content after insertion/deletion changes its index. Its successor
+offset comes from that source index; shifted successors still use ordinary synthesis, and the
+#585 verbatim-keep rule remains same-position-only.
+A changed/new successor instead starts at the source successor offset when available, otherwise
+at the host's own line advance and paragraph spacing, then uses ordinary synthesis. This is
+bounded preservation for an unchanged, source zero-width floating-table host; it is not a
+floating-pagination formula. Height-neutral edits retain the existing verbatim-cache path.
+
+**Unresolved:** a moved table can change its page split. The 150-row source host-to-successor
+interval is 612, but Hangul's re-save makes it 294. A 70-row table that fits on one page instead
+has interval 26252 (host 3800, successor 30052). Preserving the source interval 612 therefore
+does not reproduce the re-save interval 294; Hangul recomputes it on opening. Neither number is
+a synthesis rule. The [reviewer Hancom re-check](https://github.com/STAIxBWLB/agent-hwp/pull/591#issuecomment-6878308763)
+at the fixing head found the host matching Hangul exactly (5400, 5700 and 1900 after a grown
+line, an inserted and a deleted paragraph). Hangul placed the first successor where the table
+ends on its last page (5694, 5694, 1848), whatever the host position.
+
 **Lessons for layer B:**
 
 - The true cause of black bars (B1) was **the default value of a single UINT32 field**. Our renderer
