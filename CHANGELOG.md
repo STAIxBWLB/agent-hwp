@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Native HWP5 height-changing edits keep an unchanged zero-width floating-table host in body
+  flow instead of resetting it to page top. Unchanged successors retain their source offsets
+  translated by the host's movement until a source page/column boundary, non-increasing source
+  position or body-height overflow resumes ordinary synthesis. Source identity also recognises the host
+  after insertions/deletions change its index; shifted successors still reflow, keeping the
+  same-index verbatim-keep rule. Changed/new successors use the source offset when available.
+  Known limit: changed table pagination can differ from Hangul's
+  re-save (source gap 612 kept versus measured 294); this preserves source representation, not
+  a new pagination rule. Height-neutral caches and untouched identity are unchanged (#590).
+
 ## [2.1.0]
 
 **Compatibility**
@@ -80,16 +92,6 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
 
 **Fixed**
-
-- Native HWP5 height-changing edits keep an unchanged zero-width floating-table host in body
-  flow instead of resetting it to page top. Unchanged successors retain their source offsets
-  translated by the host's movement until a source page/column boundary, non-increasing source
-  position or body-height overflow resumes ordinary synthesis. Source identity also recognises the host
-  after insertions/deletions change its index; shifted successors still reflow, keeping the
-  same-index verbatim-keep rule. Changed/new successors use the source offset when available.
-  Known limit: changed table pagination can differ from Hangul's
-  re-save (source gap 612 kept versus measured 294); this preserves source representation, not
-  a new pagination rule. Height-neutral caches and untouched identity are unchanged (#590).
 
 - `edit --verify` from an HWP5 input to `.hwpx` no longer refuses every edit, even `--set-meta`.
   The comparison now projects the fields HWP5 and HWPX encode differently, each named in
