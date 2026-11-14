@@ -1276,18 +1276,24 @@ fn write_hwp_impl(
                         .map(|(pi, paragraph)| {
                             // Insertion/deletion/movement changes the flow even when a shifted paragraph's
                             // own content matches. There is no same-position stored extent to retain.
-                            let original = matches[pi]
+                            let matched = matches[pi].filter(|index| {
+                                saved[*index].header.instance_id == paragraph.header.instance_id
+                            });
+                            let original = matched
                                 .filter(|index| *index == pi)
-                                .filter(|index| {
-                                    saved[*index].header.instance_id == paragraph.header.instance_id
-                                })
                                 .map(|index| &saved[index]);
+                            // A shifted floating host may use its source anchor/offset without
+                            // widening the same-position verbatim-body rule (#590 F2).
+                            let floating_original = matched
+                                .map(|index| &saved[index])
+                                .filter(|old| unchanged_content(old, paragraph));
                             hwp_render::lineseg::NativeBodyCache {
                                 original,
+                                floating_original,
                                 unchanged: original
                                     .is_some_and(|old| unchanged_content(old, paragraph)),
-                                successor_v_pos: saved
-                                    .get(pi + 1)
+                                successor_v_pos: matched
+                                    .and_then(|index| saved.get(index + 1))
                                     .and_then(|p| p.line_segs.first())
                                     .map(|line| line.v_pos),
                             }
@@ -2683,11 +2689,37 @@ mod tests {
 
     /// #590 exercises the native writer as well as its renderer metadata handoff.
     #[test]
-    fn native_insertion_before_floating_host_keeps_its_continued_position() {
+    fn native_deletion_before_floating_host_keeps_its_continued_position() {
         let dir =
-            std::env::temp_dir().join(format!("ahwp-floating-insertion-{}", std::process::id()));
+            std::env::temp_dir().join(format!("ahwp-floating-deletion-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (_, mut seed) = native_suffix_source(&dir);
+        let (source, original) = shifted_floating_source(&dir);
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs.remove(0);
+        let output = dir.join("deleted.hwp");
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(current.sections[0].paragraphs[0].line_segs[0].v_pos, 0);
+        assert_eq!(current.sections[0].paragraphs[1].line_segs[0].v_pos, 1900);
+        assert_eq!(current.sections[0].paragraphs[1].line_segs[0].seg_width, 0);
+        assert_eq!(
+            current.sections[0].paragraphs[2].line_segs[0].v_pos, 12100,
+            "source successor14000 follows host moved back1900"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn shifted_floating_source(dir: &std::path::Path) -> (std::path::PathBuf, hwp_model::Document) {
+        let (_, mut seed) = native_suffix_source(dir);
         seed.sections[0].paragraphs[2].line_segs[0].seg_width = 0;
         let table = seed.sections[0].paragraphs[2]
             .controls
@@ -2720,6 +2752,15 @@ mod tests {
         )
         .unwrap();
         let original = hwp5::read_document(&source).unwrap().document;
+        (source, original)
+    }
+
+    #[test]
+    fn native_insertion_before_floating_host_keeps_its_continued_position() {
+        let dir =
+            std::env::temp_dir().join(format!("ahwp-floating-insertion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, original) = shifted_floating_source(&dir);
         assert_eq!(original.sections[0].paragraphs[2].line_segs[0].v_pos, 3800);
         let mut edited = original.clone();
         let mut inserted = original.sections[0].paragraphs[1].clone();

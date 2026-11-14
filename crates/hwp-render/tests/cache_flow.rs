@@ -1209,6 +1209,7 @@ fn native_floating_edit(grow: bool, successor: u8) -> (Document, Document) {
                 };
                 NativeBodyCache {
                     original,
+                    floating_original: None,
                     unchanged: original.is_some() && i != 0 && !(successor == 1 && i == 3),
                     successor_v_pos: source.sections[0]
                         .paragraphs
@@ -1331,6 +1332,7 @@ fn native_grow_before_source_boundary(source: &Document) -> Document {
             .enumerate()
             .map(|(i, p)| NativeBodyCache {
                 original: Some(p),
+                floating_original: None,
                 unchanged: i != 0,
                 successor_v_pos: source.sections[0]
                     .paragraphs
@@ -1372,4 +1374,72 @@ fn native_floating_translation_stops_at_a_source_page_start() {
         edited.sections[0].paragraphs[5].line_segs[0].v_pos, 1900,
         "translation stays disabled after the page boundary"
     );
+}
+
+#[test]
+fn native_floating_translation_stops_at_page_or_column_flags_without_a_backstep() {
+    for flag in [1, 2] {
+        let (mut source, _) = native_floating_edit(false, 0);
+        source.sections[0].paragraphs[4].line_segs[0].flags |= flag;
+        source.sections[0].paragraphs[5].line_segs[0].v_pos = 20000;
+        let edited = native_grow_before_source_boundary(&source);
+        assert_eq!(edited.sections[0].paragraphs[3].line_segs[0].v_pos, 6012);
+        assert_eq!(
+            edited.sections[0].paragraphs[5].line_segs[0].v_pos, 9812,
+            "flag {flag} ends translation even with increasing stored positions"
+        );
+    }
+}
+
+#[test]
+fn native_floating_translation_stops_at_an_unflagged_source_backstep() {
+    let (mut source, _) = native_floating_edit(false, 0);
+    source.sections[0].paragraphs[4].line_segs[0].v_pos = 3000;
+    source.sections[0].paragraphs[5].line_segs[0].v_pos = 4900;
+    let edited = native_grow_before_source_boundary(&source);
+    assert_eq!(edited.sections[0].paragraphs[4].line_segs[0].v_pos, 7912);
+    assert_eq!(edited.sections[0].paragraphs[5].line_segs[0].v_pos, 9812);
+}
+
+#[test]
+fn native_floating_translation_reflows_a_whole_paragraph_with_an_internal_boundary() {
+    let (mut source, _) = native_floating_edit(false, 0);
+    let mut second = source.sections[0].paragraphs[4].line_segs[0];
+    assert_eq!(
+        hwp_convert::replace_text(&mut source, "Tail one", "Tail one\nNext", false).unwrap(),
+        1
+    );
+    let mut first = second;
+    first.v_pos = 6312;
+    second.text_start = 9;
+    second.v_pos = 0;
+    second.flags |= 1;
+    source.sections[0].paragraphs[4].line_segs = vec![first, second];
+    source.sections[0].paragraphs[5].line_segs[0].v_pos = 1900;
+    let edited = native_grow_before_source_boundary(&source);
+    assert_eq!(
+        edited.sections[0].paragraphs[4]
+            .line_segs
+            .iter()
+            .map(|s| s.v_pos)
+            .collect::<Vec<_>>(),
+        [7912, 9512],
+        "a later source page start rejects the entire paragraph's cache"
+    );
+    assert_eq!(edited.sections[0].paragraphs[5].line_segs[0].v_pos, 11412);
+}
+
+#[test]
+fn native_floating_translation_reflows_when_a_line_would_leave_the_body() {
+    let (mut source, _) = native_floating_edit(false, 0);
+    set_body_height(&mut source, 8000);
+    source.sections[0].paragraphs[5].line_segs[0].v_pos = 0;
+    source.sections[0].paragraphs[5].line_segs[0].flags |= 1;
+    let edited = native_grow_before_source_boundary(&source);
+    assert_eq!(edited.sections[0].paragraphs[3].line_segs[0].v_pos, 6012);
+    assert_eq!(
+        edited.sections[0].paragraphs[4].line_segs[0].v_pos, 0,
+        "source6312 + delta1600 + height1000 exceeds body8000; ordinary flow starts a page"
+    );
+    assert_eq!(edited.sections[0].paragraphs[5].line_segs[0].v_pos, 1900);
 }

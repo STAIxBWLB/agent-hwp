@@ -167,14 +167,19 @@ pub fn synthesize_linesegs_seeded(
 pub struct NativeBodyCache<'a> {
     pub original: Option<&'a Paragraph>,
     pub unchanged: bool,
+    /// Position-independent unchanged source candidate, used only to recognise a floating host.
+    /// This never permits a shifted paragraph to enter the #585 verbatim-keep path.
+    pub floating_original: Option<&'a Paragraph>,
     /// First stored position of this source paragraph's successor, even if the edited successor
     /// is new or changed. This is a source offset, not a floating-table pagination formula (#590).
     pub successor_v_pos: Option<i32>,
 }
 
-fn native_floating_host(source: NativeBodyCache<'_>) -> bool {
-    source.unchanged
-        && source.original.is_some_and(|p| {
+fn native_floating_host<'a>(source: NativeBodyCache<'a>) -> Option<&'a Paragraph> {
+    source
+        .floating_original
+        .or_else(|| source.original.filter(|_| source.unchanged))
+        .filter(|p| {
             !p.line_segs.is_empty()
                 && p.line_segs.iter().all(|line| line.seg_width == 0)
                 && p.controls.iter().any(|c| match c {
@@ -182,6 +187,23 @@ fn native_floating_host(source: NativeBodyCache<'_>) -> bool {
                     _ => false,
                 })
         })
+}
+
+/// A host delta belongs to one source page/column. Any boundary or overflowing line makes
+/// this whole paragraph use ordinary synthesis from the pending body cursor instead (#590 F1).
+fn native_translation_fits(
+    original: &Paragraph,
+    delta: i32,
+    mut previous_v: i32,
+    content_h: i32,
+) -> bool {
+    original.line_segs.iter().all(|line| {
+        let continues = line.flags & 3 == 0 && line.v_pos > previous_v;
+        previous_v = line.v_pos;
+        continues
+            && i64::from(line.v_pos) + i64::from(delta) + i64::from(line.line_height)
+                <= i64::from(content_h)
+    })
 }
 
 fn translated_native_lines(original: &Paragraph, delta: i32) -> Vec<LineSeg> {
@@ -528,9 +550,10 @@ fn synthesize_linesegs_inner(
                 .get(pi + 1)
                 .and_then(|p| snap.header.para_shapes.get(p.para_shape.0 as usize))
                 .map_or(0, |shape| shape.spacing_top / 2);
-            if let Some(delta) = floating_delta {
+            if let Some((delta, previous_v)) = floating_delta {
                 if let Some(source) = source.filter(|s| s.unchanged)
                     && let Some(original) = source.original.filter(|p| !p.line_segs.is_empty())
+                    && native_translation_fits(original, delta, previous_v, content_h)
                 {
                     let current = &mut doc.sections[si].paragraphs[pi];
                     current.line_segs = translated_native_lines(original, delta);
@@ -539,15 +562,19 @@ fn synthesize_linesegs_inner(
                         .v_pos
                         .saturating_add(last.line_height)
                         .saturating_add(last.line_spacing);
-                    v_pos = if native_floating_host(source) {
+                    v_pos = if native_floating_host(source).is_some() {
                         native_floating_cursor(source, delta, next_top, line_cursor, sp_bottom)
                     } else {
                         saved_body_cursor(current, sp_bottom).expect("nonempty translated cache")
                     };
+                    floating_delta = Some((
+                        delta,
+                        original.line_segs.last().expect("source cache").v_pos,
+                    ));
                     continue;
                 }
-                // A changed/new neighbour uses the pending source offset once, then resumes
-                // ordinary synthesis. Later unchanged records cannot re-enable this run.
+                // A changed/new neighbour, source boundary or overflowing translated line
+                // resumes ordinary synthesis. Later unchanged records cannot re-enable this run.
                 floating_delta = None;
             }
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
@@ -588,8 +615,11 @@ fn synthesize_linesegs_inner(
                     table_total = table_total.saturating_add(table_height(t));
                 }
             }
-            let floating_source =
-                source.filter(|s| native_mode && !keep_body_suffix && native_floating_host(*s));
+            let floating_source = source.filter(|s| {
+                native_mode
+                    && (!keep_body_suffix || s.original.is_none())
+                    && native_floating_host(*s).is_some()
+            });
             // Native floating hosts stay in body flow; table pagination does not reset their
             // anchor or consume the entire table as a body-line advance (#590 saved bytes).
             if floating_source.is_some() {
@@ -612,7 +642,7 @@ fn synthesize_linesegs_inner(
             let anchor_v = v_pos;
             let src = &snap.sections[si].paragraphs[pi];
             let mut segs = if let Some(source) = floating_source {
-                let original = source.original.expect("matched floating host");
+                let original = native_floating_host(source).expect("matched floating host");
                 let delta = anchor_v.saturating_sub(original.line_segs[0].v_pos);
                 let lines = translated_native_lines(original, delta);
                 let last = lines.last().expect("nonempty source floating cache");
@@ -620,7 +650,10 @@ fn synthesize_linesegs_inner(
                     .v_pos
                     .saturating_add(last.line_height)
                     .saturating_add(last.line_spacing);
-                floating_delta = Some(delta);
+                floating_delta = Some((
+                    delta,
+                    original.line_segs.last().expect("source cache").v_pos,
+                ));
                 lines
             } else {
                 compute_linesegs(
@@ -645,7 +678,7 @@ fn synthesize_linesegs_inner(
             v_pos = if let Some(source) = floating_source {
                 native_floating_cursor(
                     source,
-                    floating_delta.expect("translated host"),
+                    floating_delta.expect("translated host").0,
                     next_top,
                     line_cursor,
                     sp_bottom,
@@ -1390,6 +1423,7 @@ mod tests {
         fn entry(p: &Paragraph) -> Option<NativeBodyCache<'_>> {
             Some(NativeBodyCache {
                 original: Some(p),
+                floating_original: None,
                 unchanged: true,
                 successor_v_pos: None,
             })
@@ -1454,6 +1488,7 @@ mod tests {
                     .enumerate()
                     .map(|(pi, p)| NativeBodyCache {
                         original: Some(p),
+                        floating_original: None,
                         unchanged: !(si == 0 && pi == 0),
                         successor_v_pos: section
                             .paragraphs
