@@ -240,7 +240,8 @@ struct NativeBodyWalk<'a, 'b> {
 /// Native edit synthesis with source-aware body preservation. Source metadata is in
 /// section/paragraph order. Return the body indices whose complete source records the writer
 /// should retain. A moved unchanged zero-width floating host instead translates source successor
-/// caches until the next edit (#590); these are not returned as verbatim records. Nested lists
+/// caches until the next edit, source page/column boundary or body-height limit (#590); these
+/// are not returned as verbatim records. Nested lists
 /// keep the existing seam policy, and authored synthesis is unchanged.
 pub fn synthesize_native_linesegs_seeded(
     doc: &mut Document,
@@ -514,8 +515,9 @@ fn synthesize_linesegs_inner(
         let mut v_pos = 0i32;
         let native_mode = native.is_some() && !use_fragment_flow;
         let mut keep_body_suffix = native_mode;
-        // After an unchanged native floating host moves, carry source successor positions until
-        // the next edit. These translated caches are not whole-record verbatim keeps (#590).
+        // After an unchanged native floating host moves, carry source successor positions on
+        // the same source page/column until an edit or capacity boundary. These translated
+        // caches are not whole-record verbatim keeps (#590).
         let mut floating_delta = None;
         for pi in 0..doc.sections[si].paragraphs.len() {
             // #540 G1 / #584: serialized body spacing is twice its HWPUNIT value on every

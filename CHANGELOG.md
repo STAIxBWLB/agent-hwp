@@ -45,8 +45,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - Native HWP5 height-changing edits keep an unchanged zero-width floating-table host in body
   flow instead of resetting it to page top. Unchanged successors retain their source offsets
-  translated by the host's movement; changed/new successors use the source offset when available
-  before ordinary synthesis. Known limit: changed table pagination can differ from Hangul's
+  translated by the host's movement until a source page/column boundary, position backstep or
+  body-height overflow resumes ordinary synthesis. Source identity also recognises the host
+  after insertions/deletions change its index; shifted successors still reflow, keeping the
+  same-index verbatim-keep rule. Changed/new successors use the source offset when available.
+  Known limit: changed table pagination can differ from Hangul's
   re-save (source gap 612 kept versus measured 294); this preserves source representation, not
   a new pagination rule. Height-neutral caches and untouched identity are unchanged (#590).
 

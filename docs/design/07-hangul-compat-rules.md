@@ -175,7 +175,13 @@ class D files and agent-operated Hangul 12.30.0 (6544). After a preceding line i
 reset that host to page top or become its body advance.
 
 The [source-preservation ruling](https://github.com/STAIxBWLB/agent-hwp/issues/590#issuecomment-6877345745)
-keeps unchanged successor caches at their source offsets translated by the host's movement.
+keeps unchanged same-position successor caches at their source offsets translated by the host's
+movement. A page/column-start flag, a non-increasing source line position (including a later line
+inside a paragraph), or a translated line bottom outside the body ends that run before the whole
+paragraph; ordinary synthesis resumes from the pending cursor. The host itself can be matched by
+source identity and unchanged content after insertion/deletion changes its index. Its successor
+offset comes from that source index; shifted successors still use ordinary synthesis, and the
+#585 verbatim-keep rule remains same-position-only.
 A changed/new successor instead starts at the source successor offset when available, otherwise
 at the host's own line advance and paragraph spacing, then uses ordinary synthesis. This is
 bounded preservation for an unchanged, source zero-width floating-table host; it is not a
