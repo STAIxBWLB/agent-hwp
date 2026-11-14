@@ -2695,7 +2695,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (source, original) = shifted_floating_source(&dir);
         let mut edited = original.clone();
-        edited.sections[0].paragraphs.remove(0);
+        edited.sections[0].paragraphs.remove(1);
         let output = dir.join("deleted.hwp");
         write_hwp_impl(
             &edited,
