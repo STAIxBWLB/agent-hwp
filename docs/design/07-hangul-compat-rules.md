@@ -191,7 +191,10 @@ floating-pagination formula. Height-neutral edits retain the existing verbatim-c
 interval is 612, but Hangul's re-save makes it 294. A 70-row table that fits on one page instead
 has interval 26252 (host 3800, successor 30052). Preserving the source interval 612 therefore
 does not reproduce the re-save interval 294; Hangul recomputes it on opening. Neither number is
-a synthesis rule, and the fixing output's separate Hancom re-check remains required.
+a synthesis rule. The [reviewer Hancom re-check](https://github.com/STAIxBWLB/agent-hwp/pull/591#issuecomment-6878308763)
+at the fixing head found the host matching Hangul exactly (5400, 5700 and 1900 after a grown
+line, an inserted and a deleted paragraph). Hangul placed the first successor where the table
+ends on its last page (5694, 5694, 1848), whatever the host position.
 
 **Lessons for layer B:**
 
