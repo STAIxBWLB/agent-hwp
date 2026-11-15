@@ -51,7 +51,7 @@ httparse = "1"
 # Rendering
 tiny-skia = "0.12"
 rustybuzz = "0.20"
-fontdb = "0.23"
+fontdb = "0.24"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
 # WMF text (CP949 bytes) decoding: pure Rust, independent of HWP.
 encoding_rs = "0.8"
