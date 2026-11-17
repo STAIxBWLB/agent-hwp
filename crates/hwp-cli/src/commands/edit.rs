@@ -6780,6 +6780,13 @@ fn verify_output_projected(
 ) -> anyhow::Result<()> {
     let doc =
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
+    // #610: a CTRL_DATA detached from its CTRL_HEADER rereads fine but Hangul rejects it.
+    if matches!(OutputFormat::from_path(output)?, OutputFormat::Hwp) {
+        let detached = hwp5::structure_check::detached_ctrl_data(output);
+        if !detached.is_empty() {
+            anyhow::bail!("검증 실패: {}", detached.join("; "));
+        }
+    }
     if let Some(expected) = expected {
         let target = match OutputFormat::from_path(output)? {
             OutputFormat::Hwp => Some(SemanticTarget::Hwp),

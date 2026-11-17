@@ -27,6 +27,7 @@ pub mod file_header;
 pub mod numbering;
 pub mod read;
 pub mod record;
+pub mod structure_check;
 pub mod summary;
 pub mod write;
 

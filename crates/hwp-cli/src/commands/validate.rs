@@ -29,6 +29,8 @@ pub fn validate_json(path: &Path) -> Value {
                 Ok(r) => warnings.extend(r.warnings),
                 Err(e) => errors.push(format!("파싱 실패: {e}")),
             }
+            // #610: the reader accepts a detached CTRL_DATA, Hangul does not.
+            errors.extend(hwp5::structure_check::detached_ctrl_data(path));
         }
         Err(e) => errors.push(format!("포맷 감지 실패: {e}")),
     }

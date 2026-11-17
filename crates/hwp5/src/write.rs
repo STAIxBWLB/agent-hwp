@@ -4129,8 +4129,17 @@ fn emit_table(
         tw.write_bytes(&table.table_tail);
     }
 
+    // A Hancom-saved table writes its CTRL_DATA directly after the CTRL_HEADER, before any
+    // caption and the TABLE record (#610). Appending it after the last cell detaches it from
+    // its control and Hangul rejects the file, so it leads; other extras keep the tail.
+    let mut children: Vec<RecordNode> = table
+        .extras
+        .iter()
+        .filter(|extra| extra.tag == tag::CTRL_DATA)
+        .map(opaque_to_node)
+        .collect();
     // Table 71 caption records precede the TABLE record.
-    let mut children = match &table.caption {
+    children.extend(match &table.caption {
         Some(caption) => emit_caption_records(
             caption,
             synthesize,
@@ -4139,7 +4148,7 @@ fn emit_table(
             report,
         ),
         None => Vec::new(),
-    };
+    });
     children.push(RecordNode {
         tag: tag::TABLE,
         data: tw.into_bytes(),
@@ -4157,7 +4166,13 @@ fn emit_table(
             ));
         }
     }
-    children.extend(table.extras.iter().map(opaque_to_node));
+    children.extend(
+        table
+            .extras
+            .iter()
+            .filter(|extra| extra.tag != tag::CTRL_DATA)
+            .map(opaque_to_node),
+    );
     RecordNode {
         tag: tag::CTRL_HEADER,
         data: w.into_bytes(),
@@ -5363,6 +5378,105 @@ mod tests {
             .write_all(&encoded)
             .unwrap();
         cfb.flush().unwrap();
+    }
+
+    /// Puts a CTRL_DATA record directly after the table CTRL_HEADER, before TABLE, the position
+    /// a Hancom-saved table with control data uses (#610).
+    fn prepend_table_ctrl_data(path: &Path) {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        fn prepend(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") {
+                    node.children.insert(
+                        0,
+                        RecordNode {
+                            tag: tag::CTRL_DATA,
+                            data: b"table-ctrl-data-sentinel".to_vec(),
+                            children: Vec::new(),
+                        },
+                    );
+                    return true;
+                }
+                if prepend(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(prepend(&mut roots));
+        let encoded = encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed);
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    /// #610: an insert-para before a table whose CTRL_DATA precedes TABLE must keep that
+    /// CTRL_DATA first under its CTRL_HEADER, for both the edit and the structural options.
+    #[test]
+    fn source_preserving_insert_para_keeps_table_ctrl_data_attached() {
+        // `regenerate` also changes table structure so the writer cannot splice into the source
+        // table and must emit it from the IR, the path a reflowed Hancom table takes.
+        for (structural, regenerate) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let source = source_rewrite_path("table-ctrl-data-source");
+            let output = source_rewrite_path("table-ctrl-data-output");
+            let document =
+                hwp_convert::from_markdown("앞 문단\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+            write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+            prepend_table_ctrl_data(&source);
+            let original = crate::read_document(&source).unwrap().document;
+            let mut edited = original.clone();
+            assert!(
+                hwp_convert::insert_paragraph_checked(&mut edited, "앞", "새 문단", false).unwrap()
+            );
+            if regenerate {
+                for paragraph in &mut edited.sections[0].paragraphs {
+                    for control in &mut paragraph.controls {
+                        if let Control::Table(table) = control {
+                            table.cell_spacing += 1;
+                        }
+                    }
+                }
+            }
+
+            rewrite_document_with_report(
+                &source,
+                &original,
+                &edited,
+                &output,
+                &WriteOptions {
+                    preserve_linesegs: !structural,
+                    edited: structural,
+                    ..WriteOptions::default()
+                },
+            )
+            .unwrap();
+
+            let output_table = table_control_node(&output);
+            assert_eq!(
+                output_table.children[0].tag,
+                tag::CTRL_DATA,
+                "structural={structural} regenerate={regenerate}: CTRL_DATA must stay right after the table CTRL_HEADER"
+            );
+            assert_eq!(output_table.children[0].data, b"table-ctrl-data-sentinel");
+            assert_eq!(
+                output_table
+                    .children
+                    .iter()
+                    .filter(|child| child.tag == tag::CTRL_DATA)
+                    .count(),
+                1
+            );
+            std::fs::remove_file(source).unwrap();
+            std::fs::remove_file(output).unwrap();
+        }
     }
 
     /// #220 review: a `--set-cell` value that becomes several paragraphs changes one cell's
