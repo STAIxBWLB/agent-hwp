@@ -143,7 +143,7 @@ fn render_report_is_closed_hashed_and_schema_validated() {
     every_code["info"] = serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
     let errors: Vec<String> = validator
         .iter_errors(&every_code)
-        .map(|error| format!("{} at {}", error, error.instance_path))
+        .map(|error| format!("{} at {}", error, error.instance_path()))
         .collect();
     assert!(
         errors.is_empty(),

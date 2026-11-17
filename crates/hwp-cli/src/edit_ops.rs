@@ -126,13 +126,15 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
     let document_spec: serde_json::Value = serde_json::from_str(include_str!(
         "../../../schemas/document-spec-v1.schema.json"
     )).map_err(|error| anyhow::anyhow!("내장 document-spec-v1 스키마를 해석할 수 없습니다: {error}. 정상 빌드의 hwp를 설치하거나 해당 스키마를 수정해 다시 빌드하세요"))?;
-    let document_spec = jsonschema::Resource::from_contents(document_spec)
-        .map_err(|error| anyhow::anyhow!("내장 document-spec-v1 스키마 리소스를 만들 수 없습니다: {error}. 스키마의 $schema/$id를 확인하고 다시 빌드하세요"))?;
-    let validator = jsonschema::options()
-        .with_resource(
+    let registry = jsonschema::Registry::new()
+        .add(
             "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
             document_spec,
         )
+        .and_then(|builder| builder.prepare())
+        .map_err(|error| anyhow::anyhow!("내장 document-spec-v1 스키마 리소스를 만들 수 없습니다: {error}. 스키마의 $schema/$id를 확인하고 다시 빌드하세요"))?;
+    let validator = jsonschema::options()
+        .with_registry(&registry)
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 컴파일할 수 없습니다: {error}"))?;
@@ -144,7 +146,7 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         }
         anyhow::bail!(
             "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {}: {error}",
-            error.instance_path
+            error.instance_path()
         );
     }
     let entries: Vec<OpsEntry> = serde_json::from_value(value).map_err(|error| {
