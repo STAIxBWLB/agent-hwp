@@ -26,7 +26,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   moving it after the last cell paragraph, which Hangul reported as a corrupted file.
   `validate` and `edit --verify` now reject a CTRL_DATA that is not the first child of its
   CTRL_HEADER (#610). A body section the check cannot inspect (over its 64 MiB scan cap or
-  undecodable) is reported as a "not verified" warning, never passed silently.
+  undecodable) is never passed silently: `validate` reports it as a "not verified" warning,
+  and `edit --verify` (CLI and MCP `hwp_edit`) refuses the output.
 
 ## [2.1.0]
 

@@ -6782,12 +6782,7 @@ fn verify_output_projected(
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
     // #610: a CTRL_DATA detached from its CTRL_HEADER rereads fine but Hangul rejects it.
     if matches!(OutputFormat::from_path(output)?, OutputFormat::Hwp) {
-        // A part the scan could not inspect is not verified: say so instead of passing it.
-        // This always prints, even when the success line is quiet, because it qualifies the
-        // verification result itself.
-        for warning in ctrl_data_verify_warnings(output)? {
-            eprintln!("검증 경고: {warning}");
-        }
+        verify_ctrl_data_placement(output)?;
     }
     if let Some(expected) = expected {
         let target = match OutputFormat::from_path(output)? {
@@ -6836,10 +6831,11 @@ fn verify_output_projected(
     Ok(())
 }
 
-/// #610: scans an HWP5 output for detached CTRL_DATA. A detached record is an error. Parts
-/// the scan could not inspect come back as warnings, so the caller never reports them as
-/// verified.
-fn ctrl_data_verify_warnings(output: &Path) -> anyhow::Result<Vec<String>> {
+/// #610: `--verify` for CTRL_DATA placement in an HWP5 output. A detached record fails, and so
+/// does any part the scan could not inspect: `--verify` promises a checked output, so an
+/// unchecked part is refused rather than passed. Refusing (instead of a stderr warning) keeps
+/// the CLI exit code, the edit report and the MCP `hwp_edit` response in agreement.
+fn verify_ctrl_data_placement(output: &Path) -> anyhow::Result<()> {
     let scan = hwp5::structure_check::scan_ctrl_data(output);
     if !scan.detached.is_empty() {
         let where_ = scan
@@ -6855,7 +6851,20 @@ fn ctrl_data_verify_warnings(output: &Path) -> anyhow::Result<Vec<String>> {
              STAIxBWLB/agent-hwp 이슈로 보고하세요"
         );
     }
-    Ok(hwp5::structure_check::unchecked_warnings(&scan))
+    if !scan.unchecked.is_empty() {
+        let where_ = scan
+            .unchecked
+            .iter()
+            .map(|(part, reason)| format!("{part}: {}", reason.label()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "검증 실패: 출력의 CTRL_DATA 배치를 검사하지 못해 검증할 수 없습니다 ({where_}). \
+             --verify 없이 다시 실행한 뒤 한글에서 파일을 열어 확인하거나, 출력을 .hwpx로 \
+             바꿔 다시 실행하세요"
+        );
+    }
+    Ok(())
 }
 
 pub fn verify_document(output: &Path, expected: &hwp_model::Document) -> anyhow::Result<()> {
@@ -6921,7 +6930,7 @@ mod tests {
 
         let error = verify_output_with_success_log(&path, None, false).unwrap_err();
         // Pad the same section past the scan cap: the scan can no longer see the detached
-        // CTRL_DATA, so it must not pass the output as verified. It reports it as unchecked.
+        // CTRL_DATA, so verification must refuse rather than pass an unchecked output.
         let mut container = hwp5::Hwp5Container::open(&path).unwrap();
         let mut body = container.read_record_stream("/BodyText/Section0").unwrap();
         drop(container);
@@ -6936,14 +6945,16 @@ mod tests {
             .unwrap();
         cfb.flush().unwrap();
         drop(cfb);
-        let unchecked = ctrl_data_verify_warnings(&path).unwrap();
+        // Through the same entry point `edit --verify` and MCP `hwp_edit` use.
+        let unchecked = verify_output_with_success_log(&path, None, false).unwrap_err();
         std::fs::remove_file(&path).unwrap();
+        let unchecked = format!("{unchecked:#}");
         assert!(
-            unchecked
-                .iter()
-                .any(|warning| warning.contains("/BodyText/Section0")
-                    && warning.contains("검증되지")),
-            "{unchecked:?}"
+            unchecked.contains("/BodyText/Section0")
+                && unchecked.contains("검증할 수 없습니다")
+                && unchecked.contains("64 MiB")
+                && unchecked.contains("한글에서 파일을 열어 확인"),
+            "{unchecked}"
         );
         let message = format!("{error:#}");
         assert!(
