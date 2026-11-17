@@ -312,11 +312,16 @@ fn kind_coverage_all_33() {
         "../../../schemas/document-spec-v1.schema.json"
     ))
     .unwrap();
-    let validator = jsonschema::options()
-        .with_resource(
+    let registry = jsonschema::Registry::new()
+        .add(
             "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
-            jsonschema::Resource::from_contents(document_spec).unwrap(),
+            document_spec,
         )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let validator = jsonschema::options()
+        .with_registry(&registry)
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .unwrap();
@@ -1161,11 +1166,16 @@ fn paragraph_granularity_rejects_a_char_range() {
         "../../../schemas/document-spec-v1.schema.json"
     ))
     .unwrap();
-    let validator = jsonschema::options()
-        .with_resource(
+    let registry = jsonschema::Registry::new()
+        .add(
             "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
-            jsonschema::Resource::from_contents(document_spec).unwrap(),
+            document_spec,
         )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let validator = jsonschema::options()
+        .with_registry(&registry)
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&wrapped)
         .unwrap();

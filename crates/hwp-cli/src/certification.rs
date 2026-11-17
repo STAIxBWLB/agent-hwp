@@ -5730,7 +5730,7 @@ exit 2"#,
             serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
         let errors: Vec<String> = certification_report_validator()
             .iter_errors(&value)
-            .map(|error| format!("{} at {}", error, error.instance_path))
+            .map(|error| format!("{} at {}", error, error.instance_path()))
             .collect();
         assert!(
             errors.is_empty(),
@@ -5765,7 +5765,7 @@ exit 2"#,
         let errors = |check: &CheckResult| -> Vec<String> {
             validator
                 .iter_errors(&serde_json::to_value(check).unwrap())
-                .map(|error| format!("{} at {}", error, error.instance_path))
+                .map(|error| format!("{} at {}", error, error.instance_path()))
                 .collect()
         };
 
@@ -5810,7 +5810,7 @@ exit 2"#,
         let errors = |rule: &RuleResult| -> Vec<String> {
             validator
                 .iter_errors(&serde_json::to_value(rule).unwrap())
-                .map(|error| format!("{} at {}", error, error.instance_path))
+                .map(|error| format!("{} at {}", error, error.instance_path()))
                 .collect()
         };
 
@@ -5878,7 +5878,7 @@ exit 2"#,
             value["checks"]["preservation"] = serde_json::to_value(&check).unwrap();
             let errors: Vec<String> = validator
                 .iter_errors(&value)
-                .map(|error| format!("{} at {}", error, error.instance_path))
+                .map(|error| format!("{} at {}", error, error.instance_path()))
                 .collect();
             assert!(errors.is_empty(), "{label}: {errors:?}");
         }
