@@ -7134,6 +7134,112 @@ mod tests {
         }
     }
 
+    /// #610: every list that can hold a regenerated table (a body paragraph, a cell, a caption
+    /// and a text box's paragraph list) reaches `emit_table`, which must write a table CTRL_DATA
+    /// as the first child of the table CTRL_HEADER, never after the cells.
+    #[test]
+    fn regenerated_tables_keep_ctrl_data_first_in_every_paragraph_list() {
+        fn ctrl_data() -> OpaqueRecord {
+            OpaqueRecord {
+                tag: tag::CTRL_DATA,
+                data: b"nested-ctrl-data".to_vec(),
+                children: Vec::new(),
+            }
+        }
+        fn host(control: Control) -> Paragraph {
+            let mut paragraph =
+                hwp_convert::from_markdown("host").sections[0].paragraphs[0].clone();
+            paragraph.controls = vec![control];
+            paragraph
+        }
+        fn inner() -> Table {
+            let mut table = synth_table(None);
+            table.extras.push(ctrl_data());
+            table.cells = synth_cell_table().cells;
+            table
+        }
+        fn synth_cell_table() -> Table {
+            let doc = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|paragraph| &paragraph.controls)
+                .find_map(|control| match control {
+                    Control::Table(table) => Some(table.clone()),
+                    _ => None,
+                })
+                .expect("markdown table")
+        }
+        /// Collects `(first child tag, CTRL_DATA count)` for every table CTRL_HEADER under
+        /// `node` that carries a CTRL_DATA.
+        fn tables_with_ctrl_data(node: &RecordNode, out: &mut Vec<(u16, usize)>) {
+            let count = node
+                .children
+                .iter()
+                .filter(|child| child.tag == tag::CTRL_DATA)
+                .count();
+            if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") && count > 0 {
+                out.push((node.children[0].tag, count));
+            }
+            for child in &node.children {
+                tables_with_ctrl_data(child, out);
+            }
+        }
+
+        let mut in_cell = synth_cell_table();
+        in_cell.cells[0].paragraphs = vec![host(Control::Table(inner()))];
+        let mut in_caption = synth_cell_table();
+        in_caption.caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 850,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![host(Control::Table(inner()))],
+        });
+        let text_box = Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![host(Control::Table(inner()))],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        });
+
+        let mut observed = Vec::new();
+        for (path, control) in [
+            ("body", Control::Table(inner())),
+            ("cell", Control::Table(in_cell)),
+            ("caption", Control::Table(in_caption)),
+            ("text box", text_box),
+        ] {
+            for synthesize in [false, true] {
+                let node =
+                    emit_control(&control, synthesize, false, false, &mut WriteReport::new());
+                let mut tables = Vec::new();
+                tables_with_ctrl_data(&node, &mut tables);
+                observed.push((path, synthesize, tables));
+            }
+        }
+        // Every path, not just the first: a red run lists each list kind that detaches it.
+        let expected = observed
+            .iter()
+            .map(|(path, synthesize, _)| (*path, *synthesize, vec![(tag::CTRL_DATA, 1)]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed, expected,
+            "CTRL_DATA must be the table CTRL_HEADER's first child (tag 87) in every list"
+        );
+    }
+
     #[test]
     fn synthesized_table_common_payload_matches_emission_without_replacing_raw_bytes() {
         for placement in [

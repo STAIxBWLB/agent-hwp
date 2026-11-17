@@ -141,11 +141,11 @@ fn replace_in_a_top_level_paragraph_verifies_on_work_report() {
 }
 
 /// The text of the issue's `--replace` example lives only inside a raw-backed text box. The
-/// HWP5 writer emits that subtree verbatim, so the edit is not in the output file: `--verify`
-/// must refuse it with a structured code and the invariant that differs, and publish nothing.
-/// (Without `--verify` this edit is silently dropped; that is a separate writer gap.)
+/// HWP5 writer emits that subtree verbatim, so the edit would not reach the output file. Since
+/// #589 the pre-write `raw_backed_edit` check refuses it before `--verify` runs, with the
+/// control kind named, and publishes nothing.
 #[test]
-fn replace_confined_to_a_raw_text_box_is_refused_with_verify_mismatch() {
+fn replace_confined_to_a_raw_text_box_is_refused_before_write() {
     let input = repo().join("fixtures/hwp5/annual_report.hwp");
     if fixture_skip::fixture_missing(&input) {
         return;
@@ -179,20 +179,15 @@ fn replace_confined_to_a_raw_text_box_is_refused_with_verify_mismatch() {
         .build(&schema)
         .unwrap();
     assert!(validator.is_valid(&report), "{report}");
-    assert_eq!(report["refusal"]["code"], "verify_mismatch", "{report}");
-    // The only signal of a blocked edit names a next step, not just the cause (F1).
+    assert_eq!(report["refusal"]["code"], "raw_backed_edit", "{report}");
     let message = report["refusal"]["message"].as_str().unwrap();
-    assert_eq!(message, hwp_cli::refusal::fixed_message("verify_mismatch"));
+    assert_eq!(message, hwp_cli::refusal::fixed_message("raw_backed_edit"));
+    let controls = report["refusal"]["values"]["controls"].as_array().unwrap();
     assert!(
-        message.contains("글상자")
-            && message.contains("본문으로 옮겨")
-            && message.contains("values.counts"),
-        "{message}"
-    );
-    let counts = report["refusal"]["values"]["counts"].as_array().unwrap();
-    assert!(
-        counts.iter().any(|count| count["name"] == "text_chars"
-            && count["expected"].as_u64() > count["actual"].as_u64()),
-        "the differing invariant is named: {report}"
+        controls
+            .iter()
+            .any(|control| control["kind"] == "shape_or_text_box"
+                && control["count"].as_u64() >= Some(1)),
+        "the refused control is named: {report}"
     );
 }
