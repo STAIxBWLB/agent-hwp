@@ -1,7 +1,8 @@
-//! `hwp validate` — 구조 검증.
+//! `hwp validate`: structural validation.
 //!
-//! mimetype·필수 엔트리 존재·XML 파싱(본문/헤더)을 확인한다. XSD 스키마 검증은
-//! 범위 밖. 하드 오류가 하나라도 있으면 비-0 종료코드(소비자가 exit code로 판정).
+//! Checks the mimetype, required entries and XML parsing (body and header) for HWPX, and the
+//! reader plus record-structure rules for HWP5. XSD schema validation is out of scope. Any hard
+//! error yields a non-zero exit code (consumers judge by the exit code).
 
 use std::path::Path;
 
@@ -9,7 +10,8 @@ use serde_json::{Value, json};
 
 use crate::format::{FileFormat, detect};
 
-/// 구조 검증 결과를 JSON 객체로 만든다 (CLI와 MCP가 공유 — `process::exit` 없음).
+/// Builds the structural validation result as a JSON object (shared by the CLI and MCP; no
+/// `process::exit`).
 /// `{file, format, valid, errors, warnings}`.
 pub fn validate_json(path: &Path) -> Value {
     let mut errors: Vec<String> = Vec::new();
@@ -26,11 +28,15 @@ pub fn validate_json(path: &Path) -> Value {
         Ok(FileFormat::Hwp5) => {
             format = "hwp5";
             match hwp5::read_document(path) {
-                Ok(r) => warnings.extend(r.warnings),
+                Ok(r) => {
+                    warnings.extend(r.warnings);
+                    // #610: the reader accepts a detached CTRL_DATA, Hangul does not. Only a
+                    // document the reader accepted is scanned, so protected or damaged files
+                    // keep their single read error.
+                    errors.extend(hwp5::structure_check::detached_ctrl_data(path));
+                }
                 Err(e) => errors.push(format!("파싱 실패: {e}")),
             }
-            // #610: the reader accepts a detached CTRL_DATA, Hangul does not.
-            errors.extend(hwp5::structure_check::detached_ctrl_data(path));
         }
         Err(e) => errors.push(format!("포맷 감지 실패: {e}")),
     }
@@ -99,14 +105,14 @@ fn validate_hwpx(path: &Path, errors: &mut Vec<String>, warnings: &mut Vec<Strin
     if !names.iter().any(|n| n.starts_with("Contents/section")) {
         errors.push("본문 섹션(Contents/section*.xml) 없음".to_string());
     }
-    // 패키징 규칙: mimetype이 첫 엔트리여야 한다(write 경로가 강제하는 불변식). 리더는
-    // 이름으로 읽어 순서가 어긋나도 열리므로 하드 에러 대신 경고로만 표면화한다.
+    // Packaging rule: mimetype must be the first entry (an invariant the write path enforces).
+    // The reader opens by name, so a wrong order still opens; surface it as a warning only.
     if names.first().map(String::as_str) != Some("mimetype") {
         warnings.push("mimetype이 첫 엔트리가 아님 (패키징 규칙 위반)".to_string());
     }
 
-    // 구조 검증은 BinData를 메모리에 적재하지 않지만 모든 비디렉터리 엔트리를
-    // EOF까지 스트리밍한다. 따라서 raw-copy 대상의 CRC/deflate 손상도 검출한다.
+    // Structural validation does not load BinData into memory, but it streams every
+    // non-directory entry to EOF, so CRC/deflate damage in raw-copied entries is caught too.
     match hwpx::read_structure(path) {
         Ok(r) => warnings.extend(r.warnings),
         Err(e) => errors.push(format!("XML 파싱 실패: {e}")),
