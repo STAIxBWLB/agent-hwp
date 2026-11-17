@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [2.1.1]
+
+**Compatibility**
+
+- `validate` now reports an HWP5 file whose table CTRL_DATA is not the first child of its
+  CTRL_HEADER as an error, and `edit --verify` (CLI and MCP `hwp_edit`) refuses such output.
+  2.1.0 reported these files valid although Hangul rejects them as corrupted. A body section the
+  check cannot inspect is a `validate` warning and an `edit --verify` refusal
+  ([#610](https://github.com/STAIxBWLB/agent-hwp/issues/610)).
+
 **Fixed**
 
 - Native HWP5 height-changing edits keep an unchanged zero-width floating-table host in body
