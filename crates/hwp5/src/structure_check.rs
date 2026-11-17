@@ -11,15 +11,56 @@ use std::path::Path;
 use crate::record::{RecordNode, ScanMode, scan_stream, tag};
 
 /// Per-section decompressed size cap for this scan, the same 64 MiB per-stream cap the
-/// bounded (password and certification) read paths use. A larger section is skipped.
+/// bounded (password and certification) read paths use. A larger section is reported as
+/// unchecked, never as clean.
 pub const MAX_SCAN_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Returns one message per detached CTRL_DATA record in the document's `/BodyText` sections.
-/// Protected and distribution documents, sections over [`MAX_SCAN_STREAM_BYTES`] and
-/// streams that cannot be read or scanned are skipped here; the regular reader reports those.
-pub fn detached_ctrl_data(path: &Path) -> Vec<String> {
-    detached_ctrl_data_counts(path)
-        .into_iter()
+/// Why a body section was not checked. An unchecked section is never reported as clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncheckedReason {
+    /// The document is protected (encrypted, certificate, DRM, signed) or could not be opened.
+    Unreadable,
+    /// A distribution document: the body lives encrypted under /ViewText.
+    Distribution,
+    /// The decompressed section exceeds [`MAX_SCAN_STREAM_BYTES`].
+    OverLimit,
+    /// The section could not be decompressed or its record stream could not be scanned.
+    Damaged,
+}
+
+impl UncheckedReason {
+    /// A short Korean label for user-facing messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unreadable => "보호되었거나 열 수 없는 문서",
+            Self::Distribution => "배포용 문서",
+            Self::OverLimit => "검사 한도(64 MiB) 초과",
+            Self::Damaged => "압축 해제 또는 레코드 스캔 실패",
+        }
+    }
+}
+
+/// Result of the CTRL_DATA placement scan. `unchecked` lists what the scan could not inspect,
+/// so a caller can tell "no detached CTRL_DATA" apart from "not verified".
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CtrlDataScan {
+    /// `(stream path, detached CTRL_DATA count)` for each section that has any.
+    pub detached: Vec<(String, usize)>,
+    /// `(stream path or "document", reason)` for each part that was not checked.
+    pub unchecked: Vec<(String, UncheckedReason)>,
+}
+
+impl CtrlDataScan {
+    /// True only when every body section was scanned and none had a detached CTRL_DATA.
+    pub fn is_verified_clean(&self) -> bool {
+        self.detached.is_empty() && self.unchecked.is_empty()
+    }
+}
+
+/// `validate` errors, one per section with a detached CTRL_DATA.
+pub fn detached_ctrl_data_errors(scan: &CtrlDataScan) -> Vec<String> {
+    scan.detached
+        .iter()
         .map(|(stream, count)| {
             format!(
                 "{stream}: CTRL_DATA {count}개가 소유 CTRL_HEADER 바로 뒤에 있지 않습니다 \
@@ -30,36 +71,70 @@ pub fn detached_ctrl_data(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `(stream path, detached CTRL_DATA count)` for each `/BodyText` section that has any.
-/// Callers build their own message so each names the next step that fits its context.
-pub fn detached_ctrl_data_counts(path: &Path) -> Vec<(String, usize)> {
+/// `validate` warnings, one per part the scan could not inspect.
+pub fn unchecked_warnings(scan: &CtrlDataScan) -> Vec<String> {
+    scan.unchecked
+        .iter()
+        .map(|(part, reason)| {
+            format!(
+                "{part}: CTRL_DATA 배치 검사를 하지 못했습니다 ({}). 이 부분은 검증되지 \
+                 않았으니 한글에서 파일을 열어 확인하세요",
+                reason.label()
+            )
+        })
+        .collect()
+}
+
+/// Scans every `/BodyText` section for CTRL_DATA records that are not the first child of a
+/// CTRL_HEADER. Applies the reader's gates first and reads each section with a bound;
+/// everything it does not inspect is listed in [`CtrlDataScan::unchecked`].
+pub fn scan_ctrl_data(path: &Path) -> CtrlDataScan {
+    let mut result = CtrlDataScan::default();
     let Ok(mut container) = crate::Hwp5Container::open(path) else {
-        return Vec::new();
+        result
+            .unchecked
+            .push(("document".to_string(), UncheckedReason::Unreadable));
+        return result;
     };
     // The same gates the reader applies before it touches a body stream: a protected
     // (encrypted, certificate, DRM, signed) document is never decompressed here, and a
     // distribution document keeps its body under /ViewText, so its /BodyText stub is a decoy.
-    if container.check_body_readable().is_err() || container.file_header().is_distribution() {
-        return Vec::new();
+    if container.check_body_readable().is_err() {
+        result
+            .unchecked
+            .push(("document".to_string(), UncheckedReason::Unreadable));
+        return result;
     }
-    let sections = container.body_sections();
-    let mut problems = Vec::new();
-    for stream in sections {
-        // Bounded: a small raw-DEFLATE stream can expand without limit, and this scan must
-        // not do more work than validation did before it existed.
-        let Ok(bytes) = container.read_record_stream_bounded(&stream, MAX_SCAN_STREAM_BYTES) else {
-            continue;
+    if container.file_header().is_distribution() {
+        result
+            .unchecked
+            .push(("document".to_string(), UncheckedReason::Distribution));
+        return result;
+    }
+    for stream in container.body_sections() {
+        // Bounded: a small raw-DEFLATE stream can expand without limit.
+        let bytes = match container.read_record_stream_bounded(&stream, MAX_SCAN_STREAM_BYTES) {
+            Ok(bytes) => bytes,
+            Err(crate::Hwp5Error::ResourceLimitExceeded { .. }) => {
+                result.unchecked.push((stream, UncheckedReason::OverLimit));
+                continue;
+            }
+            Err(_) => {
+                result.unchecked.push((stream, UncheckedReason::Damaged));
+                continue;
+            }
         };
         let Ok(scan) = scan_stream(&bytes, ScanMode::Tolerant) else {
+            result.unchecked.push((stream, UncheckedReason::Damaged));
             continue;
         };
         let mut count = 0usize;
         count_detached(&scan.roots, false, &mut count);
         if count > 0 {
-            problems.push((stream, count));
+            result.detached.push((stream, count));
         }
     }
-    problems
+    result
 }
 
 /// Counts CTRL_DATA nodes that are not the first child of a CTRL_HEADER.
@@ -132,7 +207,7 @@ mod tests {
             std::process::id()
         ));
         write_detached_table_ctrl_data_fixture(&path);
-        let messages = detached_ctrl_data(&path);
+        let messages = detached_ctrl_data_errors(&scan_ctrl_data(&path));
         std::fs::remove_file(&path).unwrap();
         assert_eq!(messages.len(), 1, "{messages:?}");
         let message = &messages[0];
@@ -180,24 +255,33 @@ mod tests {
                 std::process::id()
             ));
             write_detached_table_ctrl_data_fixture(&path);
-            assert_eq!(
-                detached_ctrl_data_counts(&path).len(),
-                1,
-                "{label}: premise"
-            );
+            assert_eq!(scan_ctrl_data(&path).detached.len(), 1, "{label}: premise");
             set_header_attributes(&path, bits);
-            let found = detached_ctrl_data_counts(&path);
+            let scan = scan_ctrl_data(&path);
             std::fs::remove_file(&path).unwrap();
             assert!(
-                found.is_empty(),
-                "{label}: scanned a gated document: {found:?}"
+                scan.detached.is_empty(),
+                "{label}: scanned a gated document: {scan:?}"
             );
+            // Not scanned is not the same as clean: the gate is reported as unchecked.
+            let reason = if label == "distribution" {
+                UncheckedReason::Distribution
+            } else {
+                UncheckedReason::Unreadable
+            };
+            assert_eq!(
+                scan.unchecked,
+                vec![("document".to_string(), reason)],
+                "{label}"
+            );
+            assert!(!scan.is_verified_clean(), "{label}");
         }
     }
 
-    /// A body section that decompresses past the cap is skipped, not materialized.
+    /// A body section that decompresses past the cap is not materialized, and is reported as
+    /// unchecked rather than clean.
     #[test]
-    fn section_over_the_scan_cap_is_skipped() {
+    fn section_over_the_scan_cap_is_reported_unchecked() {
         use std::io::Write as _;
         let path =
             std::env::temp_dir().join(format!("hwp5-ctrl-data-cap-{}.hwp", std::process::id()));
@@ -222,9 +306,21 @@ mod tests {
             .unwrap();
         cfb.flush().unwrap();
         drop(cfb);
-        let found = detached_ctrl_data_counts(&path);
+        let scan = scan_ctrl_data(&path);
         std::fs::remove_file(&path).unwrap();
-        assert!(found.is_empty(), "{found:?}");
+        assert!(scan.detached.is_empty(), "{scan:?}");
+        assert_eq!(
+            scan.unchecked,
+            vec![("/BodyText/Section0".to_string(), UncheckedReason::OverLimit)]
+        );
+        assert!(!scan.is_verified_clean());
+        let warnings = unchecked_warnings(&scan);
+        assert!(
+            warnings[0].contains("/BodyText/Section0")
+                && warnings[0].contains("64 MiB")
+                && warnings[0].contains("한글에서 파일을 열어 확인"),
+            "{warnings:?}"
+        );
     }
 
     #[test]

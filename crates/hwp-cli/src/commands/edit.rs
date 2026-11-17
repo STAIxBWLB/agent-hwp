@@ -6782,19 +6782,11 @@ fn verify_output_projected(
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
     // #610: a CTRL_DATA detached from its CTRL_HEADER rereads fine but Hangul rejects it.
     if matches!(OutputFormat::from_path(output)?, OutputFormat::Hwp) {
-        let detached = hwp5::structure_check::detached_ctrl_data_counts(output);
-        if !detached.is_empty() {
-            let where_ = detached
-                .iter()
-                .map(|(stream, count)| format!("{stream} {count}개"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow::bail!(
-                "검증 실패: 출력의 CTRL_DATA가 소유 CTRL_HEADER에서 떨어져 있어 한글이 손상 \
-                 파일로 판정합니다 ({where_}). 출력을 .hwpx로 \
-                 바꿔 다시 실행하거나, `ahwp validate <입력>`과 이 메시지를 \
-                 STAIxBWLB/agent-hwp 이슈로 보고하세요"
-            );
+        // A part the scan could not inspect is not verified: say so instead of passing it.
+        // This always prints, even when the success line is quiet, because it qualifies the
+        // verification result itself.
+        for warning in ctrl_data_verify_warnings(output)? {
+            eprintln!("검증 경고: {warning}");
         }
     }
     if let Some(expected) = expected {
@@ -6842,6 +6834,28 @@ fn verify_output_projected(
         eprintln!("검증: 재읽기 OK ({paras}문단, 본문 {text_len}자)");
     }
     Ok(())
+}
+
+/// #610: scans an HWP5 output for detached CTRL_DATA. A detached record is an error. Parts
+/// the scan could not inspect come back as warnings, so the caller never reports them as
+/// verified.
+fn ctrl_data_verify_warnings(output: &Path) -> anyhow::Result<Vec<String>> {
+    let scan = hwp5::structure_check::scan_ctrl_data(output);
+    if !scan.detached.is_empty() {
+        let where_ = scan
+            .detached
+            .iter()
+            .map(|(stream, count)| format!("{stream} {count}개"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "검증 실패: 출력의 CTRL_DATA가 소유 CTRL_HEADER에서 떨어져 있어 한글이 손상 \
+             파일로 판정합니다 ({where_}). 출력을 .hwpx로 \
+             바꿔 다시 실행하거나, `ahwp validate <입력>`과 이 메시지를 \
+             STAIxBWLB/agent-hwp 이슈로 보고하세요"
+        );
+    }
+    Ok(hwp5::structure_check::unchecked_warnings(&scan))
 }
 
 pub fn verify_document(output: &Path, expected: &hwp_model::Document) -> anyhow::Result<()> {
@@ -6906,7 +6920,31 @@ mod tests {
         drop(cfb);
 
         let error = verify_output_with_success_log(&path, None, false).unwrap_err();
+        // Pad the same section past the scan cap: the scan can no longer see the detached
+        // CTRL_DATA, so it must not pass the output as verified. It reports it as unchecked.
+        let mut container = hwp5::Hwp5Container::open(&path).unwrap();
+        let mut body = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        body.resize(
+            body.len() + hwp5::structure_check::MAX_SCAN_STREAM_BYTES as usize,
+            0,
+        );
+        let mut cfb = cfb::open_rw(&path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&hwp5::codec::compress(&body))
+            .unwrap();
+        cfb.flush().unwrap();
+        drop(cfb);
+        let unchecked = ctrl_data_verify_warnings(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
+        assert!(
+            unchecked
+                .iter()
+                .any(|warning| warning.contains("/BodyText/Section0")
+                    && warning.contains("검증되지")),
+            "{unchecked:?}"
+        );
         let message = format!("{error:#}");
         assert!(
             message.contains("CTRL_DATA") && message.contains("손상"),

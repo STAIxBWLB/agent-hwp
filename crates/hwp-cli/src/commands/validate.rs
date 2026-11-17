@@ -32,8 +32,11 @@ pub fn validate_json(path: &Path) -> Value {
                     warnings.extend(r.warnings);
                     // #610: the reader accepts a detached CTRL_DATA, Hangul does not. Only a
                     // document the reader accepted is scanned, so protected or damaged files
-                    // keep their single read error.
-                    errors.extend(hwp5::structure_check::detached_ctrl_data(path));
+                    // keep their single read error. A section the scan could not inspect is a
+                    // warning, never a silent pass.
+                    let scan = hwp5::structure_check::scan_ctrl_data(path);
+                    errors.extend(hwp5::structure_check::detached_ctrl_data_errors(&scan));
+                    warnings.extend(hwp5::structure_check::unchecked_warnings(&scan));
                 }
                 Err(e) => errors.push(format!("파싱 실패: {e}")),
             }
@@ -116,5 +119,52 @@ fn validate_hwpx(path: &Path, errors: &mut Vec<String>, warnings: &mut Vec<Strin
     match hwpx::read_structure(path) {
         Ok(r) => warnings.extend(r.warnings),
         Err(e) => errors.push(format!("XML 파싱 실패: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review of #611: when the CTRL_DATA scan cannot inspect a section (here one that
+    /// decompresses past its 64 MiB cap while the reader still accepts the file), `validate`
+    /// must say the section was not verified rather than pass it silently.
+    #[test]
+    fn unchecked_section_is_a_validate_warning_not_a_silent_pass() {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!(
+            "hwp611-validate-unchecked-{}.hwp",
+            std::process::id()
+        ));
+        let document = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+        hwp5::write_document(&document, &path, &hwp5::WriteOptions::default()).unwrap();
+        let mut container = hwp5::Hwp5Container::open(&path).unwrap();
+        let mut body = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        // Zero padding scans as empty records, so the reader still accepts the section.
+        body.resize(
+            body.len() + hwp5::structure_check::MAX_SCAN_STREAM_BYTES as usize,
+            0,
+        );
+        let mut cfb = cfb::open_rw(&path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&hwp5::codec::compress(&body))
+            .unwrap();
+        cfb.flush().unwrap();
+        drop(cfb);
+
+        let result = validate_json(&path);
+        std::fs::remove_file(&path).unwrap();
+        let warnings = result["warnings"].as_array().unwrap();
+        assert!(
+            warnings.iter().any(|warning| {
+                let text = warning.as_str().unwrap();
+                text.contains("/BodyText/Section0")
+                    && text.contains("검증되지")
+                    && text.contains("64 MiB")
+            }),
+            "{result}"
+        );
     }
 }

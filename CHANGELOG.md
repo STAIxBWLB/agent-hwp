@@ -25,7 +25,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   table CTRL_DATA record directly after its CTRL_HEADER, where Hangul saved it, instead of
   moving it after the last cell paragraph, which Hangul reported as a corrupted file.
   `validate` and `edit --verify` now reject a CTRL_DATA that is not the first child of its
-  CTRL_HEADER (#610).
+  CTRL_HEADER (#610). A body section the check cannot inspect (over its 64 MiB scan cap or
+  undecodable) is reported as a "not verified" warning, never passed silently.
 
 ## [2.1.0]
 
