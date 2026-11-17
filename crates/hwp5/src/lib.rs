@@ -1,21 +1,23 @@
-//! HWP 5.0 바이너리 포맷 reader/writer.
+//! HWP 5.0 binary format reader/writer.
 //!
 //! 본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서(한글 문서 파일 형식 5.0,
 //! <https://store.hancom.com/etc/hwpDownload.do>, © (주)한글과컴퓨터)를 참고하여 개발하였습니다.
+//! (Required attribution, kept verbatim: this product was developed with reference to
+//! Hancom's public HWP 5.0 file format document.)
 //!
-//! HWP 5.0 파일 = MS CFB(Compound File Binary) 컨테이너:
-//! - `FileHeader`        — 256바이트 고정 헤더 (시그니처/버전/속성 플래그)
-//! - `DocInfo`           — 문서 정보 레코드 스트림 (보통 raw deflate 압축)
-//! - `BodyText/Section0..N` — 본문 레코드 스트림 (보통 raw deflate 압축)
-//! - `BinData/*`         — 첨부 바이너리 (이미지 등)
-//! - `PrvText`/`PrvImage` — 미리보기 (비압축)
-//! - 기타: `\x05HwpSummaryInformation`, `Scripts/*`, `DocOptions/*` 등
+//! An HWP 5.0 file is an MS CFB (Compound File Binary) container:
+//! - `FileHeader`        - fixed 256-byte header (signature, version, attribute flags)
+//! - `DocInfo`           - document information record stream (usually raw-deflate compressed)
+//! - `BodyText/Section0..N` - body record streams (usually raw-deflate compressed)
+//! - `BinData/*`         - embedded binaries (images and the like)
+//! - `PrvText`/`PrvImage` - previews (uncompressed)
+//! - Other: `\x05HwpSummaryInformation`, `Scripts/*`, `DocOptions/*` and so on
 //!
-//! 계층 구조:
-//! - [`container`] — CFB 래핑, 스트림 열거/읽기
-//! - [`file_header`] — FileHeader 파싱/직렬화
-//! - [`codec`] — 바이트 커서(reader/writer)와 raw deflate 압축
-//! - [`record`] — 레코드 헤더 코덱, 평면 스트림 ↔ 트리 변환
+//! Layers:
+//! - [`container`] - CFB wrapping, stream listing and reading
+//! - [`file_header`] - FileHeader parsing and serialization
+//! - [`codec`] - byte cursors (reader/writer) and raw-deflate compression
+//! - [`record`] - record header codec, flat stream to tree conversion
 
 pub mod body_text;
 pub mod codec;
@@ -27,6 +29,7 @@ pub mod file_header;
 pub mod numbering;
 pub mod read;
 pub mod record;
+pub mod structure_check;
 pub mod summary;
 pub mod write;
 

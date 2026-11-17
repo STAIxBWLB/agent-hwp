@@ -4129,8 +4129,17 @@ fn emit_table(
         tw.write_bytes(&table.table_tail);
     }
 
+    // A Hancom-saved table writes its CTRL_DATA directly after the CTRL_HEADER, before any
+    // caption and the TABLE record (#610). Appending it after the last cell detaches it from
+    // its control and Hangul rejects the file, so it leads; other extras keep the tail.
+    let mut children: Vec<RecordNode> = table
+        .extras
+        .iter()
+        .filter(|extra| extra.tag == tag::CTRL_DATA)
+        .map(opaque_to_node)
+        .collect();
     // Table 71 caption records precede the TABLE record.
-    let mut children = match &table.caption {
+    children.extend(match &table.caption {
         Some(caption) => emit_caption_records(
             caption,
             synthesize,
@@ -4139,7 +4148,7 @@ fn emit_table(
             report,
         ),
         None => Vec::new(),
-    };
+    });
     children.push(RecordNode {
         tag: tag::TABLE,
         data: tw.into_bytes(),
@@ -4157,7 +4166,13 @@ fn emit_table(
             ));
         }
     }
-    children.extend(table.extras.iter().map(opaque_to_node));
+    children.extend(
+        table
+            .extras
+            .iter()
+            .filter(|extra| extra.tag != tag::CTRL_DATA)
+            .map(opaque_to_node),
+    );
     RecordNode {
         tag: tag::CTRL_HEADER,
         data: w.into_bytes(),
@@ -5363,6 +5378,105 @@ mod tests {
             .write_all(&encoded)
             .unwrap();
         cfb.flush().unwrap();
+    }
+
+    /// Puts a CTRL_DATA record directly after the table CTRL_HEADER, before TABLE, the position
+    /// a Hancom-saved table with control data uses (#610).
+    fn prepend_table_ctrl_data(path: &Path) {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        fn prepend(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") {
+                    node.children.insert(
+                        0,
+                        RecordNode {
+                            tag: tag::CTRL_DATA,
+                            data: b"table-ctrl-data-sentinel".to_vec(),
+                            children: Vec::new(),
+                        },
+                    );
+                    return true;
+                }
+                if prepend(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(prepend(&mut roots));
+        let encoded = encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed);
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    /// #610: an insert-para before a table whose CTRL_DATA precedes TABLE must keep that
+    /// CTRL_DATA first under its CTRL_HEADER, for both the edit and the structural options.
+    #[test]
+    fn source_preserving_insert_para_keeps_table_ctrl_data_attached() {
+        // `regenerate` also changes table structure so the writer cannot splice into the source
+        // table and must emit it from the IR, the path a reflowed Hancom table takes.
+        for (structural, regenerate) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let source = source_rewrite_path("table-ctrl-data-source");
+            let output = source_rewrite_path("table-ctrl-data-output");
+            let document =
+                hwp_convert::from_markdown("앞 문단\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+            write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+            prepend_table_ctrl_data(&source);
+            let original = crate::read_document(&source).unwrap().document;
+            let mut edited = original.clone();
+            assert!(
+                hwp_convert::insert_paragraph_checked(&mut edited, "앞", "새 문단", false).unwrap()
+            );
+            if regenerate {
+                for paragraph in &mut edited.sections[0].paragraphs {
+                    for control in &mut paragraph.controls {
+                        if let Control::Table(table) = control {
+                            table.cell_spacing += 1;
+                        }
+                    }
+                }
+            }
+
+            rewrite_document_with_report(
+                &source,
+                &original,
+                &edited,
+                &output,
+                &WriteOptions {
+                    preserve_linesegs: !structural,
+                    edited: structural,
+                    ..WriteOptions::default()
+                },
+            )
+            .unwrap();
+
+            let output_table = table_control_node(&output);
+            assert_eq!(
+                output_table.children[0].tag,
+                tag::CTRL_DATA,
+                "structural={structural} regenerate={regenerate}: CTRL_DATA must stay right after the table CTRL_HEADER"
+            );
+            assert_eq!(output_table.children[0].data, b"table-ctrl-data-sentinel");
+            assert_eq!(
+                output_table
+                    .children
+                    .iter()
+                    .filter(|child| child.tag == tag::CTRL_DATA)
+                    .count(),
+                1
+            );
+            std::fs::remove_file(source).unwrap();
+            std::fs::remove_file(output).unwrap();
+        }
     }
 
     /// #220 review: a `--set-cell` value that becomes several paragraphs changes one cell's
@@ -7018,6 +7132,112 @@ mod tests {
             caption: None,
             extras: Vec::new(),
         }
+    }
+
+    /// #610: every list that can hold a regenerated table (a body paragraph, a cell, a caption
+    /// and a text box's paragraph list) reaches `emit_table`, which must write a table CTRL_DATA
+    /// as the first child of the table CTRL_HEADER, never after the cells.
+    #[test]
+    fn regenerated_tables_keep_ctrl_data_first_in_every_paragraph_list() {
+        fn ctrl_data() -> OpaqueRecord {
+            OpaqueRecord {
+                tag: tag::CTRL_DATA,
+                data: b"nested-ctrl-data".to_vec(),
+                children: Vec::new(),
+            }
+        }
+        fn host(control: Control) -> Paragraph {
+            let mut paragraph =
+                hwp_convert::from_markdown("host").sections[0].paragraphs[0].clone();
+            paragraph.controls = vec![control];
+            paragraph
+        }
+        fn inner() -> Table {
+            let mut table = synth_table(None);
+            table.extras.push(ctrl_data());
+            table.cells = synth_cell_table().cells;
+            table
+        }
+        fn synth_cell_table() -> Table {
+            let doc = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|paragraph| &paragraph.controls)
+                .find_map(|control| match control {
+                    Control::Table(table) => Some(table.clone()),
+                    _ => None,
+                })
+                .expect("markdown table")
+        }
+        /// Collects `(first child tag, CTRL_DATA count)` for every table CTRL_HEADER under
+        /// `node` that carries a CTRL_DATA.
+        fn tables_with_ctrl_data(node: &RecordNode, out: &mut Vec<(u16, usize)>) {
+            let count = node
+                .children
+                .iter()
+                .filter(|child| child.tag == tag::CTRL_DATA)
+                .count();
+            if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") && count > 0 {
+                out.push((node.children[0].tag, count));
+            }
+            for child in &node.children {
+                tables_with_ctrl_data(child, out);
+            }
+        }
+
+        let mut in_cell = synth_cell_table();
+        in_cell.cells[0].paragraphs = vec![host(Control::Table(inner()))];
+        let mut in_caption = synth_cell_table();
+        in_caption.caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 850,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![host(Control::Table(inner()))],
+        });
+        let text_box = Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![host(Control::Table(inner()))],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        });
+
+        let mut observed = Vec::new();
+        for (path, control) in [
+            ("body", Control::Table(inner())),
+            ("cell", Control::Table(in_cell)),
+            ("caption", Control::Table(in_caption)),
+            ("text box", text_box),
+        ] {
+            for synthesize in [false, true] {
+                let node =
+                    emit_control(&control, synthesize, false, false, &mut WriteReport::new());
+                let mut tables = Vec::new();
+                tables_with_ctrl_data(&node, &mut tables);
+                observed.push((path, synthesize, tables));
+            }
+        }
+        // Every path, not just the first: a red run lists each list kind that detaches it.
+        let expected = observed
+            .iter()
+            .map(|(path, synthesize, _)| (*path, *synthesize, vec![(tag::CTRL_DATA, 1)]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed, expected,
+            "CTRL_DATA must be the table CTRL_HEADER's first child (tag 87) in every list"
+        );
     }
 
     #[test]

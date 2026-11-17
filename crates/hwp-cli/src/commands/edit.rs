@@ -6780,6 +6780,10 @@ fn verify_output_projected(
 ) -> anyhow::Result<()> {
     let doc =
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
+    // #610: a CTRL_DATA detached from its CTRL_HEADER rereads fine but Hangul rejects it.
+    if matches!(OutputFormat::from_path(output)?, OutputFormat::Hwp) {
+        verify_ctrl_data_placement(output)?;
+    }
     if let Some(expected) = expected {
         let target = match OutputFormat::from_path(output)? {
             OutputFormat::Hwp => Some(SemanticTarget::Hwp),
@@ -6827,6 +6831,42 @@ fn verify_output_projected(
     Ok(())
 }
 
+/// #610: `--verify` for CTRL_DATA placement in an HWP5 output. A detached record fails, and so
+/// does any part the scan could not inspect: `--verify` promises a checked output, so an
+/// unchecked part is refused rather than passed. Refusing (instead of a stderr warning) keeps
+/// the CLI exit code, the edit report and the MCP `hwp_edit` response in agreement.
+fn verify_ctrl_data_placement(output: &Path) -> anyhow::Result<()> {
+    let scan = hwp5::structure_check::scan_ctrl_data(output);
+    if !scan.detached.is_empty() {
+        let where_ = scan
+            .detached
+            .iter()
+            .map(|(stream, count)| format!("{stream} {count}개"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "검증 실패: 출력의 CTRL_DATA가 소유 CTRL_HEADER에서 떨어져 있어 한글이 손상 \
+             파일로 판정합니다 ({where_}). 출력을 .hwpx로 \
+             바꿔 다시 실행하거나, `ahwp validate <입력>`과 이 메시지를 \
+             STAIxBWLB/agent-hwp 이슈로 보고하세요"
+        );
+    }
+    if !scan.unchecked.is_empty() {
+        let where_ = scan
+            .unchecked
+            .iter()
+            .map(|(part, reason)| format!("{part}: {}", reason.label()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "검증 실패: 출력의 CTRL_DATA 배치를 검사하지 못해 검증할 수 없습니다 ({where_}). \
+             --verify 없이 다시 실행한 뒤 한글에서 파일을 열어 확인하거나, 출력을 .hwpx로 \
+             바꿔 다시 실행하세요"
+        );
+    }
+    Ok(())
+}
+
 pub fn verify_document(output: &Path, expected: &hwp_model::Document) -> anyhow::Result<()> {
     verify_output(output, Some(expected))
 }
@@ -6841,6 +6881,91 @@ pub(crate) fn verify_document_quiet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #610: `--verify` refuses an HWP5 output whose table CTRL_DATA is detached, and the
+    /// message names the cause and the next step (REVIEW.md error-message rule).
+    #[test]
+    fn verify_refuses_detached_ctrl_data_with_a_next_step() {
+        use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+        use std::io::Write as _;
+        let path =
+            std::env::temp_dir().join(format!("hwp610-verify-detached-{}.hwp", std::process::id()));
+        let document = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+        hwp5::write_document(&document, &path, &hwp5::WriteOptions::default()).unwrap();
+        let mut container = hwp5::Hwp5Container::open(&path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        fn append(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") {
+                    node.children.push(RecordNode {
+                        tag: tag::CTRL_DATA,
+                        data: b"detached".to_vec(),
+                        children: Vec::new(),
+                    });
+                    return true;
+                }
+                if append(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(append(&mut roots));
+        let raw = RecordNode::serialize_forest(&roots);
+        let encoded = if compressed {
+            hwp5::codec::compress(&raw)
+        } else {
+            raw
+        };
+        let mut cfb = cfb::open_rw(&path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+        drop(cfb);
+
+        let error = verify_output_with_success_log(&path, None, false).unwrap_err();
+        // Pad the same section past the scan cap: the scan can no longer see the detached
+        // CTRL_DATA, so verification must refuse rather than pass an unchecked output.
+        let mut container = hwp5::Hwp5Container::open(&path).unwrap();
+        let mut body = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        body.resize(
+            body.len() + hwp5::structure_check::MAX_SCAN_STREAM_BYTES as usize,
+            0,
+        );
+        let mut cfb = cfb::open_rw(&path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&hwp5::codec::compress(&body))
+            .unwrap();
+        cfb.flush().unwrap();
+        drop(cfb);
+        // Through the same entry point `edit --verify` and MCP `hwp_edit` use.
+        let unchecked = verify_output_with_success_log(&path, None, false).unwrap_err();
+        std::fs::remove_file(&path).unwrap();
+        let unchecked = format!("{unchecked:#}");
+        assert!(
+            unchecked.contains("/BodyText/Section0")
+                && unchecked.contains("검증할 수 없습니다")
+                && unchecked.contains("64 MiB")
+                && unchecked.contains("한글에서 파일을 열어 확인"),
+            "{unchecked}"
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("CTRL_DATA") && message.contains("손상"),
+            "cause: {message}"
+        );
+        assert!(
+            message.contains(".hwpx") && message.contains("ahwp validate"),
+            "next step: {message}"
+        );
+    }
 
     #[test]
     fn composed_numbering_fillers_do_not_weaken_hwpx_definition_comparison() {
