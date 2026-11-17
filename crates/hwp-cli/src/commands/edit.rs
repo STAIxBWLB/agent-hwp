@@ -6782,9 +6782,19 @@ fn verify_output_projected(
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
     // #610: a CTRL_DATA detached from its CTRL_HEADER rereads fine but Hangul rejects it.
     if matches!(OutputFormat::from_path(output)?, OutputFormat::Hwp) {
-        let detached = hwp5::structure_check::detached_ctrl_data(output);
+        let detached = hwp5::structure_check::detached_ctrl_data_counts(output);
         if !detached.is_empty() {
-            anyhow::bail!("검증 실패: {}", detached.join("; "));
+            let where_ = detached
+                .iter()
+                .map(|(stream, count)| format!("{stream} {count}개"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "검증 실패: 출력의 CTRL_DATA가 소유 CTRL_HEADER에서 떨어져 있어 한글이 손상 \
+                 파일로 판정합니다 ({where_}). 출력을 .hwpx로 \
+                 바꿔 다시 실행하거나, `ahwp validate <입력>`과 이 메시지를 \
+                 STAIxBWLB/agent-hwp 이슈로 보고하세요"
+            );
         }
     }
     if let Some(expected) = expected {
@@ -6848,6 +6858,65 @@ pub(crate) fn verify_document_quiet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #610: `--verify` refuses an HWP5 output whose table CTRL_DATA is detached, and the
+    /// message names the cause and the next step (REVIEW.md error-message rule).
+    #[test]
+    fn verify_refuses_detached_ctrl_data_with_a_next_step() {
+        use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+        use std::io::Write as _;
+        let path =
+            std::env::temp_dir().join(format!("hwp610-verify-detached-{}.hwp", std::process::id()));
+        let document = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+        hwp5::write_document(&document, &path, &hwp5::WriteOptions::default()).unwrap();
+        let mut container = hwp5::Hwp5Container::open(&path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        fn append(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") {
+                    node.children.push(RecordNode {
+                        tag: tag::CTRL_DATA,
+                        data: b"detached".to_vec(),
+                        children: Vec::new(),
+                    });
+                    return true;
+                }
+                if append(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(append(&mut roots));
+        let raw = RecordNode::serialize_forest(&roots);
+        let encoded = if compressed {
+            hwp5::codec::compress(&raw)
+        } else {
+            raw
+        };
+        let mut cfb = cfb::open_rw(&path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+        drop(cfb);
+
+        let error = verify_output_with_success_log(&path, None, false).unwrap_err();
+        std::fs::remove_file(&path).unwrap();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("CTRL_DATA") && message.contains("손상"),
+            "cause: {message}"
+        );
+        assert!(
+            message.contains(".hwpx") && message.contains("ahwp validate"),
+            "next step: {message}"
+        );
+    }
 
     #[test]
     fn composed_numbering_fillers_do_not_weaken_hwpx_definition_comparison() {
