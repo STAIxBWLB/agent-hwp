@@ -36,6 +36,7 @@ const EXPECTED_TOOLS: [&str; 24] = [
     "hwp_new",
     "hwp_put_file",
     "hwp_read",
+    "hwp_redact",
     "hwp_render",
     "hwp_slots",
     "hwp_split",

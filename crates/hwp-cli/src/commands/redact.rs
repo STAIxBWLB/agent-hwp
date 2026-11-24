@@ -111,20 +111,20 @@ pub fn execute(request: &RedactRequest<'_>) -> anyhow::Result<Value> {
                 crate::commands::output::SnapshotOutputMode::Publish
             },
             |snapshot, staged, _| write_staged(snapshot, staged),
-            &verify_staged,
+            verify_staged,
         )
         .map(|_| ()),
         FileFormat::Hwpx if request.dry_run => crate::commands::output::validate_without_publish(
             request.output,
             Some(request.input),
             |staged| write_staged(request.input, staged),
-            &verify_staged,
+            verify_staged,
         ),
         FileFormat::Hwpx => crate::commands::output::write_validated(
             request.output,
             Some(request.input),
             |staged| write_staged(request.input, staged),
-            &verify_staged,
+            verify_staged,
         ),
     };
     let report = report_json(request, input_format, &outcome, &verification.get());
