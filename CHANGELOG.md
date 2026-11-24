@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Native HWP5 edits can update saved text boxes, headers, footers, footnotes and endnotes,
+  including their table cells. The writer preserves enclosing records and refuses unsupported
+  nested controls before publishing
+  ([#624](https://github.com/STAIxBWLB/agent-hwp/issues/624)).
+
 ## [2.1.1]
 
 **Compatibility**

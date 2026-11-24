@@ -775,6 +775,37 @@ fn native_cache_cell_margins(margins: [u16; 4], inner_margins: [u16; 4]) -> [u16
     })
 }
 
+/// Native list widths measured from the hwp-swift Hancom fixtures. The text-box
+/// LIST_HEADER stores width at 16 and left/right margins at 8/10. The inner
+/// width is rounded down to a multiple of four HWPUNIT: 22936 - 283 - 283
+/// -> 22368 in text-box and 17925 - 283 - 283 -> 17356 in work_report.hwp.
+/// The header/footer width at 8 is 42520; notes use the same section
+/// text width and their 16-byte list header has no width. HWP 5.0 §4.3.4 defines
+/// the nine PARA_LINE_SEG fields in order. First lines in these saved lists:
+/// (0, 0, 1000, 1000, 850, 600, 0, 22368, 0x60000) for a text box,
+/// (0, 0, 900, 900, 765, 452, 0, 42520, 0x60000) for header/footer, and
+/// (0, 0, 900, 900, 765, 272, 0, 42520, 0x60000) for footnote/endnote.
+/// The second text-box paragraph starts at 1600. Cache synthesis reuses the
+/// existing box line walker with the measured width at byte 28.
+fn saved_generic_list_width(ctrl_id: [u8; 4], header: &[u8], body_width: i32) -> Option<i32> {
+    let read_width = |offset| {
+        Some(i32::from_le_bytes(
+            header.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    let width = match &ctrl_id {
+        b"gso " => {
+            let left = i32::from(u16::from_le_bytes(header.get(8..10)?.try_into().ok()?));
+            let right = i32::from(u16::from_le_bytes(header.get(10..12)?.try_into().ok()?));
+            read_width(16)?.checked_sub(left + right)? & !3
+        }
+        b"head" | b"foot" => read_width(8)?,
+        b"fn  " | b"en  " => body_width,
+        _ => return None,
+    };
+    (width > 0).then_some(width)
+}
+
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
 /// (including nested tables), picture captions, object paragraph lists and object captions.
 /// This matches the lists where hwp-convert walk_para_lists can insert paragraphs.
@@ -835,15 +866,20 @@ fn fill_nested(
                 }
             }
             Control::Generic(g) => {
-                // Text box with gso_shapes: subtract LIST_HEADER inner margins (283 twice) from box width.
-                let bw = g
+                let fallback_width = g
                     .gso_shapes
                     .first()
                     .map_or(body_width, |s| (s.w - 566).max(1));
                 for list in &mut g.paragraph_lists {
+                    let width = if g.raw_children.is_empty() {
+                        fallback_width
+                    } else {
+                        saved_generic_list_width(g.ctrl_id, &list.header_data, body_width)
+                            .unwrap_or(fallback_width)
+                    };
                     fill_list(
                         &mut list.paragraphs,
-                        bw,
+                        width,
                         caches.text_list(),
                         body_width,
                         snap,

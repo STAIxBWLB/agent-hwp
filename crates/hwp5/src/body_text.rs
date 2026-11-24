@@ -40,7 +40,7 @@ pub fn parse_section(roots: &[RecordNode]) -> (Section, Vec<String>) {
     (section, warnings)
 }
 
-fn parse_paragraph(node: &RecordNode, warnings: &mut Vec<String>) -> Paragraph {
+pub(crate) fn parse_paragraph(node: &RecordNode, warnings: &mut Vec<String>) -> Paragraph {
     let mut para = Paragraph::default();
 
     // PARA_HEADER 페이로드 (22바이트 prefix + 버전별 tail)

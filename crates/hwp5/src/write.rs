@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use hwp_model::{
     BorderLine, Caption, CaptionDirection, CaptionSide, Cell, CharShape, Control, Document,
-    FaceName, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph, Picture,
-    PreservationCode, PreservationDisposition, PreservationResourceKind, RawEntry, Section,
-    SectionDef, Style, Table, WriteReport,
+    FaceName, GenericControl, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph,
+    Picture, PreservationCode, PreservationDisposition, PreservationResourceKind, RawEntry,
+    Section, SectionDef, Style, Table, WriteReport,
 };
 
 use crate::codec::{ByteWriter, compress, decompress};
@@ -154,6 +154,288 @@ pub fn rewrite_document_with_report(
     std::fs::copy(source, path)?;
     patch_source_container(path, &plan, &source_bin_paths, &materialization)?;
     Ok(materialization.report)
+}
+
+/// A native rectangle stores its text list under SHAPE_COMPONENT. Headers, footers and
+/// notes store it directly. Accept only the saved layouts with one unambiguous list.
+fn raw_list_slot(generic: &GenericControl) -> Option<(Option<usize>, usize, usize)> {
+    let (parent, records) = match &generic.ctrl_id {
+        b"gso " => {
+            let mut shapes = generic
+                .raw_children
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| record.tag == tag::SHAPE_COMPONENT);
+            let (parent, shape) = shapes.next()?;
+            if shapes.next().is_some() {
+                return None;
+            }
+            if !shape.data.starts_with(b"cer$")
+                || !shape
+                    .children
+                    .iter()
+                    .any(|r| r.tag == tag::SHAPE_COMPONENT_RECTANGLE)
+            {
+                return None;
+            }
+            (Some(parent), shape.children.as_slice())
+        }
+        b"head" | b"foot" | b"fn  " | b"en  " => (None, generic.raw_children.as_slice()),
+        _ => return None,
+    };
+    let [list] = generic.paragraph_lists.as_slice() else {
+        return None;
+    };
+    let header = records.iter().position(|r| r.tag == tag::LIST_HEADER)?;
+    let record = &records[header];
+    let minimum_header_len = match &generic.ctrl_id {
+        b"gso " => 20,
+        b"head" | b"foot" => 12,
+        _ => 16,
+    };
+    if record.data.len() < minimum_header_len {
+        return None;
+    }
+    // nparas is the leading little-endian INT32 in the hwp-swift text-box,
+    // header-footer and footnote-endnote Hancom fixtures (2, 1 and 1 respectively).
+    let count = i32::from_le_bytes(record.data.get(..4)?.try_into().ok()?);
+    let count = usize::try_from(count).ok()?;
+    let end = header.checked_add(1)?.checked_add(count)?;
+    if count == 0
+        || !record.children.is_empty()
+        || record.data != list.header_data
+        || records
+            .get(header + 1..end)?
+            .iter()
+            .any(|r| r.tag != tag::PARA_HEADER)
+        || records[..header]
+            .iter()
+            .chain(records.get(end..)?)
+            .any(|r| matches!(r.tag, tag::LIST_HEADER | tag::PARA_HEADER))
+    {
+        return None;
+    }
+    Some((parent, header, end))
+}
+
+fn raw_list_paragraphs_supported(paragraphs: &[Paragraph]) -> bool {
+    paragraphs.iter().all(|paragraph| {
+        paragraph.controls.iter().all(|control| match control {
+            Control::Table(table) => {
+                table
+                    .cells
+                    .iter()
+                    .all(|cell| raw_list_paragraphs_supported(&cell.paragraphs))
+                    && table
+                        .caption
+                        .as_ref()
+                        .is_none_or(|caption| raw_list_paragraphs_supported(&caption.paragraphs))
+            }
+            Control::Generic(generic) => {
+                matches!(&generic.ctrl_id, b"atno" | b"nwno")
+                    && generic.raw_children.is_empty()
+                    && generic.paragraph_lists.is_empty()
+            }
+            _ => false,
+        })
+    })
+}
+
+/// Checks the same list boundary and child controls used by the surgical emitter.
+pub fn can_rewrite_raw_paragraph_lists(original: &GenericControl, edited: &GenericControl) -> bool {
+    if original.caption != edited.caption || raw_list_slot(edited).is_none() {
+        return false;
+    }
+    raw_list_slot(original).is_some_and(|(_, header, end)| {
+        let original = &original.paragraph_lists[0].paragraphs;
+        let [edited] = edited.paragraph_lists.as_slice() else {
+            return false;
+        };
+        original.len() == end - header - 1
+            && !edited.paragraphs.is_empty()
+            && i32::try_from(edited.paragraphs.len()).is_ok()
+            && raw_list_paragraphs_supported(original)
+            && raw_list_paragraphs_supported(&edited.paragraphs)
+    })
+}
+
+/// Remove the duplicated list body from semantic verification. Keep all enclosing
+/// record payloads and the list header other than its derived paragraph count.
+pub fn project_raw_paragraph_list(generic: &mut GenericControl) -> bool {
+    let Some((parent, header, end)) = raw_list_slot(generic) else {
+        return false;
+    };
+    if !raw_list_paragraphs_supported(&generic.paragraph_lists[0].paragraphs) {
+        return false;
+    }
+    let records = match parent {
+        Some(index) => &mut generic.raw_children[index].children,
+        None => &mut generic.raw_children,
+    };
+    if matches!(&generic.ctrl_id, b"fn  " | b"en  ")
+        && parent.is_none()
+        && header == 0
+        && end == records.len()
+        && records[0].data == synthesized_note_list_header(end - 1)
+    {
+        records.clear();
+        generic.paragraph_lists[0].header_data.clear();
+    } else {
+        records.drain(header + 1..end);
+        records[header].data[..4].fill(0);
+        generic.paragraph_lists[0].header_data[..4].fill(0);
+    }
+    true
+}
+
+/// Stage the surgical list bodies after layout. The unlaid edit distinguishes user
+/// mutations from line caches recalculated incidentally during native layout.
+pub fn stage_raw_paragraph_lists(
+    laid_out: &mut Document,
+    edited: &Document,
+    report: &mut WriteReport,
+) -> Result<()> {
+    let add_tracking_tail = parse_version(&edited.meta.source_version).to_u32() >= 0x05_00_03_02;
+    for (section, intended) in laid_out.sections.iter_mut().zip(&edited.sections) {
+        stage_raw_lists(
+            &mut section.paragraphs,
+            &intended.paragraphs,
+            add_tracking_tail,
+            report,
+        )?;
+    }
+    Ok(())
+}
+
+fn stage_raw_lists(
+    laid_out: &mut [Paragraph],
+    edited: &[Paragraph],
+    add_tracking_tail: bool,
+    report: &mut WriteReport,
+) -> Result<()> {
+    for (paragraph, intended) in laid_out.iter_mut().zip(edited) {
+        for (control, intended) in paragraph.controls.iter_mut().zip(&intended.controls) {
+            match (control, intended) {
+                (Control::Generic(control), Control::Generic(intended)) => {
+                    if control.raw_children.is_empty() {
+                        for (list, intended) in control
+                            .paragraph_lists
+                            .iter_mut()
+                            .zip(&intended.paragraph_lists)
+                        {
+                            stage_raw_lists(
+                                &mut list.paragraphs,
+                                &intended.paragraphs,
+                                add_tracking_tail,
+                                report,
+                            )?;
+                        }
+                        if let (Some(caption), Some(intended)) =
+                            (&mut control.caption, &intended.caption)
+                        {
+                            stage_raw_lists(
+                                &mut caption.paragraphs,
+                                &intended.paragraphs,
+                                add_tracking_tail,
+                                report,
+                            )?;
+                        }
+                    } else if let Some(slot) = raw_list_slot(intended) {
+                        stage_raw_list(control, intended, slot, add_tracking_tail, report)?;
+                    }
+                }
+                (Control::Table(table), Control::Table(intended)) => {
+                    for (cell, intended) in table.cells.iter_mut().zip(&intended.cells) {
+                        stage_raw_lists(
+                            &mut cell.paragraphs,
+                            &intended.paragraphs,
+                            add_tracking_tail,
+                            report,
+                        )?;
+                    }
+                    if let (Some(caption), Some(intended)) = (&mut table.caption, &intended.caption)
+                    {
+                        stage_raw_lists(
+                            &mut caption.paragraphs,
+                            &intended.paragraphs,
+                            add_tracking_tail,
+                            report,
+                        )?;
+                    }
+                }
+                (Control::Picture(picture), Control::Picture(intended)) => {
+                    if let (Some(caption), Some(intended)) =
+                        (&mut picture.caption, &intended.caption)
+                    {
+                        stage_raw_lists(
+                            &mut caption.paragraphs,
+                            &intended.paragraphs,
+                            add_tracking_tail,
+                            report,
+                        )?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stage_raw_list(
+    control: &mut GenericControl,
+    intended: &GenericControl,
+    (parent, header, end): (Option<usize>, usize, usize),
+    add_tracking_tail: bool,
+    report: &mut WriteReport,
+) -> Result<()> {
+    let records = match parent {
+        Some(index) => &mut control.raw_children[index].children,
+        None => &mut control.raw_children,
+    };
+    let source: Vec<_> = records[header + 1..end]
+        .iter()
+        .map(opaque_to_node)
+        .collect();
+    let mut parse_warnings = Vec::new();
+    let original: Vec<_> = source
+        .iter()
+        .map(|record| crate::body_text::parse_paragraph(record, &mut parse_warnings))
+        .collect();
+    let intended = &intended.paragraph_lists[0].paragraphs;
+    if original == *intended {
+        return Ok(());
+    }
+    if !raw_list_paragraphs_supported(&original) || !raw_list_paragraphs_supported(intended) {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "native list has an unsupported child control".into(),
+        ));
+    }
+    let mut paragraphs = control.paragraph_lists[0].paragraphs.clone();
+    let count = i32::try_from(paragraphs.len())
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            crate::error::Hwp5Error::SourceRewrite("invalid native list count".into())
+        })?;
+    let matches = match_paragraphs(&original, intended);
+    set_last_para_flag(&mut paragraphs);
+    let replacement: Vec<_> = paragraphs
+        .iter()
+        .enumerate()
+        .map(|(index, paragraph)| {
+            let emitted = emit_paragraph(paragraph, true, true, add_tracking_tail, report);
+            let merged = if let Some(old) = matches[index] {
+                merge_paragraph_node(&source[old], &emitted, &original[old], paragraph)
+            } else {
+                emitted
+            };
+            crate::doc_info::to_opaque(&merged)
+        })
+        .collect();
+    records[header].data[..4].copy_from_slice(&count.to_le_bytes());
+    records.splice(header + 1..end, replacement);
+    Ok(())
 }
 
 fn source_output_alias(source: &Path, output: &Path) -> Result<bool> {
@@ -4408,6 +4690,57 @@ mod tests {
             assert_eq!((attr >> 25) & 7, 2);
             assert_eq!(u32::from_le_bytes(emitted[54..58].try_into().unwrap()), 2);
         }
+    }
+
+    #[test]
+    fn raw_note_splice_updates_count_and_last_flag_without_changing_the_list_prefix() {
+        let mut header_data = synthesized_note_list_header(1);
+        header_data[10] = 42;
+        let mut report = WriteReport::new();
+        let original = Paragraph {
+            chars: vec![HwpChar::Text('a'), HwpChar::CharCtrl(13)],
+            header: hwp_model::ParaHeaderInfo {
+                chars_flags: 0x80,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let source = emit_paragraph(&original, false, true, true, &mut report);
+        let original = crate::body_text::parse_paragraph(&source, &mut Vec::new());
+        let mut control = GenericControl {
+            ctrl_id: *b"fn  ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: header_data.clone(),
+                paragraphs: vec![original.clone()],
+            }],
+            raw_children: vec![
+                OpaqueRecord {
+                    tag: tag::LIST_HEADER,
+                    data: header_data.clone(),
+                    children: Vec::new(),
+                },
+                crate::doc_info::to_opaque(&source),
+            ],
+            extras: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        };
+        let before = control.clone();
+        control.paragraph_lists[0].paragraphs.push(original);
+        let intended = control.clone();
+        assert!(can_rewrite_raw_paragraph_lists(&before, &intended));
+        let slot = raw_list_slot(&intended).unwrap();
+        stage_raw_list(&mut control, &intended, slot, true, &mut report).unwrap();
+        assert_eq!(control.raw_children.len(), 3);
+        assert_eq!(&control.raw_children[0].data[..4], &2_i32.to_le_bytes());
+        assert_eq!(&control.raw_children[0].data[4..], &header_data[4..]);
+        assert_eq!(control.raw_children[1].data[3] & 0x80, 0);
+        assert_eq!(control.raw_children[2].data[3] & 0x80, 0x80);
     }
 
     fn paragraph_id_record(id: u32) -> RecordNode {
