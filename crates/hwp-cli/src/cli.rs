@@ -525,6 +525,42 @@ pub enum Cmd {
         json: bool,
     },
 
+    /// Mask personal information (resident registration, phone, email, card, account,
+    /// passport and driver's license numbers) in place, keeping every character count and
+    /// separator so layout does not move. The output keeps the input format; the report and
+    /// stderr never contain a matched value
+    Redact {
+        /// Input .hwp/.hwpx file
+        input: PathBuf,
+        /// Output path, same format as the input
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Only these categories (comma-separated or repeated): rrn, phone, email, card,
+        /// account, passport, driver
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Skip these categories (comma-separated or repeated)
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+        /// Mask character: one BMP character that is not a letter, digit, space or separator
+        #[arg(long, default_value = "*")]
+        mask_char: String,
+        /// Account numbers need a bank or account label in the same paragraph, table row or
+        /// column header; false masks every account-shaped number
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        strict_accounts: bool,
+        /// Write the content-free hwp-redact-report-v1 JSON to this path
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Detect, write and verify a staged output without publishing it; prints the report
+        /// to stdout unless --report is given
+        #[arg(long)]
+        dry_run: bool,
+        /// Also re-read the output and compare it with the masked document
+        #[arg(long)]
+        verify: bool,
+    },
+
     /// Lint official-document notation and structure rules; advisory by default
     /// (always exit 0) — --strict exits 1 only when an error-severity finding exists.
     /// This diverges from `compare`, which follows the diff(1) convention (1 means

@@ -30,6 +30,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `styles <file>` | List named styles with resolved attributes and `used_by` paragraph segment ids (`--format json` emits `hwp-styles-v1`) |
 | `fill <input> -o <output>` | Fidelity-preserving template filling (hwpx package preserved) |
 | `validate <file>` | Structural validation (mimetype, required entries, XML parsing) |
+| `redact <input> -o <output>` | Format-preserving PII masking (rrn, phone, email, card, account, passport, driver) with a content-free `hwp-redact-report-v1` report; publishes only after a zero-hit rescan of body and preview |
 | `lint <file>` | Ten official-document notation and structure rules. Advisory by default; `--strict` exits 1 on an error-severity finding and `--json` emits `hwp-lint-report-v1` |
 | `certify <input> --policy <file> --report <dir>` | Certify and publish a report atomically. See [Certification v1](../design/16-certification-v1.md) |
 | `corpus --manifest <file> --report <dir>` | Frozen structured corpus gate. See [the corpus contract](../design/17-structured-corpus-v1.md) |

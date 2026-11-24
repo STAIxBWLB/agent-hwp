@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/redact-report-v1.schema.json",
+  "title": "hwp-redact-report-v1",
+  "description": "Content-free report of one `ahwp redact` run. It never carries a matched value or any part of one: hits are a category, a segment address and a UTF-16 range. paragraph_id is the segment id of the paragraph AFTER masking.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract",
+    "input_format",
+    "output_format",
+    "dry_run",
+    "detectors",
+    "strict_accounts",
+    "counts",
+    "total",
+    "hits",
+    "raw_record_hits",
+    "verification",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-redact-report-v1" },
+    "input_format": { "enum": ["hwp", "hwpx"] },
+    "output_format": { "enum": ["hwp", "hwpx"] },
+    "dry_run": { "type": "boolean" },
+    "detectors": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/category" }
+    },
+    "strict_accounts": { "type": "boolean" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": { "$ref": "#/$defs/category" },
+      "patternProperties": {
+        "^(rrn|phone|email|card|account|passport|driver)$": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "total": { "type": "integer", "minimum": 0 },
+    "hits": { "type": "array", "items": { "$ref": "#/$defs/hit" } },
+    "raw_record_hits": {
+      "description": "Masks applied inside HWP5 raw-backed control records (text boxes, headers, footers, notes) that have no modeled address. Included in counts and total.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body_rescan", "preview_rescan", "originals_absent"],
+      "properties": {
+        "body_rescan": {
+          "description": "Remaining hits found by re-reading the staged output; null on --dry-run.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "preview_rescan": {
+          "description": "Remaining hits in PrvText (HWP5 /PrvText or HWPX Preview/PrvText.txt) of the staged output; null on --dry-run.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "originals_absent": {
+          "description": "True when no masked original value occurs in the re-read output text or preview; null on --dry-run.",
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "enum": ["images_not_inspected", "metadata_not_scrubbed"] }
+    }
+  },
+  "$defs": {
+    "category": { "enum": ["rrn", "phone", "email", "card", "account", "passport", "driver"] },
+    "hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "kind", "path", "paragraph_id", "start", "end"],
+      "properties": {
+        "category": { "$ref": "#/$defs/category" },
+        "kind": { "enum": ["body", "cell", "caption", "header_footer", "note", "object"] },
+        "path": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)+$" },
+        "paragraph_id": { "type": "string", "pattern": "^[0-9a-f]{16}(\\.[0-9]+)+$" },
+        "table_index": { "type": "integer", "minimum": 0 },
+        "row": { "type": "integer", "minimum": 0 },
+        "col": { "type": "integer", "minimum": 0 },
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

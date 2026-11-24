@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `ahwp redact` and the MCP tool `hwp_redact` (#617, GM-10): format-preserving masking of seven
+  PII categories (`rrn`, `phone`, `email`, `card`, `account`, `passport`, `driver`, selectable with
+  `--only`/`--exclude`) in `.hwp` and `.hwpx`. Character counts, separators, character-shape runs
+  and control anchors stay in place. HWP5 raw-backed headers, footers, notes and text boxes are
+  masked in their source records too, and both preview streams are regenerated. The staged output
+  is re-read and rescanned before publication. The `hwp-redact-report-v1` report
+  (`schemas/redact-report-v1.schema.json`) and stderr never carry a matched value.
+
 ## [2.1.1]
 
 **Compatibility**

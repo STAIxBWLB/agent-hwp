@@ -281,6 +281,8 @@ fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
             .and_then(|_| tool_validate(args, ctx).map_err(Into::into)),
         "hwp_lint" => reject_password_outside_scope(args)
             .and_then(|_| tool_lint(args, ctx).map_err(Into::into)),
+        "hwp_redact" => reject_password_outside_scope(args)
+            .and_then(|_| tool_redact(args, ctx).map_err(Into::into)),
         "hwp_certify" => reject_password_outside_scope(args)
             .and_then(|_| tool_certify(args, ctx).map_err(Into::into)),
         "hwp_put_file" => reject_password_outside_scope(args)
@@ -842,6 +844,71 @@ fn tool_lint(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         crate::commands::lint::lint_path_json(&path, hwp_convert::lint::LintProfile::Gongmun);
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&report).unwrap_or_default(),
+    )])
+}
+
+/// `hwp_redact`: the `ahwp redact` transaction. The response is the content-free
+/// hwp-redact-report-v1 value; no matched value reaches the protocol channel.
+fn tool_redact(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    if let Some(unknown) = object.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "input"
+                | "output"
+                | "only"
+                | "exclude"
+                | "mask_char"
+                | "strict_accounts"
+                | "report"
+                | "dry_run"
+                | "verify"
+        )
+    }) {
+        return Err(format!("알 수 없는 hwp_redact 인자: {unknown}"));
+    }
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
+    let report = arg_str_opt(args, "report")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
+    let names = |key: &str| -> Result<Vec<String>, String> {
+        arg_array(args, key)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("{key}의 각 항목은 문자열이어야 합니다"))
+            })
+            .collect()
+    };
+    let options = hwp_convert::redact::RedactOptions {
+        detectors: hwp_convert::redact::DetectorSet::from_lists(
+            &names("only")?,
+            &names("exclude")?,
+        )?,
+        mask_char: hwp_convert::redact::validate_mask_char(
+            arg_str_opt(args, "mask_char")?.unwrap_or("*"),
+        )?,
+        strict_accounts: arg_bool(args, "strict_accounts", true)?,
+    };
+    let dry_run = arg_bool(args, "dry_run", false)?;
+    let value = crate::commands::redact::execute(&crate::commands::redact::RedactRequest {
+        input: &input,
+        output: &output,
+        options,
+        // The report file is written only when asked; the response always carries the report.
+        report: report.as_deref(),
+        dry_run,
+        verify: arg_bool(args, "verify", false)?,
+        print_dry_run_report: false,
+    })
+    .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&value).unwrap_or_default(),
     )])
 }
 
@@ -3085,6 +3152,26 @@ fn tool_defs() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "hwp_redact",
+            "description": "개인정보(rrn 주민·외국인등록번호, phone, email, card, account 계좌, passport, driver 운전면허)를 글자 수와 구분자를 그대로 둔 채 마스킹하고 입력과 같은 형식(.hwp/.hwpx)으로 원자적으로 게시한다. 본문·표 셀·캡션·머리말/꼬리말·각주·글상자와 PrvText 미리보기까지 처리하고, 출력을 다시 읽어 남은 검출이 0건일 때만 게시한다. 응답은 검출 값이 전혀 없는 hwp-redact-report-v1(범주별 건수, 문단 주소, UTF-16 범위)이다. 그림 픽셀과 문서 정보(작성자 등)는 검사하지 않는다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {"type": "string"},
+                    "output": {"type": "string", "description": "출력 경로 (입력과 같은 형식)"},
+                    "only": {"type": "array", "items": {"enum": ["rrn", "phone", "email", "card", "account", "passport", "driver"]}, "description": "이 범주만 검출(생략하면 전부)"},
+                    "exclude": {"type": "array", "items": {"enum": ["rrn", "phone", "email", "card", "account", "passport", "driver"]}, "description": "건너뛸 범주"},
+                    "mask_char": {"type": "string", "description": "마스킹 문자 하나(기본 *); 영문자·숫자·공백·구분자 불가"},
+                    "strict_accounts": {"type": "boolean", "description": "계좌번호는 같은 문단·표 행·열 머리글에 은행/계좌 표지가 있을 때만 검출; 기본 true"},
+                    "report": {"type": "string", "description": "hwp-redact-report-v1 JSON을 기록할 경로(선택)"},
+                    "dry_run": {"type": "boolean", "description": "검출·기록·검증만 하고 게시하지 않음; 기본 false"},
+                    "verify": {"type": "boolean", "description": "출력을 다시 읽어 마스킹된 문서와 비교; 기본 false"}
+                },
+                "required": ["input", "output"]
+            }
+        }),
+        json!({
             "name": "hwp_merge",
             "description": "여러 HWP5/HWPX 문서를 인자 순서대로 하나로 합친다 (입력 하나당 Section 하나). 출력 포맷은 output 확장자(.hwp/.hwpx)로 정한다. 쪽/각주/개요 번호는 각 입력의 시작·계속 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있다.",
             "inputSchema": {
@@ -3392,6 +3479,7 @@ mod tests {
             "hwp_merge",
             "hwp_split",
             "hwp_compare",
+            "hwp_redact",
         ] {
             assert!(names.contains(&expected), "{expected} 누락");
         }
