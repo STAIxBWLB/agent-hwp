@@ -1239,6 +1239,7 @@ impl Builder {
             // fnref markers inside the fragment reattach to the pre-collected GFM bodies (#47).
             note_bodies: Some(&self.note_bodies),
             table_placement: self.table_placement,
+            ..Default::default()
         };
         let parsed = crate::from_html::parse_fragment(&html, &opts);
         match parsed {

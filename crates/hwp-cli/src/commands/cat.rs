@@ -8,6 +8,7 @@ use std::fmt;
 use std::io::{BufRead as _, Read as _};
 use std::path::Path;
 
+use anyhow::Context as _;
 use hwp_model::Document;
 use zeroize::Zeroizing;
 
@@ -183,6 +184,10 @@ pub fn load_document_with_options(
     path: &Path,
     options: &LoadOptions<'_>,
 ) -> Result<Document, LoadDocumentError> {
+    // Content wins over the extension: a legacy file renamed to .json is still read as legacy.
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        return load_legacy(path, legacy).map_err(Into::into);
+    }
     if path
         .extension()
         .and_then(|e| e.to_str())
@@ -240,6 +245,45 @@ pub fn load_document_with_options(
         }
     }
 }
+
+/// Lowers a read-only legacy input (GJ-2 HWPML, GJ-3 HWP 3.x) into the IR.
+fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Result<Document> {
+    use crate::format::LegacyFormat;
+    match legacy {
+        LegacyFormat::Hml => {
+            // Bound the input before allocating it: read at most one byte past the limit.
+            let limit = hwpx::HML_LIMITS.max_input_bytes;
+            let file = std::fs::File::open(path)
+                .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
+            let mut bytes = Vec::new();
+            file.take(limit + 1)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
+            if bytes.len() as u64 > limit {
+                anyhow::bail!(
+                    "{}: HWPML 입력이 상한 {limit}바이트를 넘습니다. {HML_RECOVERY}",
+                    path.display()
+                );
+            }
+            let result = hwpx::read_hml(&bytes).map_err(|e| {
+                anyhow::anyhow!("{}: HWPML 읽기 실패: {e}. {HML_RECOVERY}", path.display())
+            })?;
+            for w in &result.warnings {
+                eprintln!("경고: {w}");
+            }
+            Ok(result.document)
+        }
+        LegacyFormat::Hwp3 => anyhow::bail!(
+            "{}: HWP 3.x 읽기는 아직 지원하지 않습니다 (GJ-3). 한글(한컴오피스)에서 열어 \
+             HWP 5.0(.hwp) 또는 HWPX로 다시 저장한 뒤 사용하세요",
+            path.display()
+        ),
+    }
+}
+
+/// Recovery for an HWPML input this reader refuses (over a bound, malformed, or not lowerable).
+const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP 5.0(.hwp)로 다시 저장하거나, \
+     문서를 나눠 다시 시도하세요";
 
 /// 본문 텍스트 추출.
 ///
@@ -360,6 +404,15 @@ pub fn run(
 }
 
 fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentError> {
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        // Legacy formats carry no PrvText stream; say so and point at the full read.
+        return Err(anyhow::anyhow!(
+            "{}: {}에는 미리보기(PrvText)가 없습니다. --preview 없이 `ahwp cat`으로 본문을 읽으세요",
+            path.display(),
+            legacy.label()
+        )
+        .into());
+    }
     let text = match detect(path)? {
         FileFormat::Hwp5 => {
             let mut container = hwp5::Hwp5Container::open(path).map_err(map_hwp5_read_error)?;

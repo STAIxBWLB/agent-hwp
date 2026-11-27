@@ -41,6 +41,20 @@ fn read_metadata(path: &Path, format: FileFormat) -> Metadata {
 
 /// 컨테이너 계층 진단을 JSON으로 만든다 (CLI `--json`과 MCP가 공유).
 pub fn info_json(path: &Path) -> anyhow::Result<Value> {
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        // Read-only legacy input (GJ-2/GJ-3): no container layer, so report what the IR
+        // lowering yields.
+        let doc = crate::commands::cat::load_document(path)?;
+        return Ok(json!({
+            "file": path.display().to_string(),
+            "format": doc.meta.source_format,
+            "format_label": legacy.label(),
+            "read_only": true,
+            "version": doc.meta.source_version,
+            "sections": doc.sections.len(),
+            "metadata": metadata_json(&doc.metadata),
+        }));
+    }
     match detect(path)? {
         FileFormat::Hwp5 => {
             let container = hwp5::Hwp5Container::open(path)?;
@@ -112,9 +126,19 @@ pub fn run(path: &Path, as_json: bool, body_stats: bool) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
-    match detect(path)? {
-        FileFormat::Hwp5 => info_hwp5_text(path)?,
-        FileFormat::Hwpx => info_hwpx_text(path)?,
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        let doc = crate::commands::cat::load_document(path)?;
+        println!("포맷:   {} (읽기 전용)", legacy.label());
+        if !doc.meta.source_version.is_empty() {
+            println!("버전:   {}", doc.meta.source_version);
+        }
+        println!("구역:   {}개", doc.sections.len());
+        print_metadata(&doc.metadata);
+    } else {
+        match detect(path)? {
+            FileFormat::Hwp5 => info_hwp5_text(path)?,
+            FileFormat::Hwpx => info_hwpx_text(path)?,
+        }
     }
     if body_stats {
         let (total, inline, floating) = body_table_stats(path)?;

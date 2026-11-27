@@ -49,6 +49,27 @@ pub struct HtmlImportOptions<'a> {
     /// Table placement switch (#296), threaded through from MarkdownImportOptions on the
     /// md-mixed path. None keeps the historical default (placement=None).
     pub(crate) table_placement: Option<crate::from_markdown::TablePlacement>,
+    /// Keep every `<p>` as a paragraph, even when it is empty or holds only whitespace (tab,
+    /// NBSP), instead of folding such paragraphs away. Off by default (authored HTML puts
+    /// indentation whitespace between blocks); the HWPML lowering sets it because its markup
+    /// has no inter-block whitespace and a blank source paragraph is content.
+    pub keep_blank_paragraphs: bool,
+    /// Seed for embedded image names, so documents assembled from several fragments (one per
+    /// HWPML section) do not reuse a bin stream name.
+    pub image_name_seed: usize,
+}
+
+impl HtmlImportOptions<'_> {
+    /// Options for lowering a structured source (HWPML): blank paragraphs are kept and image
+    /// names start after `image_name_seed`. Callers outside this crate cannot name the private
+    /// fields, so this is their constructor.
+    pub fn lowering(image_name_seed: usize) -> Self {
+        Self {
+            keep_blank_paragraphs: true,
+            image_name_seed,
+            ..Self::default()
+        }
+    }
 }
 
 /// Fragment parse failure. `Sandbox` (image reference outside the MCP `--root` sandbox, #56)
@@ -165,7 +186,8 @@ pub(crate) fn parse_fragment(
         numbering_levels: Vec::new(),
         bullet_chars: Vec::new(),
         bin_streams: Vec::new(),
-        bin_seed: opts.bin_seed,
+        bin_seed: opts.bin_seed + opts.image_name_seed,
+        keep_blank: opts.keep_blank_paragraphs,
         base_dir: opts.base_dir.map(Path::to_path_buf),
         roots: opts.roots,
         sandbox_error: None,
@@ -263,6 +285,8 @@ struct Parser<'a> {
     bullet_chars: Vec<char>,
     bin_streams: Vec<BinStream>,
     bin_seed: usize,
+    /// [`HtmlImportOptions::keep_blank_paragraphs`].
+    keep_blank: bool,
     base_dir: Option<PathBuf>,
     /// Sandbox roots for image containment (MCP `--root`, #56). Empty = no check.
     roots: &'a [PathBuf],
@@ -310,7 +334,7 @@ impl Parser<'_> {
                         "p" | "figcaption" => {
                             self.para_class = class_ps(&e).and_then(|n| self.ps_shape(n));
                             self.inline(r, &name)?;
-                            self.flush_paragraph(false);
+                            self.flush_paragraph(self.keep_blank);
                         }
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                             let level = name[1..].parse::<u16>().map_err(|_| "제목 수준")?;
@@ -675,13 +699,19 @@ impl Parser<'_> {
         if rows.is_empty() {
             return Err("행이 없는 표입니다".into());
         }
+        if rows.len() > u16::MAX as usize {
+            return Err(format!("표 행 수가 {}을 넘습니다", u16::MAX));
+        }
         let n_rows = rows.len();
         // Pass 1: place each cell in the first free slot and determine the column count.
         let mut covered: Vec<Vec<bool>> = vec![Vec::new(); n_rows];
         let mut placed: Vec<(usize, usize, CellSpec)> = Vec::new(); // (row, col, spec)
+        // Per-row cursor: every slot left of it is covered, so placing a row of n cells is
+        // O(n), not O(n^2).
+        let mut next_free = vec![0usize; n_rows];
         for (ri, row) in rows.into_iter().enumerate() {
             for spec in row {
-                let mut ci = 0usize;
+                let mut ci = next_free[ri];
                 loop {
                     while covered[ri].len() <= ci {
                         covered[ri].push(false);
@@ -691,6 +721,10 @@ impl Parser<'_> {
                     }
                     ci += 1;
                 }
+                if ci + spec.col_span as usize > u16::MAX as usize {
+                    return Err(format!("표 열 수가 {}을 넘습니다 (행 {ri})", u16::MAX));
+                }
+                next_free[ri] = ci + spec.col_span as usize;
                 // Mark the span area (includes overlap check).
                 for dr in 0..spec.row_span as usize {
                     if ri + dr >= n_rows {
@@ -1051,9 +1085,10 @@ impl Parser<'_> {
         ctx.wchar_pos += 1;
     }
 
-    /// HTML text node — drops whitespace-only nodes between blocks and folds newlines into spaces.
+    /// HTML text node — drops whitespace-only nodes between blocks (unless blank paragraphs
+    /// are kept) and folds newlines into spaces.
     fn push_html_text(&mut self, s: &str) {
-        if s.trim().is_empty() {
+        if s.trim().is_empty() && !self.keep_blank {
             return;
         }
         self.push_text(&s.replace('\n', " "));

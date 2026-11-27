@@ -42,6 +42,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   stderr never carry a matched value, and `--report` may not alias the input or the output.
   Hancom has not yet opened a redacted file: GM-10 stays open until it does.
 
+- Read-only HWPML (`.hml`) input (GJ-2). `cat`, `convert`, `render`, `info` and the other read
+  commands detect it by content and lower body text, tables with merged cells, embedded pictures
+  and summary metadata into the IR. Character and paragraph shapes are not carried over, and other
+  objects are skipped with a warning naming the element. Each `SECTION` becomes its own section,
+  and blank, tab-only and NBSP-only paragraphs are kept. Field markers keep their text and are
+  reported. Input size, table nesting, lowered
+  size, picture count, section count and projected table grid slots are bounded before allocation, and
+  compressed embedded binaries are skipped with a warning. With a `BINITEM` table, a missing
+  or refused binary is never replaced by another `BINDATA`. Editing in place is refused.
+  HWPML on stdin, an `.hml` renamed to `.json` and `cat --preview` all route through content
+  detection. The shared HTML table builder places cells in linear time and refuses grids past
+  the IR's 65,535 rows or columns.
+  The complete HWP 3.00 signature is detected ahead of its reader. Other 3.x revisions, HWP
+  1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
+  ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).
+
 - Typeset equation matrices, centered operator limits, and stretchy delimiters in PNG, SVG,
   and PDF. Preserve equation font size, color, baseline, version, and font name in supported
   HWP5 and HWPX conversions. HWPX-to-HWP5 conversion writes native inline equation records for
