@@ -173,7 +173,7 @@ fn keeps_legacy_hyphen_and_spaces_as_controls() {
     text_list(&mut bytes, &[24, 0, 24, 30, 30, 31, 31]);
     let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
     assert_eq!(
-        read.document.sections[0].paragraphs[1].chars,
+        read.document.sections[0].paragraphs[0].chars[1..],
         [
             HwpChar::CharCtrl(ctrl_char::HYPHEN),
             HwpChar::CharCtrl(ctrl_char::NB_SPACE),
@@ -197,8 +197,8 @@ fn empty_paragraph_keeps_its_representative_character_shape() {
 
     let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
     let paragraphs = &read.document.sections[0].paragraphs;
-    assert!(paragraphs[2].chars.is_empty());
-    assert_eq!(paragraphs[2].char_shape_runs, [(0, CharShapeId(1))]);
+    assert!(paragraphs[1].chars.is_empty());
+    assert_eq!(paragraphs[1].char_shape_runs, [(0, CharShapeId(1))]);
     assert_eq!(read.document.header.char_shapes[1].base_size, 2000);
 
     let output = std::env::temp_dir().join(format!("ahwp-hwp3-empty-{}.hwpx", std::process::id()));
@@ -208,4 +208,48 @@ fn empty_paragraph_keeps_its_representative_character_shape() {
     let empty = reread.document.sections[0].paragraphs.last().unwrap();
     assert!(empty.chars.is_empty());
     assert_eq!(empty.char_shape_runs, [(0, CharShapeId(1))]);
+}
+
+#[test]
+fn section_definition_shares_the_first_content_paragraph() {
+    use hwp_model::HwpChar;
+
+    let read = hwp5::hwp3::read_bytes(&rich_document()).unwrap();
+    let paragraphs = &read.document.sections[0].paragraphs;
+    assert_eq!(paragraphs.len(), 1);
+    let paragraph = &paragraphs[0];
+    assert!(matches!(paragraph.controls[0], Control::SectionDef(_)));
+    let indices: Vec<_> = paragraph
+        .chars
+        .iter()
+        .filter_map(|ch| match ch {
+            HwpChar::ExtCtrl { ctrl_index, .. } => *ctrl_index,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indices, [0, 1, 2]);
+    check_objects(&read.document);
+}
+
+#[test]
+fn synthesized_empty_cell_has_a_character_shape_and_inline_placement() {
+    use hwp_model::CharShapeId;
+
+    let bytes = fixtures::rich_document_with_cell_text(&[]);
+    let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+    let table = read.document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .unwrap();
+    let empty = &table.cells[0].paragraphs[0];
+    assert!(empty.chars.is_empty());
+    assert_eq!(empty.char_shape_runs, [(0, CharShapeId(0))]);
+    let placement = table.placement.as_ref().unwrap();
+    assert!(placement.treat_as_char);
+    assert_eq!((placement.vert_rel_to, placement.horz_rel_to), (2, 3));
 }

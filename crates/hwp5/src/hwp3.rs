@@ -112,21 +112,35 @@ pub fn read_bytes(bytes: &[u8]) -> Result<ReadResult> {
         page.width = HwpUnit(59_528);
         page.height = HwpUnit(84_189);
     }
-    let mut anchor = Paragraph::default();
-    add_control(
-        &mut anchor,
-        Control::SectionDef(SectionDef {
-            data: Vec::new(),
-            page: Some(page),
-            extras: Vec::new(),
-            secpr_raw_children: Vec::new(),
-            footnote_shape_raw: None,
-            endnote_shape_raw: None,
-            page_border_fills_raw: Vec::new(),
-        }),
-        ctrl_char::SECTION_COLUMN_DEF,
-    );
-    paragraphs.insert(0, anchor);
+    if paragraphs.is_empty() {
+        paragraphs.push(empty_paragraph());
+    }
+    let first = &mut paragraphs[0];
+    let section_def = Control::SectionDef(SectionDef {
+        data: Vec::new(),
+        page: Some(page),
+        extras: Vec::new(),
+        secpr_raw_children: Vec::new(),
+        footnote_shape_raw: None,
+        endnote_shape_raw: None,
+        page_border_fills_raw: Vec::new(),
+    });
+    let marker = control_marker(&section_def, ctrl_char::SECTION_COLUMN_DEF, 0);
+    for ch in &mut first.chars {
+        if let HwpChar::ExtCtrl {
+            ctrl_index: Some(index),
+            ..
+        } = ch
+        {
+            *index += 1;
+        }
+    }
+    // The marker shares the first run's style, so only later runs move.
+    for (position, _) in first.char_shape_runs.iter_mut().skip(1) {
+        *position += marker.wchar_width();
+    }
+    first.chars.insert(0, marker);
+    first.controls.insert(0, section_def);
     document.sections.push(Section {
         paragraphs,
         extras: Vec::new(),
@@ -248,16 +262,31 @@ fn kchar(bytes: &[u8]) -> String {
     text
 }
 
-fn add_control(paragraph: &mut Paragraph, control: Control, code: u16) {
+fn empty_paragraph() -> Paragraph {
+    Paragraph {
+        char_shape_runs: vec![(0, CharShapeId(0))],
+        ..Default::default()
+    }
+}
+
+fn control_marker(control: &Control, code: u16, index: u32) -> HwpChar {
     let id = control.ctrl_id();
     let mut payload = vec![0; 12];
     payload[..4].copy_from_slice(&[id[3], id[2], id[1], id[0]]);
-    paragraph.chars.push(HwpChar::ExtCtrl {
+    HwpChar::ExtCtrl {
         code,
         ctrl_id: id,
         payload,
-        ctrl_index: Some(paragraph.controls.len() as u32),
-    });
+        ctrl_index: Some(index),
+    }
+}
+
+fn add_control(paragraph: &mut Paragraph, control: Control, code: u16) {
+    paragraph.chars.push(control_marker(
+        &control,
+        code,
+        paragraph.controls.len() as u32,
+    ));
     paragraph.controls.push(control);
 }
 
@@ -580,7 +609,7 @@ impl<'a> Parser<'a> {
             let mut paragraphs = self.paragraphs(depth)?;
             if paragraphs.is_empty() {
                 self.count_paragraph()?;
-                paragraphs.push(Paragraph::default());
+                paragraphs.push(empty_paragraph());
             }
             content.push(paragraphs);
         }
@@ -608,6 +637,8 @@ impl<'a> Parser<'a> {
             placement: Some(GsoPlacement {
                 treat_as_char: true,
                 flow_with_text: true,
+                vert_rel_to: 2,
+                horz_rel_to: 3,
                 width: unit(word(info, 42)).0,
                 height: unit(word(info, 44)).0,
                 ..Default::default()

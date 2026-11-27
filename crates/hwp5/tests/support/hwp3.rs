@@ -62,6 +62,10 @@ pub const PNG: &[u8] = &[
 ];
 
 pub fn rich_document() -> Vec<u8> {
+    rich_document_with_cell_text(&[u16::from(b'A')])
+}
+
+pub fn rich_document_with_cell_text(first_cell: &[u16]) -> Vec<u8> {
     let mut bytes = prefix(false);
     shapes(&mut bytes);
     paragraph_header(&mut bytes, 12);
@@ -80,7 +84,12 @@ pub fn rich_document() -> Vec<u8> {
         word_at(&mut cell, 10, 600);
         bytes.extend(cell);
     }
-    for ch in ['A', 'B', 'C'] {
+    if first_cell.is_empty() {
+        paragraph_header(&mut bytes, 0);
+    } else {
+        text_list(&mut bytes, first_cell);
+    }
+    for ch in ['B', 'C'] {
         text_list(&mut bytes, &[ch as u16]);
     }
     paragraph_header(&mut bytes, 0); // No table caption.
