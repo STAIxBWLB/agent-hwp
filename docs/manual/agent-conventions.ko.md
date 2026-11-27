@@ -421,7 +421,7 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 | `preservation_loss` | `events`(`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | 없음. 실패한 `ops` 항목이 놓친 요청을 알려 준다 |
 | `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm`, `signature` 중 하나 |
-| `raw_backed_edit` | `controls`: 편집이 텍스트를 바꾼 컨트롤 종류별 `{kind, count}` (`footnote`, `endnote`, `header`, `footer`, `shape_or_text_box`, `other`) |
+| `raw_backed_edit` | `controls`: 편집한 목록을 HWP5로 쓸 수 없는 컨트롤 종류별 `{kind, count}` (`footnote`, `endnote`, `header`, `footer`, `shape_or_text_box`, `other`) |
 | `verify_mismatch` | `counts`: 다른 개수 불변식 목록, 각 항목은 `{name, expected, actual}`. 빈 목록이면 정규화 해시만 다르다 |
 | `unclassified` | 없음. 위에 없는 모든 거부 |
 
@@ -429,16 +429,15 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 
 `verify_mismatch`(1.3)는 `--verify`가 다시 읽은 출력이 편집 결과와 다를 때 보고하는 코드다. 아무것도 게시하지 않는다. `counts`는 개수 불변식 이름(`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`)만 담고 문서 내용은 담지 않는다. 1.3 이전에는 이 거부가 `unclassified`였다.
 
-### HWP5 작성기가 다시 쓰지 않는 컨트롤 안의 편집
+### 저장된 HWP5 컨트롤 안의 편집
 
-HWP5 작성기는 저장된 HWP5 파일에서 읽은 글상자·도형, 각주, 미주, 머리말, 꼬리말을 편집이 바꾼 문단이
-아니라 저장된 레코드에서 그대로 쓴다. 1.5 이전에는 그 안을 대상으로 한 `--replace`, `--set-cell`,
-타입 연산이 `--verify` 여부와 관계없이 종료 코드 0으로 끝나고 출력에는 예전 텍스트가 남았다. 이제는
-아무것도 쓰기 전에 `raw_backed_edit`로 거부하며, `values.controls`가 종류와 개수를 담고 아무것도
-게시하지 않는다. 출력을 `.hwpx`로 하면 편집한 문단에서 쓰므로 편집이 반영된다. 아니면 한글에서 그
-컨트롤을 직접 편집한다. 이 검사는 HWP5 입력을 `.hwp`로 쓸 때만 적용되고, 모든 연산에 적용되며, 같은
-문서의 다른 곳을 편집하는 것은 거부하지 않는다. 계획이 컨트롤을 어디로 옮겼든 바뀐 컨트롤을 찾는다. 컨트롤은 위치가 아니라 저장된 레코드로 짝을 짓기 때문에, 같은 계획에서 문단을 삽입·삭제·이동해도 각주 편집이 가려지지 않고 각주를 건드리지 않은 편집이 거부되지도 않는다. 편집한 텍스트를 저장된 레코드에 되써 넣는 것은
-저장 파일 근거가 없어 하지 않는다.
+입력과 출력이 모두 `.hwp`이면 저장된 글상자, 머리말, 꼬리말, 각주, 미주 안의 텍스트나 표 셀을
+편집할 수 있다. 바깥 컨트롤 레코드는 원본 그대로 보존하고, 편집한 문단 목록을 다시 쓴다.
+`--verify`로 출력 파일을 다시 읽어 편집 내용을 확인할 수 있다.
+
+지원하지 않는 목록 구조나 해석할 수 없는 중첩 컨트롤이 있으면 `raw_backed_edit`로 거부하고
+출력 파일을 게시하지 않는다. 보고서의 `values.controls`에는 해당 컨트롤의 종류와 개수가 담긴다.
+편집이 거부되면 `.hwpx`로 출력하거나 한글에서 컨트롤을 직접 편집한다.
 
 ### 교차 형식 편집의 손실
 

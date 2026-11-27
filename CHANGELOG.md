@@ -13,9 +13,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Added**
 
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
-  render those charts and preserve source chart
-  parts and wrappers during HWPX edits. Report `chart_control_unrepresentable` on HWP5 conversion
+  render those charts and preserve source chart parts and wrappers during HWPX edits. Report `chart_control_unrepresentable` on HWP5 conversion
   ([#618](https://github.com/STAIxBWLB/agent-hwp/issues/618)).
+
+- Native HWP5 edits can update saved text boxes, headers, footers, footnotes and endnotes,
+  including their table cells. The writer preserves enclosing records and refuses unsupported
+  nested controls before publishing
+  ([#624](https://github.com/STAIxBWLB/agent-hwp/issues/624)).
+
+- `fill` writes table cells in supported saved HWP5 lists and reports `raw_backed_edit`
+  with recovery steps when a changed list cannot be written.
 
 ## [2.1.1]
 
