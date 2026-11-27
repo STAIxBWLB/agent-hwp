@@ -42,7 +42,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   objects are skipped with a warning naming the element. Each `SECTION` becomes its own section,
   and blank, tab-only and NBSP-only paragraphs are kept. Field markers keep their text and are
   reported. Input size, table nesting, lowered
-  size, picture count and projected table grid slots are bounded before allocation, and
+  size, picture count, section count and projected table grid slots are bounded before allocation, and
   compressed embedded binaries are skipped with a warning. With a `BINITEM` table, a missing
   or refused binary is never replaced by another `BINDATA`. Editing in place is refused.
   HWPML on stdin, an `.hml` renamed to `.json` and `cat --preview` all route through content

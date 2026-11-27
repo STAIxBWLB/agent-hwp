@@ -106,6 +106,9 @@ pub struct HmlLimits {
     /// every uncovered one, so the bound is checked while cells are placed, before the grid
     /// exists.
     pub max_table_slots: usize,
+    /// Maximum number of `SECTION`s. Each becomes one IR section and one standalone lowering
+    /// fragment; HWP5 stores the section count as `u16`, so this never exceeds `u16::MAX`.
+    pub max_sections: usize,
 }
 
 /// Default limits: the input bound matches the HWPX XML part bound
@@ -117,6 +120,7 @@ pub const HML_LIMITS: HmlLimits = HmlLimits {
     max_lowered_bytes: 256 * 1024 * 1024,
     max_pictures: 4_096,
     max_table_slots: 262_144,
+    max_sections: 1_024,
 };
 
 fn limit_err(message: String) -> HwpxError {
@@ -577,7 +581,7 @@ impl Lower {
                         // One IR section per SECTION; nested SECTIONs cannot occur in a
                         // well-formed body, so only BODY-level ones split.
                         "SECTION" if end == "BODY" => {
-                            self.section_starts.push(self.html.len());
+                            self.open_section()?;
                         }
                         n if TRANSPARENT.contains(&n) => {}
                         _ => {
@@ -593,7 +597,7 @@ impl Lower {
                         emitted = true;
                     } else if local == "SECTION" && end == "BODY" {
                         // An empty section still becomes its own (blank) IR section.
-                        self.section_starts.push(self.html.len());
+                        self.open_section()?;
                         self.push_html("<p></p>")?;
                     } else if SKIPPED.contains(&local) {
                         self.dropped.insert(local.to_string());
@@ -601,6 +605,9 @@ impl Lower {
                 }
                 Ok(Event::End(e)) if e.local_name().into_inner() == end => {
                     return Ok(emitted);
+                }
+                Ok(Event::End(e)) if end == "BODY" && e.local_name().into_inner() == "SECTION" => {
+                    self.close_section()?;
                 }
                 Ok(Event::Eof) => return Err(xml_err(&format!("닫히지 않은 {end}"))),
                 Err(e) => return Err(xml_err(&e.to_string())),
@@ -873,6 +880,29 @@ impl Lower {
 }
 
 impl Lower {
+    /// Starts a new IR section, checking the section count before `section_starts` grows.
+    fn open_section(&mut self) -> Result<()> {
+        let cap = self.limits.max_sections.min(u16::MAX as usize);
+        if self.section_starts.len() >= cap {
+            return Err(limit_err(format!(
+                "구역(SECTION) 수가 상한 {cap}을 넘습니다"
+            )));
+        }
+        // A section that closes with no blocks still yields one default paragraph in the IR;
+        // `close_section` charges it then, so empty sections consume lowered bytes too.
+        self.section_starts.push(self.html.len());
+        Ok(())
+    }
+
+    /// Ends the current section; an empty one is given an explicit paragraph so its IR cost is
+    /// counted against the lowered-size bound like every other append.
+    fn close_section(&mut self) -> Result<()> {
+        if self.section_starts.last() == Some(&self.html.len()) {
+            self.push_html("<p></p>")?;
+        }
+        Ok(())
+    }
+
     /// Charges the growth of `grid`'s projection to the document-wide slot budget. Called at
     /// every cell placement and row end, so an ancestor table's reservation is always in
     /// place before a nested table's cells are read.
@@ -1268,6 +1298,59 @@ mod tests {
             m.contains("중첩 2단계"),
             "limit fired outside the child: {m}"
         );
+    }
+
+    fn sections(n: usize, section: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>{}</BODY></HWPML>",
+            section.repeat(n)
+        )
+    }
+
+    /// The section count is bounded before it grows, for paired and empty SECTIONs alike, and
+    /// never past the u16 HWP5 stores.
+    #[test]
+    fn section_count_is_bounded() {
+        let limits = HmlLimits {
+            max_sections: 3,
+            ..HML_LIMITS
+        };
+        for form in [
+            "<SECTION></SECTION>",
+            "<SECTION/>",
+            "<SECTION><P/></SECTION>",
+        ] {
+            let ok = read_hml_with_limits(sections(3, form).as_bytes(), &limits).unwrap();
+            assert_eq!(ok.document.sections.len(), 3, "{form}");
+            let m = limit_message(read_hml_with_limits(sections(4, form).as_bytes(), &limits));
+            assert!(m.contains("구역"), "{form}: {m}");
+        }
+        let unbounded = HmlLimits {
+            max_sections: usize::MAX,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(
+            sections(u16::MAX as usize + 1, "<SECTION/>").as_bytes(),
+            &unbounded,
+        ));
+        assert!(m.contains("65535"), "{m}");
+    }
+
+    /// Empty paired SECTIONs pay for the paragraph the IR gives them.
+    #[test]
+    fn empty_paired_sections_consume_lowered_bytes() {
+        let text = sections(50, "<SECTION></SECTION>");
+        let n = lowered_len(&text);
+        assert!(
+            n >= 50 * "<p></p>".len(),
+            "empty sections charged nothing: {n}"
+        );
+        let under = HmlLimits {
+            max_lowered_bytes: n - 1,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(text.as_bytes(), &under));
+        assert!(m.contains("중간 결과"), "{m}");
     }
 
     /// A row of many cells is placed in linear time. With the former scan-from-zero
