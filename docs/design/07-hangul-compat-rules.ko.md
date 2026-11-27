@@ -404,7 +404,8 @@ Hancom Office macOS 저장본은 `chartIDRef="Chart/chart1.xml"`로 패키지 �
 선을, `c:marker/c:spPr`이 분산형 표식을 지정된 색으로 그렸지만, 꺾은선의 표식과 분산형의
 연결선은 기본 색으로 남았다. 꺾은선은 `c:marker`를, 분산형은 펜을 내보내지 않았기 때문이다.
 `c1965f11`에서는 두 종류가 같은 블록을 내보낸다. 펜(`c:ser/c:spPr/a:ln`,
-`w="28575" cap="flat" cmpd="sng" algn="ctr"`, 실선 dash, 둥근 join)과, 같은 채우기와 펜을
-`c:spPr`에 되풀이하는 `c:marker`다. 이 헤드에서 macOS Hancom은 두 종류의 선과 표식, 범례
-견본을 모두 지정된 색으로 그렸다. 다만 그 정확한 폭·dash·기호 값이 필수인지 충분 조건인지,
+`w="28575" cap="flat" cmpd="sng" algn="ctr"`, 실선 dash, 둥근 join)과, 같은 채우기를 두 번 담은
+`c:spPr`의 `c:marker`다. 표식 자체의 채우기와 `a:ln w="28575"` 안의 채우기이며, 펜의 `cap`·`cmpd`·
+`algn`이나 dash, 둥근 join은 그 표식에 없다. 이 헤드에서 macOS Hancom은 두 종류의 선과 표식,
+범례 견본을 모두 지정된 색으로 그렸다. 다만 그 정확한 폭·dash·기호 값이 필수인지 충분 조건인지,
 그리고 Windows Hancom이 같은 요소를 어떻게 그리는지는 이 환경에서 미검증이다.
