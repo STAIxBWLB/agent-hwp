@@ -24,6 +24,7 @@ pub mod merge;
 pub mod odt;
 pub mod official;
 pub mod redact;
+pub mod report_blocks;
 pub mod segment;
 pub mod segment_id;
 pub mod structure;

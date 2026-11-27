@@ -45,6 +45,23 @@ pub struct DocumentSpecV2 {
     /// table split across pages.
     #[serde(default)]
     pub tables: TableDefaultsSpec,
+    /// Opt-in report blocks (#620). Headings are paragraphs whose style is named `개요 N`
+    /// (declare such styles in `document.styles`).
+    #[serde(default)]
+    pub report_blocks: ReportBlocksSpec,
+}
+
+/// `report_blocks` (#620). Both keys default to `false`, which leaves the output unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportBlocksSpec {
+    /// Front table of contents over the `개요 2`/`개요 3` headings, with page numbers from a
+    /// layout pass; body pages restart at 1 after it.
+    #[serde(default)]
+    pub toc: bool,
+    /// Each `개요 3` heading of the form `N. Title` becomes a 1x3 section strip.
+    #[serde(default)]
+    pub section_strips: bool,
 }
 
 /// Document-level table defaults (#296). Every key is optional; omitted keys keep the
@@ -285,6 +302,9 @@ pub fn compile_spec_v2(
     for (index, visual) in spec.visuals.iter().enumerate() {
         let report = compile_visual(&mut document, visual, index, target, &mut assets)?;
         reports.push(report);
+    }
+    if spec.report_blocks.section_strips {
+        hwp_convert::report_blocks::apply_section_strips(&mut document);
     }
     document.meta.source_format = "document-spec-v2".to_string();
     document.meta.source_version = "2.0".to_string();

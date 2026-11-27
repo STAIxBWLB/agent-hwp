@@ -185,7 +185,39 @@ fn execute_spec_v2_with_source(
     if dry_run {
         return Ok(report);
     }
-    let document = compiled.document;
+    let mut document = compiled.document;
+    let mut toc_warnings = Vec::new();
+    if spec.report_blocks.toc {
+        match hwp_convert::report_blocks::insert_toc(&mut document) {
+            Some(plan) => {
+                // Hermetic font files (MCP) lay out from their own directories; the CLI uses
+                // HWP_FONT_DIR like `render`.
+                let font_dirs: Vec<std::path::PathBuf> = match font_files {
+                    Some(files) => files
+                        .iter()
+                        .filter_map(|f| f.parent().map(Path::to_path_buf))
+                        .collect(),
+                    None => crate::commands::convert::resolve_font_dirs(Vec::new()),
+                };
+                let filled = hwp_cli::toc::backfill(&mut document, &plan, &font_dirs, |doc| {
+                    crate::commands::new::published_round_trip(doc, write_hwp)
+                })?;
+                // Validate the write against the published form the pages were measured on.
+                document = crate::commands::new::published_round_trip(&document, write_hwp)?;
+                if filled.font_fallbacks > 0 {
+                    toc_warnings.push(format!(
+                        "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 HWP_FONT_DIR로 문서 글꼴을 지정하세요",
+                        filled.font_fallbacks
+                    ));
+                }
+            }
+            None => toc_warnings.push(
+                "report_blocks.toc: 목차에 넣을 개요 2·개요 3 제목이 없어 목차를 만들지 않았습니다"
+                    .to_string(),
+            ),
+        }
+    }
+    let document = document;
     let writer_report = crate::commands::output::write_validated(
         output,
         source_path,
@@ -213,6 +245,7 @@ fn execute_spec_v2_with_source(
         },
     )?;
     report.warnings = writer_report.warnings;
+    report.warnings.extend(toc_warnings);
     Ok(report)
 }
 

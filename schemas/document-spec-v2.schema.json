@@ -19,6 +19,15 @@
       "properties": {
         "placement": { "type": "string", "enum": ["inline", "floating"] }
       }
+    },
+    "report_blocks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Opt-in report blocks (#620). Headings are paragraphs whose style is named '개요 N'.",
+      "properties": {
+        "toc": { "type": "boolean", "default": false, "description": "Front table of contents over the 개요 2/개요 3 headings; page numbers come from a layout pass and body pages restart at 1 after it." },
+        "section_strips": { "type": "boolean", "default": false, "description": "Each 개요 3 heading of the form 'N. Title' becomes a 1x3 section strip table." }
+      }
     }
   },
   "$defs": {

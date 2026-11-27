@@ -985,6 +985,18 @@ fn render_paragraph(
     let own = fragments.iter().any(Fragment::emits);
 
     if let Some(level) = heading {
+        // An opt-in section strip (#620) is a 1x3 table under a `개요 3` anchor; it reads
+        // back as the `### N. Title` heading it was built from.
+        if level == 3
+            && let Some((number, title)) = para.controls.iter().find_map(|c| match c {
+                Control::Table(t) => crate::report_blocks::strip_heading(doc, para, t),
+                _ => None,
+            })
+        {
+            close_list_block(ctx, &mut out.s);
+            out.s.push_str(&format!("### {number}. {title}\n\n"));
+            return true;
+        }
         close_list_block(ctx, &mut out.s);
         emit_paragraph_fragments(fragments, out, Some(&format!("{} ", "#".repeat(level))));
         return own;

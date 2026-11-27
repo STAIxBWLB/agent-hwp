@@ -235,6 +235,9 @@ fn real_main() -> anyhow::Result<()> {
             notice_foot,
             press_head,
             table_placement,
+            section_strips,
+            toc,
+            font_dir,
         } => {
             if list_templates {
                 commands::skill::print_template_list();
@@ -272,6 +275,9 @@ fn real_main() -> anyhow::Result<()> {
             .with_template_frames(template_defaults.as_ref());
             let options = commands::new::NewOptions {
                 table_placement: table_placement.map(hwp_cli::cli::TablePlacementArg::canonical),
+                section_strips,
+                toc,
+                font_dirs: font_dir,
                 ..options
             };
             match embedded {
