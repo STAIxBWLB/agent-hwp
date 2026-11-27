@@ -253,3 +253,28 @@ fn synthesized_empty_cell_has_a_character_shape_and_inline_placement() {
     assert!(placement.treat_as_char);
     assert_eq!((placement.vert_rel_to, placement.horz_rel_to), (2, 3));
 }
+
+/// An undecodable summary character (title here) is a substitution like a body one, so the
+/// reader reports it instead of silently writing U+FFFD into the metadata.
+#[test]
+fn undecodable_summary_characters_are_reported() {
+    let clean = {
+        let mut bytes = prefix(false);
+        shapes(&mut bytes);
+        text_list(&mut bytes, &[0xd065]);
+        bytes
+    };
+    assert!(hwp5::hwp3::read_bytes(&clean).unwrap().warnings.is_empty());
+    let mut bytes = clean;
+    // The summary block follows the 30-byte signature and the 128-byte document info.
+    word_at(&mut bytes, 30 + 128 + 2, 0x0001);
+    let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+    assert!(
+        read.document
+            .metadata
+            .title
+            .as_deref()
+            .is_some_and(|t| t.contains('\u{fffd}'))
+    );
+    assert_eq!(read.warnings.len(), 1, "{:?}", read.warnings);
+}

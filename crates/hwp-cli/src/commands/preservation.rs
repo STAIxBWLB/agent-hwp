@@ -284,6 +284,13 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
         remedy.push_str("\n해결: 글꼴 분류 정보의 HWP5 변환 매핑이 확인되지 않았습니다. 원본 정보를 보존하려면 .hwpx 형식을 유지하세요.");
         remedy.push_str(font_type_info_acceptance_hint(context));
     }
+    if report
+        .events
+        .iter()
+        .any(|event| event.code == PreservationCode::LegacyContentOmitted)
+    {
+        remedy.push_str("\n해결: 충실하게 변환하려면 한글에서 원본을 .hwp 또는 .hwpx로 다시 저장한 뒤 그 파일을 변환하세요. 위 손실을 수용하려면 ahwp convert를 --strict 없이 다시 실행하거나 MCP hwp_convert에 strict: false를 지정하세요.");
+    }
     anyhow::bail!(
         "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}{remedy}",
         report.events.iter().map(|event| event.count).sum::<usize>(),

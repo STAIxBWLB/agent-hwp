@@ -591,3 +591,39 @@ fn stdout_convert_runs_the_legacy_loss_gate() {
         assert!(!lenient.stdout.is_empty(), "{to}");
     }
 }
+
+/// A malformed byte replaced while decoding is a substitution, so it reaches the loss gate, and
+/// the `--strict` refusal names the next step (re-save in Hangul, or accept without `--strict`).
+#[test]
+fn decoding_substitutions_are_a_loss_with_a_remedy() {
+    // Starts from the clean document of `clean_legacy_read_passes_strict`, so the inserted
+    // byte is the only loss.
+    let input = tmp("bad-byte.hml");
+    let mut bytes =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+                     <SECTION><P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>"
+            .as_bytes()
+            .to_vec();
+    let at = bytes
+        .windows("문단".len())
+        .position(|w| w == "문단".as_bytes())
+        .unwrap();
+    bytes.insert(at, 0xff);
+    std::fs::write(&input, bytes).unwrap();
+    let out = tmp("bad-byte.md");
+    let run = run(&[
+        "convert".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        out.as_os_str(),
+        "--strict".as_ref(),
+    ]);
+    assert!(!run.status.success(), "a substituted byte passed --strict");
+    let err = stderr(&run);
+    assert!(err.contains("legacy_content_omitted"), "{err}");
+    assert!(
+        err.contains("다시 저장") && err.contains("--strict 없이"),
+        "{err}"
+    );
+    assert!(!out.exists());
+}

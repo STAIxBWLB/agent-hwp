@@ -72,20 +72,22 @@ fn find_root(text: &str) -> Option<&str> {
 /// Decodes the byte stream: UTF-16 LE/BE by BOM, otherwise UTF-8 (BOM stripped), falling back
 /// to EUC-KR when the prolog declares a Korean legacy encoding.
 fn decode(bytes: &[u8]) -> String {
+    decode_checked(bytes).0
+}
+
+/// [`decode`], also reporting whether any malformed byte sequence was replaced with U+FFFD.
+fn decode_checked(bytes: &[u8]) -> (String, bool) {
     if let Some((enc, bom)) = encoding_rs::Encoding::for_bom(bytes) {
-        return enc
-            .decode_without_bom_handling(&bytes[bom..])
-            .0
-            .into_owned();
+        let (text, had_err) = enc.decode_without_bom_handling(&bytes[bom..]);
+        return (text.into_owned(), had_err);
     }
     let prolog = String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).to_ascii_lowercase();
     if prolog.contains("euc-kr") || prolog.contains("ks_c_5601") || prolog.contains("cp949") {
-        return encoding_rs::EUC_KR
-            .decode_without_bom_handling(bytes)
-            .0
-            .into_owned();
+        let (text, had_err) = encoding_rs::EUC_KR.decode_without_bom_handling(bytes);
+        return (text.into_owned(), had_err);
     }
-    String::from_utf8_lossy(bytes).into_owned()
+    let (text, had_err) = encoding_rs::UTF_8.decode_without_bom_handling(bytes);
+    (text.into_owned(), had_err)
 }
 
 /// Resource limits for untrusted HWPML input. Every bound is checked before the allocation it
@@ -141,7 +143,7 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
             limits.max_input_bytes
         )));
     }
-    let text = decode(bytes);
+    let (text, decode_substituted) = decode_checked(bytes);
     if find_root(&text) != Some("HWPML") {
         return Err(xml_err("루트 요소가 HWPML이 아닙니다"));
     }
@@ -164,6 +166,10 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
         .map(|name| format!("HWPML <{name}> 요소는 읽기 미지원이라 건너뜁니다"))
         .collect();
     warnings.append(&mut lower.warnings);
+    if decode_substituted {
+        warnings
+            .push("HWPML 입력에 해석할 수 없는 바이트가 있어 U+FFFD로 대체했습니다".to_string());
+    }
     warnings.extend(
         lower
             .flattened

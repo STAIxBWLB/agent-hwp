@@ -44,7 +44,7 @@ pub enum PreservationCode {
     ImageFillUnrepresentable,
     /// A read-only legacy reader (HWPML, HWP 3.x) omitted or substituted content it cannot
     /// lower into the IR (unsupported characters, objects, fields or entities). The count is
-    /// the number of distinct loss kinds the reader reported, not of characters.
+    /// the number of warning records the reader returned, not of characters or objects.
     LegacyContentOmitted,
     MetadataValueRemoved,
     OpaqueControlUnrepresentable,

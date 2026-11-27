@@ -89,10 +89,13 @@ pub fn read_bytes(bytes: &[u8]) -> Result<ReadResult> {
     let mut document = parser.document;
     document.meta.source_format = "hwp3".into();
     document.meta.source_version = "3.00".into();
-    document.metadata.title = summary_field(summary, 0);
-    document.metadata.subject = summary_field(summary, 1);
-    document.metadata.author = summary_field(summary, 2);
-    document.metadata.keywords = summary_field(summary, 4);
+    let mut substituted = 0usize;
+    document.metadata.title = summary_field(summary, 0, &mut substituted);
+    document.metadata.subject = summary_field(summary, 1, &mut substituted);
+    document.metadata.author = summary_field(summary, 2, &mut substituted);
+    document.metadata.keywords = summary_field(summary, 4, &mut substituted);
+    // An undecodable summary character is a substitution like any body one, so it is counted.
+    parser.omissions += substituted;
     document.header.properties.section_count = 1;
     document.header.properties.start_numbers =
         [word(info, 98).max(1), word(info, 100).max(1), 1, 1, 1, 1];
@@ -190,12 +193,18 @@ fn unit(legacy: u16) -> HwpUnit {
     HwpUnit(i32::from(legacy) * 4)
 }
 
-fn summary_field(summary: &[u8], index: usize) -> Option<String> {
+/// One 112-byte summary field. Undecodable characters become U+FFFD and add to `substituted`.
+fn summary_field(summary: &[u8], index: usize, substituted: &mut usize) -> Option<String> {
     let text: String = summary[index * 112..(index + 1) * 112]
         .chunks_exact(2)
         .map(|bytes| word(bytes, 0))
         .take_while(|&code| code != 0)
-        .map(|code| decode_hchar(code).unwrap_or(char::REPLACEMENT_CHARACTER))
+        .map(|code| {
+            decode_hchar(code).unwrap_or_else(|| {
+                *substituted += 1;
+                char::REPLACEMENT_CHARACTER
+            })
+        })
         .collect();
     (!text.trim().is_empty()).then_some(text)
 }
