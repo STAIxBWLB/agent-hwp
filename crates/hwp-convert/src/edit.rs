@@ -3133,11 +3133,21 @@ pub fn add_memo(
             anchor.start, anchor.end
         ));
     }
-    let number = hwp_model::memo::memos(doc)
-        .iter()
-        .map(|m| m.number)
-        .max()
-        .map_or(1, |n| n + 1);
+    if author.contains('/') {
+        return Err(format!(
+            "메모 작성자 {author:?}에 '/'가 있습니다: 메모 명령은 '/'로 필드를 나누므로 작성자에 담을 수 없습니다. '/'를 뺀 이름으로 다시 실행하세요"
+        ));
+    }
+    let highest = hwp_model::memo::memos(doc).iter().map(|m| m.number).max();
+    let number = match highest {
+        None => 1,
+        Some(highest) => highest.checked_add(1).ok_or_else(|| {
+            format!(
+                "메모 번호를 더 늘릴 수 없습니다: 문서의 가장 큰 메모 번호가 {highest}이고 번호의 최댓값이 {}입니다. 기존 메모를 지워 번호를 비운 뒤 다시 실행하세요",
+                u32::MAX
+            )
+        })?,
+    };
     let command = hwp_model::memo::build_memo_command(
         number,
         Some(created_filetime.unwrap_or_else(hwp_model::memo::filetime_now)),
@@ -3198,6 +3208,7 @@ pub fn add_memo(
         .filter(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
         .count()
         .min(para.controls.len());
+    ensure_range_tag_shift_allowed(para, 0, 2 * FIELD_BLOCK_WCHAR)?;
     para.controls.insert(ctrl_index, control);
     let memo_ctrl_id = *b"%%me";
     para.chars.insert(
@@ -3310,51 +3321,52 @@ pub fn remove_memo(doc: &mut Document, section: usize, number: u32) -> Result<()
     }
     if let Some(site) = find_memo_site_mut(&mut sec.paragraphs, number) {
         let para = site.para;
-        para.controls.remove(site.index);
-        let mut removed: Vec<usize> = Vec::new();
-        // Pair each FIELD_END with the FIELD_START that opened it, LIFO, because a memo anchor
-        // may span another memo's field and neighboring memos share a paragraph.
-        let mut open: Vec<(usize, u32)> = Vec::new();
-        let mut removed_wchar: Vec<(u32, u32)> = Vec::new();
-        let end_of = |payload: &[u8]| {
-            payload.starts_with(b"em%\0")
-                && payload.len() >= 12
-                && payload[8..12] == number.to_le_bytes()
-        };
+        // Pair every FIELD_END with the start that opened it, LIFO over all fields, because a
+        // memo anchor may span another memo's field and neighboring memos share a paragraph.
+        // A start is this memo's when the control it opens is, never when its ctrl_id spells a
+        // particular name: HWP5 stores a memo start as `%%me` and HWPX lowers the same field as
+        // `%unk`, and only the HWP5 end payload carries the number.
+        let mut open: Vec<(usize, u32, Option<u32>)> = Vec::new();
+        let mut pair: Option<(usize, u32, usize, u32)> = None;
         let mut wpos = 0u32;
         for (i, ch) in para.chars.iter().enumerate() {
             match ch {
                 HwpChar::ExtCtrl {
-                    code: 3, ctrl_id, ..
-                } if *ctrl_id == *b"%%me" => open.push((i, wpos)),
-                HwpChar::InlineCtrl { code: 4, payload } if payload.starts_with(b"em%\0") => {
-                    if let Some((s, sw)) = open.pop()
-                        && end_of(payload)
+                    code: 3,
+                    ctrl_index,
+                    ..
+                } => {
+                    let memo = ctrl_index
+                        .and_then(|index| para.controls.get(index as usize))
+                        .and_then(|control| match control {
+                            Control::Generic(g) => hwp_model::memo::memo_number(g),
+                            _ => None,
+                        });
+                    open.push((i, wpos, memo));
+                }
+                HwpChar::InlineCtrl { code: 4, .. } => {
+                    if let Some((start, start_wpos, memo)) = open.pop()
+                        && memo == Some(number)
                     {
-                        removed.push(s);
-                        removed.push(i);
-                        removed_wchar.push((sw, FIELD_BLOCK_WCHAR));
-                        removed_wchar.push((wpos, FIELD_BLOCK_WCHAR));
+                        pair = Some((start, start_wpos, i, wpos));
                     }
                 }
                 _ => {}
             }
             wpos += ch.wchar_width();
         }
-        for i in removed.into_iter().rev() {
-            para.chars.remove(i);
+        if pair.is_some() {
+            ensure_range_tag_shift_allowed(para, 2 * FIELD_BLOCK_WCHAR, 0)?;
         }
-        // Rebase the character-shape runs past the two removed field blocks, as remove_controls
-        // does for any other deleted control.
-        for (pos, _) in &mut para.char_shape_runs {
-            let shift: u32 = removed_wchar
-                .iter()
-                .filter(|(start, width)| start + width <= *pos)
-                .map(|(_, width)| *width)
-                .sum();
-            *pos -= shift;
+        para.controls.remove(site.index);
+        if let Some((start, start_wpos, end, end_wpos)) = pair {
+            para.chars.remove(end);
+            para.chars.remove(start);
+            // Rebase the runs over both removed 8-WCHAR blocks, the later position first so the
+            // second call sees offsets the first did not move.
+            adjust_runs(&mut para.char_shape_runs, end_wpos, FIELD_BLOCK_WCHAR, 0);
+            adjust_runs(&mut para.char_shape_runs, start_wpos, FIELD_BLOCK_WCHAR, 0);
         }
-        para.char_shape_runs.dedup();
         crate::field::relink_ctrl_index(para);
         sync_memo_field_ends(para);
         para.header.ctrl_mask = 0;
@@ -5143,6 +5155,169 @@ mod tests {
             "set_memo_text must point at a real command: {set}"
         );
         assert!(!removed.contains("hwp memo") && !set.contains("hwp memo"));
+    }
+
+    /// A memo the way the HWPX reader lowers one: a `%unk` control carrying the Command in `data`,
+    /// the body inline in `paragraph_lists`, and a field pair whose end payload is derived from
+    /// `%unk` (`knu\0`) so it carries no memo number at all.
+    fn hwpx_lowered_memo(number: u32) -> Control {
+        let command = hwp_model::memo::build_memo_command(number, None, "someone");
+        Control::Generic(hwp_model::control::GenericControl {
+            ctrl_id: *b"%unk",
+            data: crate::field::make_memo_command_data(&command, 0x4B00_6630, number),
+            paragraph_lists: vec![hwp_model::control::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![Paragraph {
+                    chars: vec![
+                        HwpChar::Text('본'),
+                        HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK),
+                    ],
+                    ..Paragraph::default()
+                }],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            chart: None,
+            container_box: None,
+        })
+    }
+
+    /// The char pair of a lowered memo, at control `index`: `%unk` start, one character, `%unk` end.
+    fn lowered_memo_chars(index: u32, text: char) -> Vec<HwpChar> {
+        vec![
+            HwpChar::ExtCtrl {
+                code: 3,
+                ctrl_id: *b"%unk",
+                payload: vec![0u8; 12],
+                ctrl_index: Some(index),
+            },
+            HwpChar::Text(text),
+            HwpChar::InlineCtrl {
+                code: 4,
+                payload: crate::field::field_end_payload(b"%unk"),
+            },
+        ]
+    }
+
+    /// Two HWPX-lowered memos in one paragraph. `remove_memo` must clear the removed memo's own
+    /// field pair: matching the start by a `%%me` ctrl_id or the end by an `em%\0` payload finds
+    /// neither here, which used to leave both chars behind and let `relink_ctrl_index` rebind the
+    /// stale start to the surviving memo's control, so the HWPX writer emitted the survivor's
+    /// field over the removed anchor.
+    #[test]
+    fn remove_memo_clears_an_hwpx_lowered_field_pair() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        let mut chars = lowered_memo_chars(0, '가');
+        chars.extend(lowered_memo_chars(1, '나'));
+        doc.sections[0].paragraphs[0].chars = chars;
+        doc.sections[0].paragraphs[0].controls = vec![hwpx_lowered_memo(1), hwpx_lowered_memo(2)];
+
+        remove_memo(&mut doc, 0, 1).unwrap();
+
+        let para = &doc.sections[0].paragraphs[0];
+        let starts: Vec<u32> = para
+            .chars
+            .iter()
+            .filter_map(|ch| match ch {
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_index,
+                    ..
+                } => *ctrl_index,
+                _ => None,
+            })
+            .collect();
+        let ends = para
+            .chars
+            .iter()
+            .filter(|ch| matches!(ch, HwpChar::InlineCtrl { code: 4, .. }))
+            .count();
+        assert_eq!(
+            starts.len(),
+            1,
+            "only the surviving memo keeps a field start"
+        );
+        assert_eq!(ends, 1, "only the surviving memo keeps a field end");
+        let control = &para.controls[starts[0] as usize];
+        let Control::Generic(g) = control else {
+            unreachable!("a memo anchor is a field control")
+        };
+        assert_eq!(
+            crate::field::memo_number(g),
+            Some(2),
+            "the surviving start must still open its own memo, not the removed one"
+        );
+        assert_eq!(
+            para.controls.len(),
+            1,
+            "the removed memo's control is gone and none other"
+        );
+        let numbers: Vec<u32> = hwp_model::memo::memos(&doc)
+            .iter()
+            .map(|m| m.number)
+            .collect();
+        assert_eq!(numbers, vec![2]);
+    }
+
+    /// A memo author names the account, and a '/' would split the Command string's fields: it is
+    /// refused with the reason and the next step instead of being written and read back truncated.
+    #[test]
+    fn memo_author_cannot_carry_a_slash() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        let refusal = add_memo(
+            &mut doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "yj/lee",
+            Some(1),
+            &["본문".to_string()],
+        )
+        .unwrap_err();
+        assert!(refusal.contains("yj/lee"), "{refusal}");
+        assert!(refusal.contains("다시 실행하세요"), "{refusal}");
+        assert!(
+            hwp_model::memo::memos(&doc).is_empty(),
+            "a refused memo_add must not leave a memo behind"
+        );
+    }
+
+    /// The next number is one past the highest, and a document already holding the largest number
+    /// refuses instead of panicking in debug or wrapping to 0 in release.
+    #[test]
+    fn memo_number_overflow_is_refused_not_wrapped() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        doc.sections[0].paragraphs[0].chars = lowered_memo_chars(0, '가');
+        doc.sections[0].paragraphs[0].controls = vec![hwpx_lowered_memo(u32::MAX)];
+        let refusal = add_memo(
+            &mut doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "someone",
+            Some(1),
+            &["본문".to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains(&u32::MAX.to_string()),
+            "the refusal names the number it could not pass: {refusal}"
+        );
+        assert!(
+            refusal.contains("지워") && refusal.contains("다시 실행하세요"),
+            "the refusal states the next step: {refusal}"
+        );
     }
 }
 

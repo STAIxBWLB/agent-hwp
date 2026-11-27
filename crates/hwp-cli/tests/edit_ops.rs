@@ -2945,6 +2945,10 @@ fn case_sensitive_enum_values_rejected() {
 /// Re-pinned for #619: three additive ops (`memo_add`, `memo_set_text`, `memo_remove`) and one
 /// `$defs/memoAnchor`. Every instance that validated before still validates with the same
 /// meaning, no op gained a required key, and the id, `$id` and version stay edit-ops-v1.
+///
+/// Re-pinned once more on review: `memo_add.author` gained a `pattern` refusing '/', which splits
+/// the fields of a memo Command string and would be read back truncated. That narrows the schema
+/// for one value class, and no memo Command a Hancom file writes can carry it.
 #[test]
 fn schema_hash_frozen() {
     use sha2::{Digest, Sha256};
@@ -2956,7 +2960,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "f9dbc068a0b270ea166bbb57834f8e587b8c7985ae6995de6a71a0594fc03441",
+        actual, "ff3e57c94a5f14e32794fef7a8cba158530e4feb2eb905f534dc13b877ee5393",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

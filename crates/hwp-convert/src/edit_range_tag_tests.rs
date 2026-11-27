@@ -634,3 +634,48 @@ fn field_tab_guard_allows_eight_wchar_replacement() {
     assert_eq!(crate::list_fields(&doc)[0].value, "\t");
     assert_eq!(doc.sections[0].paragraphs[0].extras, extras);
 }
+
+/// A memo anchor is two 8-WCHAR field blocks, so adding one shifts every later WCHAR position by
+/// sixteen: on a paragraph carrying an opaque range tag the edit must refuse before inserting the
+/// control, the start and the end.
+#[test]
+fn range_tags_memo_add_refuses_before_inserting_the_field_blocks() {
+    let mut doc = document(&["anchor text"]);
+    tag(&mut doc.sections[0].paragraphs[0]);
+    assert_document_refusal(doc, |doc| {
+        add_memo(
+            doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "someone",
+            Some(1),
+            &["본문".to_string()],
+        )
+    });
+}
+
+/// The same shift in the other direction: removing that memo's two field blocks moves every later
+/// position back by sixteen.
+#[test]
+fn range_tags_memo_remove_refuses_before_deleting_the_field_blocks() {
+    let mut doc = document(&["anchor text"]);
+    let number = add_memo(
+        &mut doc,
+        0,
+        &MemoAnchor {
+            para: 0,
+            start: 0,
+            end: 0,
+        },
+        "someone",
+        Some(1),
+        &["본문".to_string()],
+    )
+    .unwrap();
+    tag(&mut doc.sections[0].paragraphs[0]);
+    assert_document_refusal(doc, |doc| remove_memo(doc, 0, number));
+}

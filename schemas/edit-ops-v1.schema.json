@@ -1290,7 +1290,12 @@
             "op": { "const": "memo_add" },
             "section": { "type": "integer", "minimum": 0 },
             "anchor": { "$ref": "#/$defs/memoAnchor" },
-            "author": { "type": "string", "minLength": 1 },
+            "author": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/]+$",
+              "description": "Memo author. '/' separates the fields of a memo Command string, so it cannot appear here."
+            },
             "created_filetime": { "type": "integer", "minimum": 0 },
             "body": {
               "type": "array",
