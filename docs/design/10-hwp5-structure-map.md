@@ -237,7 +237,7 @@ TRACK_CHANGE and TRACK_CHANGE_AUTHOR, which moved to table A).
 | 0x55 | SHAPE_COMPONENT_PICTURE | +69 | 4.3.9.4 | picture: only the u16 at offset 71 (the BinItem id) is extracted, the rest raw-preserved | partial + raw | `body_text.rs:318` |
 | 0x56 | SHAPE_COMPONENT_CONTAINER | +70 | 4.3.9.7 | grouped object; the renderer recurses into children, the IR keeps raw | raw-preserved | `shape_draw.rs` (render) |
 | 0x57 | CTRL_DATA | +71 | 4.3.8 | arbitrary control data (a field name Parameter Set and so on); only the BSTR is read on demand | raw-preserved | `field.rs:189` |
-| 0x58 | EQEDIT | +72 | 4.3.9.3 | equation: attr(4) + len(2) + WCHAR[len] script parsed for rendering, raw preserved | partial + raw | `body_text.rs:536` |
+| 0x58 | EQEDIT | +72 | 4.3.9.3 | Script, size, color, baseline, version and font parsed, with the original bytes retained | IR + raw | `body_text.rs:find_eqedit` |
 | 0x5A | SHAPE_COMPONENT_TEXTART | +74 | 4.3.9 (word art) | word art; unparsed | Opaque | `body_text.rs:617` |
 | 0x5B | FORM_OBJECT | +75 | 4.3.9 (forms) | form object; unparsed | Opaque | `body_text.rs:617` |
 | 0x5D | MEMO_LIST | +77 | 4.3 (memos) | memo list; unparsed | Opaque | `body_text.rs:617` |
@@ -426,7 +426,7 @@ Cross-references by major topic. "Responsible code" is the entry function for th
 | 4.3.6 | Control header (reversed ctrl_id) | `body_text.rs:parse_control` | §4.1, §6 |
 | 4.3.9.1 | Table object (★ per-row cell counts) | `body_text.rs:parse_table` | table B, §4.1 |
 | 4.3.9.2.* | Drawing object geometry | `hwp-render/src/shape_draw.rs` | table B, [02] §10 |
-| 4.3.9.3 | Equation object | `body_text.rs:parse_eqed`, `find_eqedit_script` | table B, §6.1 |
+| 4.3.9.3 | Equation object | `body_text.rs:parse_eqed`, `find_eqedit` | table B, §6.1 |
 | 4.3.9.4 | Picture object (BinItem id) | `body_text.rs:parse_picture_gso` | table B |
 | 4.3.10.1.1 | Paper setup | `body_text.rs:parse_page_def` | table B |
 | 4.3.10.2 to 4.3.10.11 | Non-object controls (columns, headers, footnotes, page, bookmarks) | `section.rs` (hwpx synthesis), `body_text.rs:parse_generic` | §6.1 |

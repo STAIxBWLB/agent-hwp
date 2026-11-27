@@ -3362,14 +3362,15 @@ fn layout_para_objects(
                 } else {
                     (eq.x as f32 / 100.0, eq.y as f32 / 100.0, false)
                 };
-                // Two-pass font size: multiline equations can be tall. Measure at 12pt first,
-                // then scale to the equation box height (eq.height), removing the single-line assumption.
-                let probe = crate::equation::typeset(store, doc, &eq.script, 12.0);
-                let ph = (probe.ascent + probe.descent).max(1.0);
-                let size = (12.0 * h / ph).clamp(6.0, 18.0);
-                let ebox = crate::equation::typeset(store, doc, &eq.script, size);
-                // Top alignment: place the equation's top (baseline - ascent) at the box top (by).
-                let baseline_y = by + ebox.ascent;
+                let ebox = crate::equation::typeset_equation(store, doc, eq, h);
+                // Interpret the observed baseline values as percentages of the
+                // object height. Exact external layout remains to be compared.
+                let baseline_y = by
+                    + if eq.baseline == 0 || eq.height <= 0 {
+                        ebox.ascent
+                    } else {
+                        eq.height as f32 * f32::from(eq.baseline) / 10_000.0
+                    };
                 crate::equation::render_into(page, ebox, bx + 2.0, baseline_y, warnings);
                 if inline {
                     object_y += h;

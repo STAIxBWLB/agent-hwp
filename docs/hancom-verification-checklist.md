@@ -325,10 +325,9 @@ alignment).**
 
 ## L. Equation emission (2026-07-27: GE-14, GE-15, [12](design/12-feature-gaps.md) §5.1)
 
-Checking that the `<hp:equation>` the hwpx writer newly emits is accepted in Hancom. **Because no
-ground truth (a genuine hwpx containing an equation) could be obtained, the equation-specific
-attributes (`version`, `baseLine`, `baseUnit`, `font`) are standard estimates**, so for this case the
-decisive question is not "does it open" but **"is the equation actually typeset and visible"**.
+Open the newly emitted equation controls in Hancom and verify that the equations are visible and
+editable. The paired Hancom fixtures establish the authored defaults for a single-line equation.
+Compare the converted HWP and HWPX samples for matrix layout, sizing and baseline.
 
 | File | What it tests | How to check |
 |---|---|---|
@@ -337,7 +336,7 @@ decisive question is not "does it open" but **"is the equation actually typeset 
 What to report on failure: whether the equation appears as **an empty box or question mark**, whether
 **only a placeholder is there with nothing visible**, and whether the equation editor opens. Which of
 the three it is points at a different wrong attribute (`font`/`baseUnit` versus `version` versus child
-element order). Obtaining a single genuine saved file would let us replace the attributes immediately.
+element order).
 
 ## M. Source-preserving native HWP edits (issue #90)
 

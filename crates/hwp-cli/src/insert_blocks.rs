@@ -399,7 +399,7 @@ impl StyleResolver<'_, '_> {
 
 /// Compile the blocks against a header-only copy of the target and publish them only after
 /// every check succeeds. HWP output is bounded by the existing writer's style IDs, numbering
-/// records and (for equations) its lack of an equation record.
+/// records and the insertion workflow's HWPX-only equation authoring policy.
 ///
 /// The compiler works on `Document { header, ..Default }`, not on a clone of the whole target:
 /// it only appends to header tables and to `bin_streams`, so cloning the target's sections and
@@ -439,7 +439,10 @@ pub fn apply_classified(
     };
     let found = referenced(request)?;
     if hwp_output && found.equations {
-        return Err("HWP 출력은 수식 블록을 저장하지 못합니다 (수식 개체가 제거됩니다). 수식이 필요하면 HWPX 출력으로 다시 시도하거나 수식 블록을 제거하세요".into());
+        return Err(
+            "수식 블록 삽입은 HWPX 출력에서 지원됩니다. 출력 확장자를 .hwpx로 바꿔 다시 시도하세요"
+                .into(),
+        );
     }
     let base_dir = match (found.images, assets.base_dir) {
         (true, None) => {

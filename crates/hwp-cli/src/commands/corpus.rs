@@ -2538,7 +2538,7 @@ mod tests {
             extras: Vec::new(),
             raw_children: Vec::new(),
             gso_shapes: Vec::new(),
-            equation,
+            equation: equation.map(Box::new),
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
