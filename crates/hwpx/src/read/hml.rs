@@ -1041,7 +1041,7 @@ mod tests {
     fn table_grid_slots_are_bounded_before_allocation() {
         let cell = "<CELL><PARALIST><P/></PARALIST></CELL>";
         // One wide row then narrow rows: 10 columns x 5 rows = 50 projected slots, 14 cells.
-        let wide = format!("<ROW><CELL ColSpan=\"10\"><PARALIST><P/></PARALIST></CELL></ROW>");
+        let wide = "<ROW><CELL ColSpan=\"10\"><PARALIST><P/></PARALIST></CELL></ROW>";
         let narrow = format!("<ROW>{cell}</ROW>");
         let body = format!(
             "<P><TEXT><TABLE>{wide}{}</TABLE></TEXT></P>",
