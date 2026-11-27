@@ -955,7 +955,9 @@ fn note_unresolved(set: &mut BTreeSet<String>, g: &quick_xml::events::BytesRef<'
         return;
     }
     let name: &str = g;
-    set.insert(name.chars().take(32).collect());
+    // The raw reference is not validated as an XML Name, so escape it: a newline or ANSI
+    // escape inside `&...;` must not reach the warning line verbatim.
+    set.insert(name.chars().take(32).flat_map(char::escape_debug).collect());
 }
 
 fn text_of(r: &mut Reader<&[u8]>, end: &str, unresolved: &mut BTreeSet<String>) -> Result<String> {
@@ -1483,6 +1485,13 @@ mod tests {
                     <BODY><SECTION><P><TEXT><CHAR>x</CHAR></TEXT></P></SECTION></BODY></HWPML>";
         let result = read_hml(text.as_bytes()).unwrap();
         assert!(result.warnings.join("\n").contains("&nope;"));
+
+        // Control characters inside the reference are escaped, never emitted raw.
+        let body = "<P><TEXT><CHAR>a&x\nFAKE: line\x1b[31m;b</CHAR></TEXT></P>";
+        let result = read_hml(doc(body, "").as_bytes()).unwrap();
+        let w = result.warnings.join("|");
+        assert!(!w.contains('\n') && !w.contains('\x1b'), "{w:?}");
+        assert!(w.contains("\\n") && w.contains("\\u{1b}"), "{w:?}");
     }
 
     /// With a BINITEM table, a refused mapped binary is never replaced by the BINDATA whose Id
