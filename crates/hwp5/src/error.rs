@@ -54,6 +54,9 @@ pub enum Hwp5Error {
     )]
     Encrypted,
 
+    #[error("암호로 보호된 HWP 3.x 문서입니다. 한글에서 암호를 해제하여 다시 저장하세요.")]
+    LegacyPasswordProtected,
+
     #[error("지원하지 않는 HWP5 암호화 프로필입니다 (EncryptVersion {encrypt_version})")]
     UnsupportedPasswordProfile { encrypt_version: u32 },
 

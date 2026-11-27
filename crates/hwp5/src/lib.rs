@@ -26,6 +26,8 @@ pub mod distdoc;
 pub mod doc_info;
 pub mod error;
 pub mod file_header;
+pub mod hwp3;
+
 pub mod numbering;
 pub mod read;
 pub mod record;
