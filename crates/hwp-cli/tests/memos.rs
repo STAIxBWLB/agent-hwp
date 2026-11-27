@@ -42,6 +42,14 @@ fn with_memos_refuses_incompatible_modes() {
             "{extra:?}: {}",
             text(&out.stderr)
         );
+        if extra[0] != "--format" {
+            // The refusal names the next step, not only the conflict.
+            assert!(
+                text(&out.stderr).contains("해결:"),
+                "{extra:?}: {}",
+                text(&out.stderr)
+            );
+        }
     }
 }
 

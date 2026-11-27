@@ -281,6 +281,25 @@ fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Resu
     }
 }
 
+/// Memo text as one markdown list-item line: metacharacters are backslash-escaped, so memo
+/// text can never open emphasis, a link, raw HTML or a heading, and a line break becomes
+/// `<br>`, so a multi-line memo stays inside its list item.
+fn markdown_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '~' | '!' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' => out.push_str("<br>"),
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// What `cat --with-memos` prints. Authors are account names, so they need a second flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoOutput {
@@ -326,12 +345,26 @@ pub(crate) fn render_memos(
         } else {
             format!(" ({})", meta.join(", "))
         };
-        let body = memo.body.join(if markdown { "<br>" } else { "\n  " });
+        let body = if markdown {
+            memo.body
+                .iter()
+                .map(|p| markdown_inline(p))
+                .collect::<Vec<_>>()
+                .join("<br>")
+        } else {
+            memo.body
+                .iter()
+                .map(|p| p.replace('\n', "\n  "))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        };
         if markdown {
             let _ = writeln!(
                 out,
-                "- **메모 {}**{meta} \"{}\": {body}",
-                memo.number, memo.anchor_text
+                "- **메모 {}**{} \"{}\": {body}",
+                memo.number,
+                markdown_inline(&meta),
+                markdown_inline(&memo.anchor_text)
             );
         } else {
             let _ = writeln!(
@@ -373,7 +406,9 @@ pub fn run(
         // Memos are an appendix after the body text, so they would sit outside every segment
         // envelope and PrvText preview; keep the features apart instead of guessing offsets.
         if segments.is_some() || preview {
-            anyhow::bail!("--with-memos는 --with-segments·--preview와 함께 쓸 수 없습니다");
+            anyhow::bail!(
+                "--with-memos는 --with-segments·--preview와 함께 쓸 수 없습니다\n해결: --with-segments·--preview를 빼거나, 메모는 따로 `ahwp cat --with-memos <파일>`로 출력하세요"
+            );
         }
         if !matches!(format, TextFormat::Plain | TextFormat::Markdown) {
             anyhow::bail!(
@@ -581,6 +616,19 @@ mod memo_render_tests {
             let on = render_memos(&memos, format, MemoOutput::WithAuthors);
             assert_eq!(on.matches("synthetic-author").count(), 2, "{on}");
         }
+    }
+
+    /// Memo text cannot inject markdown, and a multi-line memo stays inside its list item.
+    #[test]
+    fn markdown_appendix_escapes_and_keeps_lines_in_the_item() {
+        let mut m = memo(1);
+        m.anchor_text = "*굵게* [링크](x) <b>".into();
+        m.body = vec!["# 제목\n둘째 줄".into()];
+        let out = render_memos(&[m], TextFormat::Markdown, MemoOutput::WithoutAuthors);
+        let item = out.lines().find(|l| l.starts_with("- ")).unwrap();
+        assert_eq!(out.lines().filter(|l| !l.is_empty()).count(), 2, "{out}");
+        assert!(item.contains(r"\*굵게\* \[링크\](x) \<b\>"), "{item}");
+        assert!(item.ends_with(r"\# 제목<br>둘째 줄"), "{item}");
     }
 
     #[test]

@@ -116,19 +116,32 @@ pub fn is_memo_anchor(g: &GenericControl) -> bool {
 /// writer re-emits only genuine HWPX memo captures and never synthesizes one.
 pub fn memo_raw_ids(g: &GenericControl) -> Option<(String, String)> {
     let raw = g.hwpx_raw_xml.as_deref()?;
-    let start = &raw[..raw.find('>')?];
-    if !start.contains("fieldBegin") || attr_value(start, "type")? != "MEMO" {
+    // Parse the captured start tag with the XML reader, so any valid attribute spelling
+    // (single quotes, spaces around `=`, entity references) is read the same way.
+    let mut reader = quick_xml::Reader::from_str(raw);
+    let start = loop {
+        match reader.read_event().ok()? {
+            quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => break e,
+            quick_xml::events::Event::Eof => return None,
+            _ => {}
+        }
+    };
+    let local = |name: &[u8]| name.rsplit(|b| *b == b':').next().unwrap_or(name).to_vec();
+    if local(start.name().as_ref().as_bytes()) != b"fieldBegin" {
         return None;
     }
-    Some((attr_value(start, "id")?, attr_value(start, "fieldid")?))
-}
-
-/// Value of ` name="..."` in a start tag (exact attribute name, double quotes).
-fn attr_value(start: &str, name: &str) -> Option<String> {
-    let key = format!(" {name}=\"");
-    let at = start.find(&key)? + key.len();
-    let end = start[at..].find('"')?;
-    Some(start[at..at + end].to_string())
+    let attr = |name: &[u8]| -> Option<String> {
+        start
+            .attributes()
+            .flatten()
+            .find(|a| local(a.key.as_ref().as_bytes()) == name)
+            .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+            .map(|v| v.into_owned())
+    };
+    if attr(b"type")? != "MEMO" {
+        return None;
+    }
+    Some((attr(b"id")?, attr(b"fieldid")?))
 }
 
 /// Map an OWPML fieldBegin type back to a control ID, using `%unk` for unknown types.

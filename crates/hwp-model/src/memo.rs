@@ -162,20 +162,42 @@ fn opaque_para_text(para: &OpaqueRecord) -> String {
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let mut out = Vec::new();
+    // Lift each unit into the shared `HwpChar` form and project it with `text::char_text`, the
+    // mapping every text path uses, so a body read from HWP5 records keeps its line breaks,
+    // tabs, hyphens and nb/fw spaces exactly as the same body read from HWPX does.
+    let mut out = String::new();
     let mut i = 0;
     while i < units.len() {
         let u = units[i];
-        match crate::paragraph::char_kind(u) {
-            crate::paragraph::CharKind::Char if u < 32 => i += 1,
-            crate::paragraph::CharKind::Char => {
-                out.push(u);
+        let ch = match crate::paragraph::char_kind(u) {
+            crate::paragraph::CharKind::Char if u < 32 => {
                 i += 1;
+                HwpChar::CharCtrl(u)
             }
-            _ => i += 8,
-        }
+            crate::paragraph::CharKind::Char => {
+                // A surrogate pair is one character; a lone surrogate becomes U+FFFD.
+                let (c, width) = match char::decode_utf16(units[i..].iter().copied()).next() {
+                    Some(Ok(c)) => (c, c.len_utf16()),
+                    _ => (char::REPLACEMENT_CHARACTER, 1),
+                };
+                i += width;
+                HwpChar::Text(c)
+            }
+            crate::paragraph::CharKind::Inline => {
+                i += 8;
+                HwpChar::InlineCtrl {
+                    code: u,
+                    payload: Vec::new(),
+                }
+            }
+            crate::paragraph::CharKind::Extended => {
+                i += 8;
+                continue;
+            }
+        };
+        crate::text::char_text(&ch, &mut out);
     }
-    String::from_utf16_lossy(&out)
+    out
 }
 
 /// HWP5 memo bodies from the extras of a section's last paragraph: number -> body paragraphs.
@@ -267,10 +289,15 @@ fn collect_paragraph(
                 }
             }
             HwpChar::InlineCtrl { code: 4, .. } => {
-                if let Some((idx, text)) = open.pop()
-                    && idx != usize::MAX
-                {
-                    out[idx].anchor_text = text;
+                if let Some((idx, text)) = open.pop() {
+                    // A field nested in a memo's range (a hyperlink, say) is part of the
+                    // memo's anchored text, so a closing child hands its text to its parent.
+                    if let Some((_, parent)) = open.last_mut() {
+                        parent.push_str(&text);
+                    }
+                    if idx != usize::MAX {
+                        out[idx].anchor_text = text;
+                    }
                 }
             }
             other => {
@@ -304,6 +331,55 @@ fn collect_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An HWP5 memo body paragraph keeps line breaks, tabs, hyphens and nb/fw spaces through
+    /// the shared character mapping, the same text the HWPX path produces; extended controls
+    /// and the paragraph end contribute nothing.
+    #[test]
+    fn hwp5_body_text_keeps_controls_through_the_shared_mapping() {
+        let mut units: Vec<u16> = Vec::new();
+        units.extend("가".encode_utf16());
+        units.push(10); // line break
+        units.extend("나".encode_utf16());
+        units.extend([9, 0, 0, 0, 0, 0, 0, 9]); // tab (inline, 8 units)
+        units.extend("다".encode_utf16());
+        units.push(24); // hyphen
+        units.push(30); // nb space
+        units.push(31); // fw space
+        units.extend([11, 0, 0, 0, 0, 0, 0, 11]); // extended control (table), no text
+        units.extend("😀".encode_utf16()); // surrogate pair
+        units.push(13); // paragraph end
+        let data = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let para = OpaqueRecord {
+            tag: 0x42,
+            data: Vec::new(),
+            children: vec![OpaqueRecord {
+                tag: PARA_TEXT_TAG,
+                data,
+                children: Vec::new(),
+            }],
+        };
+        let mut expected = String::new();
+        for ch in [
+            HwpChar::Text('가'),
+            HwpChar::CharCtrl(10),
+            HwpChar::Text('나'),
+            HwpChar::InlineCtrl {
+                code: 9,
+                payload: Vec::new(),
+            },
+            HwpChar::Text('다'),
+            HwpChar::CharCtrl(24),
+            HwpChar::CharCtrl(30),
+            HwpChar::CharCtrl(31),
+            HwpChar::Text('😀'),
+            HwpChar::CharCtrl(13),
+        ] {
+            crate::text::char_text(&ch, &mut expected);
+        }
+        assert_eq!(opaque_para_text(&para), expected);
+        assert_eq!(expected, "가\n나\t다-  😀");
+    }
 
     #[test]
     fn parses_a_memo_command() {

@@ -138,6 +138,8 @@ pub fn write_section_with_report(
     }
     out.push('>');
     let mut ids = IdSeq::default();
+    // Retained memo fieldBegins keep their saved ids, so fresh ids must avoid them.
+    reserve_memo_ids(&section.paragraphs, &mut ids.reserved);
     for (pi, para) in section.paragraphs.iter().enumerate() {
         // 첫 문단에 구역 정의가 없으면 기본 secPr 주입
         let inject = pi == 0
@@ -163,6 +165,8 @@ pub fn write_section_with_report(
 #[derive(Default)]
 struct IdSeq {
     next: u32,
+    /// Ids already taken by verbatim memo fieldBegins; `next` never returns one.
+    reserved: std::collections::BTreeSet<u32>,
     /// 각주/미주 번호(종류별 1부터 — footNote@number·autoNum@num에 사용).
     footnote: u32,
     endnote: u32,
@@ -170,8 +174,50 @@ struct IdSeq {
 
 impl IdSeq {
     fn next(&mut self) -> u32 {
-        self.next += 1;
-        self.next
+        loop {
+            self.next += 1;
+            if !self.reserved.contains(&self.next) {
+                return self.next;
+            }
+        }
+    }
+}
+
+/// One open field in [`write_paragraph`]: what its FIELD_END must emit.
+enum OpenField {
+    /// A fieldBegin written with a fresh id.
+    Fresh(u32),
+    /// A verbatim memo fieldBegin, closed with its own saved (id, fieldid).
+    Memo(String, String),
+    /// A dropped memo: its FIELD_END is dropped too.
+    Dropped,
+}
+
+/// Collects the numeric ids of retained memo fieldBegins anywhere in `paragraphs` (cells,
+/// captions and other nested lists included), so fresh ids cannot collide with them.
+fn reserve_memo_ids(paragraphs: &[Paragraph], reserved: &mut std::collections::BTreeSet<u32>) {
+    for para in paragraphs {
+        for control in &para.controls {
+            match control {
+                Control::Generic(g) => {
+                    if let Some((id, fieldid)) = hwp_convert::memo_raw_ids(g) {
+                        reserved.extend([id, fieldid].iter().filter_map(|v| v.parse::<u32>().ok()));
+                    }
+                    for list in &g.paragraph_lists {
+                        reserve_memo_ids(&list.paragraphs, reserved);
+                    }
+                }
+                Control::Table(t) => {
+                    for cell in &t.cells {
+                        reserve_memo_ids(&cell.paragraphs, reserved);
+                    }
+                    if let Some(c) = &t.caption {
+                        reserve_memo_ids(&c.paragraphs, reserved);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -240,12 +286,9 @@ fn write_paragraph(
     let mut text_buf = String::new();
     let mut wchar_pos = 0u32;
     let mut emitted_any_run = false;
-    // 열려 있는 필드(FIELD_START)의 id — FIELD_END의 beginIDRef로 연결(필드 비중첩 가정).
-    let mut current_field_id: Option<u32> = None;
-    // A verbatim memo fieldBegin's own (id, fieldid), echoed by its fieldEnd.
-    let mut current_memo_ids: Option<(String, String)> = None;
-    // Set when a dropped memo anchor's FIELD_END must be skipped as well.
-    let mut skip_memo_end = false;
+    // Open fields, innermost last. Each FIELD_START pushes one entry and each FIELD_END pops
+    // it, so a field nested in another (a hyperlink inside a memo) closes with its own ids.
+    let mut open_fields: Vec<OpenField> = Vec::new();
     // 현재 run에 방출한 그리기 도형 수 — 한글은 run당 앞쪽 ~21개만 그리고 나머지를 버린다
     // (annual 6쪽 링 미렌더 실기 확정: 도형 35개/run → 22번째 이후 타원 전부 누락). 한계
     // 전에 run을 강제 분할해 모든 도형이 렌더되게 한다.
@@ -323,23 +366,26 @@ fn write_paragraph(
                 }
                 4 => {
                     // FIELD_END — 앞의 fieldBegin과 beginIDRef로 연결.
-                    if std::mem::take(&mut skip_memo_end) {
-                    } else if let Some((id, fieldid)) = current_memo_ids.take() {
-                        open_run!(cur_shape);
-                        flush_text(out, &mut text_buf, &mut pending_tabs);
-                        let _ = write!(
-                            out,
-                            r##"<hp:ctrl><hp:fieldEnd beginIDRef="{}" fieldid="{}"/></hp:ctrl>"##,
-                            esc(&id),
-                            esc(&fieldid),
-                        );
-                    } else if let Some(fid) = current_field_id.take() {
-                        open_run!(cur_shape);
-                        flush_text(out, &mut text_buf, &mut pending_tabs);
-                        let _ = write!(
-                            out,
-                            r##"<hp:ctrl><hp:fieldEnd beginIDRef="{fid}" fieldid="{fid}"/></hp:ctrl>"##,
-                        );
+                    match open_fields.pop() {
+                        Some(OpenField::Dropped) | None => {}
+                        Some(OpenField::Memo(id, fieldid)) => {
+                            open_run!(cur_shape);
+                            flush_text(out, &mut text_buf, &mut pending_tabs);
+                            let _ = write!(
+                                out,
+                                r##"<hp:ctrl><hp:fieldEnd beginIDRef="{}" fieldid="{}"/></hp:ctrl>"##,
+                                esc(&id),
+                                esc(&fieldid),
+                            );
+                        }
+                        Some(OpenField::Fresh(fid)) => {
+                            open_run!(cur_shape);
+                            flush_text(out, &mut text_buf, &mut pending_tabs);
+                            let _ = write!(
+                                out,
+                                r##"<hp:ctrl><hp:fieldEnd beginIDRef="{fid}" fieldid="{fid}"/></hp:ctrl>"##,
+                            );
+                        }
                     }
                 }
                 _ => {}
@@ -385,7 +431,8 @@ fn write_paragraph(
                         // subList body) verbatim; the matching FIELD_END echoes its ids.
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
-                        current_memo_ids = hwp_convert::memo_raw_ids(g);
+                        let (id, fieldid) = hwp_convert::memo_raw_ids(g).expect("guard");
+                        open_fields.push(OpenField::Memo(id, fieldid));
                         let _ = write!(
                             out,
                             "<hp:ctrl>{}</hp:ctrl>",
@@ -397,7 +444,7 @@ fn write_paragraph(
                         // has no verified OWPML emission yet: keep the anchor text and drop the
                         // field, its body and its FIELD_END. The conversion's semantic check
                         // reports the dropped control as control_removed.
-                        skip_memo_end = true;
+                        open_fields.push(OpenField::Dropped);
                     }
                     Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {
                         // 필드(누름틀·계산식·하이퍼링크 등) — fieldBegin 방출. 값 텍스트는
@@ -406,7 +453,7 @@ fn write_paragraph(
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         let (name, command) = hwp_convert::field::field_meta(control);
                         let fid = ids.next();
-                        current_field_id = Some(fid);
+                        open_fields.push(OpenField::Fresh(fid));
                         let ty = hwp_convert::field::owpml_field_type(&g.ctrl_id);
                         let _ = write!(
                             out,
