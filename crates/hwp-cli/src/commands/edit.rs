@@ -1412,6 +1412,16 @@ const NO_APPLICABLE_EDITS_REASON: &str = "적용 가능한 편집이 없어 출�
      (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)";
 
 pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<EditReport> {
+    // Legacy inputs (HWPML, HWP 3.x) are read-only whatever the output format: refuse before any
+    // path (form bindings, the HWPX fast path, JSON/Markdown output) can publish an edit.
+    if let Some(legacy) = crate::format::detect_legacy(input)? {
+        anyhow::bail!(
+            "{}: {}은(는) 읽기 전용 입력이라 편집할 수 없습니다. {}",
+            input.display(),
+            legacy.label(),
+            legacy.edit_hint()
+        );
+    }
     if plan
         .typed_operations
         .iter()

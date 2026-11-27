@@ -234,14 +234,15 @@ fn legacy_hwp_signatures_get_typed_refusals() {
         "{err}"
     );
 
-    // The complete 30-byte V3.00 signature is the valid legacy input; reading it is #114.
+    // The complete 30-byte V3.00 signature routes to the HWP 3.x reader (#114); a bare
+    // signature with no body is a read failure with a recovery step, not a refusal.
     let v3 = tmp("v3.hwp");
     std::fs::write(&v3, b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05").unwrap();
     let out = run(&["cat".as_ref(), v3.as_os_str()]);
     assert!(!out.status.success());
     let err = stderr(&out);
     assert!(
-        err.contains("HWP 3.x 읽기") && err.contains("다시 저장"),
+        err.contains("HWP 3.x 읽기 실패") && err.contains("다시 저장"),
         "{err}"
     );
 
@@ -451,4 +452,253 @@ fn json_extension_and_preview_route_through_legacy_detection() {
     let err = stderr(&out);
     assert!(err.contains("HWPML") && err.contains("미리보기"), "{err}");
     assert!(!err.contains("시그니처 불일치"), "{err}");
+}
+
+/// A legacy reader's omissions are a typed loss: `--loss-report` records
+/// `legacy_content_omitted` for every target and `--strict` refuses before publishing (#114).
+#[test]
+fn legacy_reader_losses_reach_strict_and_the_loss_report() {
+    let input = tmp("lossy.hml");
+    std::fs::write(
+        &input,
+        synthetic_hml().replace("<SECDEF/>", "<SECDEF/><EQUATION/>"),
+    )
+    .unwrap();
+    for ext in ["md", "docx", "hwpx", "hwp"] {
+        let output = tmp(&format!("lossy-out.{ext}"));
+        let report = tmp(&format!("lossy-{ext}.json"));
+        let out = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            output.as_os_str(),
+            "--loss-report".as_ref(),
+            report.as_os_str(),
+        ]);
+        assert!(out.status.success(), "{ext}: {}", stderr(&out));
+        let ledger = std::fs::read_to_string(&*report).unwrap();
+        assert!(ledger.contains("legacy_content_omitted"), "{ext}: {ledger}");
+
+        let strict_out = tmp(&format!("lossy-strict.{ext}"));
+        let out = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            strict_out.as_os_str(),
+            "--strict".as_ref(),
+        ]);
+        assert!(
+            !out.status.success(),
+            "{ext}: strict published a lossy legacy read"
+        );
+        assert!(
+            stderr(&out).contains("legacy_content_omitted"),
+            "{ext}: {}",
+            stderr(&out)
+        );
+        assert!(!strict_out.exists(), "{ext}");
+    }
+}
+
+/// A clean legacy read stays lossless, so `--strict` still converts it.
+#[test]
+fn clean_legacy_read_passes_strict() {
+    let input = tmp("clean.hml");
+    std::fs::write(
+        &input,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY><SECTION>\
+         <P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>",
+    )
+    .unwrap();
+    let output = tmp("clean-out.md");
+    let out = run(&[
+        "convert".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        output.as_os_str(),
+        "--strict".as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// Editing a legacy input is refused whatever the output format, before anything is written.
+#[test]
+fn edit_refuses_legacy_input_for_every_output_format() {
+    let input = write_hml("edit-any.hml");
+    for ext in ["md", "json", "hwpx", "hwp"] {
+        let output = tmp(&format!("edit-any-out.{ext}"));
+        let out = run(&[
+            "edit".as_ref(),
+            input.as_os_str(),
+            "--replace".as_ref(),
+            "왼쪽=>X".as_ref(),
+            "-o".as_ref(),
+            output.as_os_str(),
+        ]);
+        assert!(
+            !out.status.success(),
+            "{ext}: edit published from a legacy input"
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("읽기 전용") && err.contains("ahwp convert"),
+            "{ext}: {err}"
+        );
+        assert!(!output.exists(), "{ext}");
+    }
+}
+
+/// The stdout path (`-o -`) runs the same legacy-loss gate as file output: `--strict` refuses a
+/// lossy legacy read and prints nothing, and without `--strict` the text is still printed.
+#[test]
+fn stdout_convert_runs_the_legacy_loss_gate() {
+    let input = tmp("lossy-stdout.hml");
+    std::fs::write(
+        &input,
+        synthetic_hml().replace("<SECDEF/>", "<SECDEF/><EQUATION/>"),
+    )
+    .unwrap();
+    for to in ["md", "txt", "json"] {
+        let strict = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            "-".as_ref(),
+            "--to".as_ref(),
+            to.as_ref(),
+            "--strict".as_ref(),
+        ]);
+        assert!(
+            !strict.status.success(),
+            "{to}: strict stdout published a lossy read"
+        );
+        assert!(
+            stderr(&strict).contains("legacy_content_omitted"),
+            "{to}: {}",
+            stderr(&strict)
+        );
+        assert!(strict.stdout.is_empty(), "{to}: printed before refusing");
+
+        let lenient = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            "-".as_ref(),
+            "--to".as_ref(),
+            to.as_ref(),
+        ]);
+        assert!(lenient.status.success(), "{to}: {}", stderr(&lenient));
+        assert!(!lenient.stdout.is_empty(), "{to}");
+    }
+}
+
+/// A malformed byte replaced while decoding is a substitution, so it reaches the loss gate, and
+/// the `--strict` refusal names the next step (re-save in Hangul, or accept without `--strict`).
+#[test]
+fn decoding_substitutions_are_a_loss_with_a_remedy() {
+    // Starts from the clean document of `clean_legacy_read_passes_strict`, so the inserted
+    // byte is the only loss.
+    let input = tmp("bad-byte.hml");
+    let mut bytes =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+                     <SECTION><P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>"
+            .as_bytes()
+            .to_vec();
+    let at = bytes
+        .windows("문단".len())
+        .position(|w| w == "문단".as_bytes())
+        .unwrap();
+    bytes.insert(at, 0xff);
+    std::fs::write(&input, bytes).unwrap();
+    let out = tmp("bad-byte.md");
+    let run = run(&[
+        "convert".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        out.as_os_str(),
+        "--strict".as_ref(),
+    ]);
+    assert!(!run.status.success(), "a substituted byte passed --strict");
+    let err = stderr(&run);
+    assert!(err.contains("legacy_content_omitted"), "{err}");
+    assert!(
+        err.contains("다시 저장") && err.contains("--strict 없이"),
+        "{err}"
+    );
+    assert!(!out.exists());
+}
+
+/// Nothing the lowering does not carry passes silently: a char/para shape table, a picture's
+/// size and a page definition each reach the loss gate by name, so `--strict` refuses them.
+#[test]
+fn unlowered_shapes_and_properties_are_losses() {
+    let clean = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+                 <SECTION><P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>";
+    let cases = [
+        (
+            "MAPPINGTABLE",
+            clean.replace(
+                "<HEAD/>",
+                "<HEAD><MAPPINGTABLE><CHARSHAPELIST Count=\"1\"><CHARSHAPE Height=\"1000\"/>\
+                 </CHARSHAPELIST></MAPPINGTABLE></HEAD>",
+            ),
+            "CHARSHAPELIST",
+        ),
+        (
+            "MAPPINGTABLE-empty-list",
+            clean.replace(
+                "<HEAD/>",
+                "<HEAD><MAPPINGTABLE><CHARSHAPELIST Count=\"1\"/></MAPPINGTABLE></HEAD>",
+            ),
+            "CHARSHAPELIST",
+        ),
+        (
+            "empty-unknown-in-section",
+            clean.replace("<SECTION>", "<SECTION><FUTUREMARK Kind=\"1\"/>"),
+            "FUTUREMARK",
+        ),
+        (
+            "empty-unknown-in-cell",
+            clean.replace(
+                "<CHAR>깨끗한 문단</CHAR></TEXT></P>",
+                "<CHAR>깨끗한 문단</CHAR></TEXT></P><P><TEXT><TABLE><ROW><CELL><PARALIST>\
+                 <CELLMARK/><P><TEXT><CHAR>칸</CHAR></TEXT></P></PARALIST></CELL></ROW>\
+                 </TABLE></TEXT></P>",
+            ),
+            "CELLMARK",
+        ),
+        (
+            "SIZE",
+            clean.replace(
+                "<CHAR>깨끗한 문단</CHAR>",
+                "<CHAR>깨끗한 문단</CHAR><PICTURE><SHAPEOBJECT><SIZE Width=\"9000\" \
+                 Height=\"9000\"/></SHAPEOBJECT><IMAGE BinItem=\"1\"/></PICTURE>",
+            ),
+            "SIZE",
+        ),
+        (
+            "PAGEDEF",
+            clean.replace(
+                "<SECTION>",
+                "<SECTION><P><TEXT><SECDEF><PAGEDEF Width=\"59528\"/></SECDEF></TEXT></P>",
+            ),
+            "PAGEDEF",
+        ),
+    ];
+    for (label, xml, named) in cases {
+        let input = tmp(&format!("unlowered-{label}.hml"));
+        std::fs::write(&input, xml).unwrap();
+        let out = tmp(&format!("unlowered-{label}.md"));
+        let run = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            out.as_os_str(),
+            "--strict".as_ref(),
+        ]);
+        let err = stderr(&run);
+        assert!(!run.status.success(), "{label}: passed --strict\n{err}");
+        assert!(err.contains(named), "{label}: {err}");
+        assert!(!out.exists(), "{label}");
+    }
 }

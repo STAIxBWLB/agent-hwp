@@ -10,9 +10,10 @@
 //! data-URI images), so the paragraph, char-shape-run and table invariants live in one place.
 //!
 //! Unverified (no genuine Hancom-saved `.hml` was available; synthetic inputs only):
-//! - char/para shape mapping: all text takes the default body shape, `CHARSHAPE`/`PARASHAPE` from
-//!   `MAPPINGTABLE` are not carried over;
-//! - picture size: images take their natural size, `SHAPEOBJECT/SIZE` is ignored;
+//! - char/para shape mapping: all text takes the default body shape; every `MAPPINGTABLE` list
+//!   except `BINDATALIST` is not carried over and is reported by name;
+//! - picture size: images take their natural size; `SIZE`, `POSITION` and the other picture
+//!   properties are reported as not reflected;
 //! - the `IMAGE@BinItem` -> `BINITEM@BinData` -> `BINDATA@Id` chain is followed as written in the
 //!   spec structure. Only when the document has no `BINITEM` table at all is `BinItem` matched to
 //!   `BINDATA@Id` directly; with a table, a missing or refused mapped binary skips the picture
@@ -27,7 +28,9 @@
 //! `max_lowered_bytes` before it is made.
 //!
 //! Content the lowering cannot express (shapes, equations, fields, headers/footers, notes) is
-//! dropped with a warning naming the element, never silently.
+//! dropped with a warning naming the element, never silently. Layout and formatting elements
+//! (`PROPERTIES`) are read through, and each one seen is reported as not reflected. Only pure
+//! structure (`TRANSPARENT`) passes without a warning.
 use std::collections::{BTreeSet, HashMap};
 
 use hwp_model::{DocMeta, Document, Metadata};
@@ -72,20 +75,22 @@ fn find_root(text: &str) -> Option<&str> {
 /// Decodes the byte stream: UTF-16 LE/BE by BOM, otherwise UTF-8 (BOM stripped), falling back
 /// to EUC-KR when the prolog declares a Korean legacy encoding.
 fn decode(bytes: &[u8]) -> String {
+    decode_checked(bytes).0
+}
+
+/// [`decode`], also reporting whether any malformed byte sequence was replaced with U+FFFD.
+fn decode_checked(bytes: &[u8]) -> (String, bool) {
     if let Some((enc, bom)) = encoding_rs::Encoding::for_bom(bytes) {
-        return enc
-            .decode_without_bom_handling(&bytes[bom..])
-            .0
-            .into_owned();
+        let (text, had_err) = enc.decode_without_bom_handling(&bytes[bom..]);
+        return (text.into_owned(), had_err);
     }
     let prolog = String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).to_ascii_lowercase();
     if prolog.contains("euc-kr") || prolog.contains("ks_c_5601") || prolog.contains("cp949") {
-        return encoding_rs::EUC_KR
-            .decode_without_bom_handling(bytes)
-            .0
-            .into_owned();
+        let (text, had_err) = encoding_rs::EUC_KR.decode_without_bom_handling(bytes);
+        return (text.into_owned(), had_err);
     }
-    String::from_utf8_lossy(bytes).into_owned()
+    let (text, had_err) = encoding_rs::UTF_8.decode_without_bom_handling(bytes);
+    (text.into_owned(), had_err)
 }
 
 /// Resource limits for untrusted HWPML input. Every bound is checked before the allocation it
@@ -141,7 +146,7 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
             limits.max_input_bytes
         )));
     }
-    let text = decode(bytes);
+    let (text, decode_substituted) = decode_checked(bytes);
     if find_root(&text) != Some("HWPML") {
         return Err(xml_err("루트 요소가 HWPML이 아닙니다"));
     }
@@ -164,11 +169,21 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
         .map(|name| format!("HWPML <{name}> 요소는 읽기 미지원이라 건너뜁니다"))
         .collect();
     warnings.append(&mut lower.warnings);
+    if decode_substituted {
+        warnings
+            .push("HWPML 입력에 해석할 수 없는 바이트가 있어 U+FFFD로 대체했습니다".to_string());
+    }
     warnings.extend(
         lower
             .flattened
             .iter()
             .map(|name| format!("HWPML <{name}> 필드는 글자만 남기고 필드 정보는 건너뜁니다")),
+    );
+    warnings.extend(
+        lower
+            .approximated
+            .iter()
+            .map(|name| format!("HWPML <{name}> 서식·배치 정보는 반영하지 않습니다")),
     );
     warnings.extend(lower.unresolved.iter().map(|name| {
         format!("HWPML 엔티티 &{name}; 는 풀 수 없어 건너뜁니다 (한글에서 HWPX로 다시 저장해 변환하세요)")
@@ -240,6 +255,8 @@ struct Lower {
     flattened: BTreeSet<String>,
     /// Entity references with no known replacement; the reference is dropped and reported.
     unresolved: BTreeSet<String>,
+    /// Layout/formatting elements whose attributes are not lowered (see [`PROPERTIES`]).
+    approximated: BTreeSet<String>,
 }
 
 /// Mirrors the first-free-slot placement of `hwp_convert::from_html`'s table builder so the
@@ -367,6 +384,7 @@ const SKIPPED: &[&str] = &[
     "LISTBOX",
     "SCROLLBAR",
     "HIDDENCOMMENT",
+    "MASTERPAGE",
 ];
 
 /// Inline field and marker controls. Any text inside them is kept, but the control itself
@@ -383,12 +401,24 @@ const MARKERS: &[&str] = &[
     "INDEXMARK",
 ];
 
-/// Wrapper/property elements that are transparent or carry no text.
+/// Pure structure: these elements carry nothing the lowering loses. Field parameters belong to
+/// a field that is already reported as flattened.
 const TRANSPARENT: &[&str] = &[
     "BODY",
     "SECTION",
     "TEXT",
     "PARALIST",
+    "PARAMETERSET",
+    "PARAMETERARRAY",
+    "ITEM",
+    "FIELDBEGIN",
+    "FIELDEND",
+];
+
+/// Layout and formatting elements: their content (if any) is still read like a wrapper, but
+/// their attributes (sizes, positions, margins, page setup, breaks, column and numbering
+/// settings) are not lowered, so each one seen is reported by name.
+const PROPERTIES: &[&str] = &[
     "CELLZONELIST",
     "CELLZONE",
     "SHAPEOBJECT",
@@ -417,12 +447,6 @@ const TRANSPARENT: &[&str] = &[
     "FOOTNOTESHAPE",
     "ENDNOTESHAPE",
     "PAGEBORDERFILL",
-    "MASTERPAGE",
-    "PARAMETERSET",
-    "PARAMETERARRAY",
-    "ITEM",
-    "FIELDBEGIN",
-    "FIELDEND",
     "COMPOSE",
     "COMPCHARSHAPE",
     "DUTMAL",
@@ -538,9 +562,44 @@ impl Lower {
                         self.blocks(&mut r, "BODY")?;
                     }
                     "HEAD" | "TAIL" => {}
-                    _ => skip(&mut r, &e)?,
+                    "MAPPINGTABLE" => self.mapping_table(&mut r)?,
+                    // Read by `collect_tail`; anything it refused is already reported.
+                    "BINDATASTORAGE" => skip(&mut r, &e)?,
+                    _ => {
+                        self.dropped.insert(name_of(&e));
+                        skip(&mut r, &e)?;
+                    }
                 },
                 Ok(Event::Eof) => return Ok(()),
+                Err(e) => return Err(xml_err(&e.to_string())),
+                _ => {}
+            }
+        }
+    }
+
+    /// `MAPPINGTABLE`: only `BINDATALIST` (read by `collect_tail`) is used. Every other list
+    /// (fonts, char and para shapes, border fills, styles, numbering) is not carried over, so
+    /// each one present is reported by name.
+    fn mapping_table(&mut self, r: &mut Reader<&[u8]>) -> Result<()> {
+        loop {
+            match r.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = name_of(&e);
+                    if name != "BINDATALIST" {
+                        self.dropped.insert(name);
+                    }
+                    skip(r, &e)?;
+                }
+                // A self-closed list carries nothing, but its presence is still a list this
+                // reader does not apply, so it is reported like the open form.
+                Ok(Event::Empty(e)) => {
+                    let name = name_of(&e);
+                    if name != "BINDATALIST" {
+                        self.dropped.insert(name);
+                    }
+                }
+                Ok(Event::End(e)) if e.local_name().into_inner() == "MAPPINGTABLE" => return Ok(()),
+                Ok(Event::Eof) => return Err(xml_err("닫히지 않은 MAPPINGTABLE")),
                 Err(e) => return Err(xml_err(&e.to_string())),
                 _ => {}
             }
@@ -594,6 +653,9 @@ impl Lower {
                             self.open_section()?;
                         }
                         n if TRANSPARENT.contains(&n) => {}
+                        n if PROPERTIES.contains(&n) => {
+                            self.approximated.insert(name);
+                        }
                         _ => {
                             self.dropped.insert(name);
                             skip(r, &e)?;
@@ -602,6 +664,9 @@ impl Lower {
                 }
                 Ok(Event::Empty(e)) => {
                     let local = e.local_name().into_inner();
+                    if PROPERTIES.contains(&local) {
+                        self.approximated.insert(local.to_string());
+                    }
                     if local == "P" {
                         self.push_html("<p></p>")?;
                         emitted = true;
@@ -609,7 +674,8 @@ impl Lower {
                         // An empty section still becomes its own (blank) IR section.
                         self.open_section()?;
                         self.push_html("<p></p>")?;
-                    } else if SKIPPED.contains(&local) {
+                    } else if !TRANSPARENT.contains(&local) && !PROPERTIES.contains(&local) {
+                        // SKIPPED and unknown elements alike: same verdict as the open form.
                         self.dropped.insert(local.to_string());
                     }
                 }
@@ -659,6 +725,9 @@ impl Lower {
                             skip(r, &e)?;
                         }
                         n if TRANSPARENT.contains(&n) => {}
+                        n if PROPERTIES.contains(&n) => {
+                            self.approximated.insert(name);
+                        }
                         _ => {
                             self.dropped.insert(name);
                             skip(r, &e)?;
@@ -679,7 +748,15 @@ impl Lower {
                     n if SKIPPED.contains(&n) => {
                         self.dropped.insert(n.to_string());
                     }
-                    _ => {}
+                    n if PROPERTIES.contains(&n) => {
+                        self.approximated.insert(n.to_string());
+                    }
+                    "CHAR" | "TEXT" => {}
+                    n => {
+                        // An empty element the lowering has no rule for: report it rather
+                        // than pass over it.
+                        self.dropped.insert(n.to_string());
+                    }
                 },
                 Ok(Event::Text(t)) if in_char > 0 => {
                     self.push_escaped(&mut buf, &t.xml10_content())?;
@@ -757,14 +834,26 @@ impl Lower {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => {
-                    if e.local_name().into_inner() == "IMAGE" {
-                        bin_item = attr(&e, "BinItem");
+                    match e.local_name().into_inner() {
+                        "IMAGE" => bin_item = attr(&e, "BinItem"),
+                        // Caption paragraphs are text the lowering does not carry.
+                        "CAPTION" => {
+                            self.dropped.insert("PICTURE/CAPTION".into());
+                        }
+                        n => {
+                            self.approximated.insert(format!("PICTURE/{n}"));
+                        }
                     }
                     depth += 1;
                 }
-                Ok(Event::Empty(e)) if e.local_name().into_inner() == "IMAGE" => {
-                    bin_item = attr(&e, "BinItem");
-                }
+                Ok(Event::Empty(e)) => match e.local_name().into_inner() {
+                    "IMAGE" => bin_item = attr(&e, "BinItem"),
+                    // The picture takes its natural size; SIZE, POSITION, crop, effects and
+                    // margins are not lowered.
+                    n => {
+                        self.approximated.insert(format!("PICTURE/{n}"));
+                    }
+                },
                 Ok(Event::End(_)) => {
                     depth -= 1;
                     if depth == 0 {
@@ -867,12 +956,23 @@ impl Lower {
                     }
                     _ => {
                         let name = name_of(&e);
-                        if !TRANSPARENT.contains(&name.as_str()) {
+                        if PROPERTIES.contains(&name.as_str()) {
+                            self.approximated.insert(name);
+                        } else if !TRANSPARENT.contains(&name.as_str()) {
                             self.dropped.insert(name);
                         }
                         skip(r, &e)?;
                     }
                 },
+                Ok(Event::Empty(e)) => {
+                    let name = name_of(&e);
+                    if PROPERTIES.contains(&name.as_str()) {
+                        self.approximated.insert(name);
+                    } else if !TRANSPARENT.contains(&name.as_str()) {
+                        // An empty ROW or CELL would shift the grid if passed over silently.
+                        self.dropped.insert(format!("TABLE/{name}"));
+                    }
+                }
                 Ok(Event::End(e)) => match e.local_name().into_inner() {
                     "ROW" => {
                         grid.end_row().map_err(|()| self.slot_err())?;

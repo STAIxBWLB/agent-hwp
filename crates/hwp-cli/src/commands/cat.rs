@@ -248,6 +248,21 @@ pub fn load_document_with_options(
 
 /// Lowers a read-only legacy input (GJ-2 HWPML, GJ-3 HWP 3.x) into the IR.
 fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Result<Document> {
+    let (document, warnings) = read_legacy(path, legacy)?;
+    for w in &warnings {
+        eprintln!("경고: {w}");
+    }
+    Ok(document)
+}
+
+/// Reads a legacy input and returns its reader warnings instead of printing them, so `convert`
+/// can turn each reported omission or substitution into a typed `legacy_content_omitted` loss
+/// that `--strict` and `--loss-report` see. Every legacy reader warning reports content it did
+/// not lower, so each one counts.
+pub(crate) fn read_legacy(
+    path: &Path,
+    legacy: crate::format::LegacyFormat,
+) -> anyhow::Result<(Document, Vec<String>)> {
     use crate::format::LegacyFormat;
     match legacy {
         LegacyFormat::Hml => {
@@ -268,16 +283,23 @@ fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Resu
             let result = hwpx::read_hml(&bytes).map_err(|e| {
                 anyhow::anyhow!("{}: HWPML 읽기 실패: {e}. {HML_RECOVERY}", path.display())
             })?;
-            for w in &result.warnings {
-                eprintln!("경고: {w}");
-            }
-            Ok(result.document)
+            Ok((result.document, result.warnings))
         }
-        LegacyFormat::Hwp3 => anyhow::bail!(
-            "{}: HWP 3.x 읽기는 아직 지원하지 않습니다 (GJ-3). 한글(한컴오피스)에서 열어 \
-             HWP 5.0(.hwp) 또는 HWPX로 다시 저장한 뒤 사용하세요",
-            path.display()
-        ),
+        LegacyFormat::Hwp3 => {
+            // The reader bounds its own input (64 MiB, read with take(limit + 1)) and refuses
+            // a password-protected document before decoding the body.
+            let result = hwp5::hwp3::read_document(path).map_err(|e| match e {
+                hwp5::Hwp5Error::LegacyPasswordProtected => {
+                    anyhow::anyhow!("{}: {e}", path.display())
+                }
+                other => anyhow::anyhow!(
+                    "{}: HWP 3.x 읽기 실패: {other}. 한글(한컴오피스)에서 열어 HWP 5.0(.hwp) \
+                     또는 HWPX로 다시 저장한 뒤 사용하세요",
+                    path.display()
+                ),
+            })?;
+            Ok((result.document, result.warnings))
+        }
     }
 }
 

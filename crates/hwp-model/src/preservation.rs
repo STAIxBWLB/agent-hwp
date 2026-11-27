@@ -42,6 +42,10 @@ pub enum PreservationCode {
     /// genuine HWPX sample establishes the element's payload encoding, so the drop is recorded
     /// instead of guessed (#452).
     ImageFillUnrepresentable,
+    /// A read-only legacy reader (HWPML, HWP 3.x) omitted or substituted content it cannot
+    /// lower into the IR (unsupported characters, objects, fields or entities). The count is
+    /// the number of warning records the reader returned, not of characters or objects.
+    LegacyContentOmitted,
     MetadataValueRemoved,
     OpaqueControlUnrepresentable,
     /// A page-range split boundary that crossed a paragraph was rounded to
@@ -79,6 +83,7 @@ impl PreservationCode {
             Self::HwpxOpaqueEntryChanged => "hwpx_opaque_entry_changed",
             Self::HwpxPackageEntryRemoved => "hwpx_package_entry_removed",
             Self::ImageFillUnrepresentable => "image_fill_unrepresentable",
+            Self::LegacyContentOmitted => "legacy_content_omitted",
             Self::MetadataValueRemoved => "metadata_value_removed",
             Self::OpaqueControlUnrepresentable => "opaque_control_unrepresentable",
             Self::PageRangeParagraphRounded => "page_range_paragraph_rounded",
@@ -276,6 +281,7 @@ mod tests {
             HwpxOpaqueEntryChanged,
             HwpxPackageEntryRemoved,
             ImageFillUnrepresentable,
+            LegacyContentOmitted,
             MetadataValueRemoved,
             OpaqueControlUnrepresentable,
             PageRangeParagraphRounded,
@@ -302,6 +308,7 @@ mod tests {
                 | HwpxOpaqueEntryChanged
                 | HwpxPackageEntryRemoved
                 | ImageFillUnrepresentable
+                | LegacyContentOmitted
                 | MetadataValueRemoved
                 | OpaqueControlUnrepresentable
                 | PageRangeParagraphRounded

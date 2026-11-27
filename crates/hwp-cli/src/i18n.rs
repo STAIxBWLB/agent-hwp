@@ -193,7 +193,7 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "convert",
         "loss_report",
-        "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 (단일 입력 전용). 보존 검사는 hwp/hwpx 출력에서만 실행되므로 그 외 포맷(docx, md 등)에서는 항상 빈 ledger",
+        "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 (단일 입력 전용). 보존 검사는 hwp/hwpx 출력에서만 실행되므로 그 외 포맷(docx, md 등)의 ledger에는 레거시(HWPML, HWP 3.x) 리더가 생략한 내용만 남는다",
     ),
     (
         "convert",

@@ -226,8 +226,12 @@ fn run_multi_with_options(
             anyhow::bail!("stdin이 비어 있습니다");
         }
         let ext = crate::format::detect_bytes(&head)?;
-        let limit = match ext {
-            "hml" => hwpx::HML_LIMITS.max_input_bytes,
+        let legacy = crate::format::detect_legacy_bytes(&head)?;
+        let limit = match (ext, legacy) {
+            ("hml", _) => hwpx::HML_LIMITS.max_input_bytes,
+            // HWP 3.x shares the `.hwp` extension but is read whole by its own reader, so it
+            // stages under that reader's bound rather than the native container bound.
+            (_, Some(crate::format::LegacyFormat::Hwp3)) => hwp5::hwp3::MAX_BYTES,
             _ => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
         };
         // Unpredictable name for exclusive creation (create_new) — prevents symlink
@@ -256,6 +260,14 @@ fn run_multi_with_options(
         match total {
             Ok(total) if total > limit => {
                 let _ = std::fs::remove_file(&path);
+                // The HWP 3.x reader applies the same bound to a file path, so for it only
+                // re-saving helps.
+                if legacy == Some(crate::format::LegacyFormat::Hwp3) {
+                    anyhow::bail!(
+                        "stdin 입력이 상한 {limit}바이트를 넘습니다. 한글(한컴오피스)에서 문서를 \
+                         나눠 다시 저장하세요"
+                    );
+                }
                 anyhow::bail!(
                     "stdin 입력이 상한 {limit}바이트를 넘습니다. 파일로 저장해 경로로 넘기거나, \
                      한글(한컴오피스)에서 문서를 나눠 다시 저장하세요"
@@ -317,8 +329,10 @@ fn run_multi_inner(
                 let Some(target) = to else {
                     anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
                 };
-                let doc =
-                    load_document_with_options(&inputs[0], options).map_err(anyhow::Error::new)?;
+                let (doc, legacy_losses) = load_with_legacy_losses(&inputs[0], options)?;
+                if strict {
+                    crate::commands::reject_preservation_loss("convert", &legacy_losses)?;
+                }
                 print_text_output(&doc, target, embed_bin, md_opts)?;
                 return Ok(());
             }
@@ -619,6 +633,34 @@ pub fn execute_with_options(
     )
 }
 
+/// Loads a conversion source. A legacy (HWPML, HWP 3.x) reader's warnings each report content
+/// it did not lower, so they become one typed `legacy_content_omitted` loss that every convert
+/// path (file output and stdout) checks under `--strict` and records in `--loss-report`.
+/// Native inputs return an empty report; their losses come from the write-side inspections.
+fn load_with_legacy_losses(
+    input: &Path,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<(hwp_model::Document, hwp_model::PreservationReport)> {
+    let mut losses = hwp_model::PreservationReport::new();
+    let Some(legacy) = crate::format::detect_legacy(input)? else {
+        let doc = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+        return Ok((doc, losses));
+    };
+    let (doc, warnings) = crate::commands::cat::read_legacy(input, legacy)?;
+    for w in &warnings {
+        eprintln!("경고: {w}");
+    }
+    if !warnings.is_empty() {
+        losses.record(hwp_model::PreservationEvent::new(
+            hwp_model::PreservationCode::LegacyContentOmitted,
+            hwp_model::PreservationResourceKind::Control,
+            hwp_model::PreservationDisposition::Removed,
+            warnings.len(),
+        ));
+    }
+    Ok((doc, losses))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_with_preloaded_document(
     input: &Path,
@@ -655,13 +697,24 @@ fn execute_with_preloaded_document(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let (doc, preloaded_source_sha256) = match preloaded {
-        Some(preloaded) => (preloaded.document, Some(preloaded.source_sha256)),
-        None => (
-            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
-            None,
+    let (doc, preloaded_source_sha256, legacy_losses) = match preloaded {
+        Some(preloaded) => (
+            preloaded.document,
+            Some(preloaded.source_sha256),
+            hwp_model::PreservationReport::new(),
         ),
+        None => {
+            let (doc, losses) = load_with_legacy_losses(input, options)?;
+            (doc, None, losses)
+        }
     };
+    if strict && !legacy_losses.is_lossless() {
+        // Refuse before any output exists, leaving the ledger as decision evidence.
+        if let Some(report_path) = loss_report {
+            write_loss_report(report_path, &legacy_losses)?;
+        }
+        crate::commands::reject_preservation_loss(preservation_context.as_str(), &legacy_losses)?;
+    }
     if let Some(expected) = &preloaded_source_sha256
         && source_sha256(input)? != *expected
     {
@@ -723,7 +776,7 @@ fn execute_with_preloaded_document(
         };
         let report = ConvertReport {
             warnings,
-            preservation: hwp_model::PreservationReport::new(),
+            preservation: legacy_losses.clone(),
         };
         if let Some(report_path) = loss_report {
             write_loss_report(report_path, &report.preservation)?;
@@ -819,6 +872,7 @@ fn execute_with_preloaded_document(
             }
             ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
         };
+        report.preservation.extend(legacy_losses.clone());
 
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
             if inspect_same_native_container {

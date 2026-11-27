@@ -11,7 +11,8 @@ use hwp_model::{
 use crate::{Hwp5Error, ReadResult, codec::ByteReader, error::Result};
 
 pub const SIGNATURE: &[u8; 30] = b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05";
-const MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// The reader's input bound; `convert -` stages an HWP 3.x stdin input under the same bound.
+pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PARAGRAPHS: usize = 50_000;
 const MAX_CHARACTERS: usize = 2_000_000;
 const MAX_GRID: usize = 512;
@@ -89,10 +90,13 @@ pub fn read_bytes(bytes: &[u8]) -> Result<ReadResult> {
     let mut document = parser.document;
     document.meta.source_format = "hwp3".into();
     document.meta.source_version = "3.00".into();
-    document.metadata.title = summary_field(summary, 0);
-    document.metadata.subject = summary_field(summary, 1);
-    document.metadata.author = summary_field(summary, 2);
-    document.metadata.keywords = summary_field(summary, 4);
+    let mut substituted = 0usize;
+    document.metadata.title = summary_field(summary, 0, &mut substituted);
+    document.metadata.subject = summary_field(summary, 1, &mut substituted);
+    document.metadata.author = summary_field(summary, 2, &mut substituted);
+    document.metadata.keywords = summary_field(summary, 4, &mut substituted);
+    // An undecodable summary character is a substitution like any body one, so it is counted.
+    parser.omissions += substituted;
     document.header.properties.section_count = 1;
     document.header.properties.start_numbers =
         [word(info, 98).max(1), word(info, 100).max(1), 1, 1, 1, 1];
@@ -190,12 +194,18 @@ fn unit(legacy: u16) -> HwpUnit {
     HwpUnit(i32::from(legacy) * 4)
 }
 
-fn summary_field(summary: &[u8], index: usize) -> Option<String> {
+/// One 112-byte summary field. Undecodable characters become U+FFFD and add to `substituted`.
+fn summary_field(summary: &[u8], index: usize, substituted: &mut usize) -> Option<String> {
     let text: String = summary[index * 112..(index + 1) * 112]
         .chunks_exact(2)
         .map(|bytes| word(bytes, 0))
         .take_while(|&code| code != 0)
-        .map(|code| decode_hchar(code).unwrap_or(char::REPLACEMENT_CHARACTER))
+        .map(|code| {
+            decode_hchar(code).unwrap_or_else(|| {
+                *substituted += 1;
+                char::REPLACEMENT_CHARACTER
+            })
+        })
         .collect();
     (!text.trim().is_empty()).then_some(text)
 }
@@ -244,7 +254,9 @@ fn decode_hchar(code: u16) -> Option<char> {
     None
 }
 
-fn kchar(bytes: &[u8]) -> String {
+/// Decodes a NUL-terminated kchar string. Each undecodable or truncated character becomes
+/// U+FFFD and adds to `substituted`, so a name substitution is reported like a body one.
+fn kchar(bytes: &[u8], substituted: &mut usize) -> String {
     let mut text = String::new();
     let mut bytes = bytes.iter().copied().take_while(|&b| b != 0);
     while let Some(first) = bytes.next() {
@@ -252,12 +264,16 @@ fn kchar(bytes: &[u8]) -> String {
             u16::from(first)
         } else {
             let Some(second) = bytes.next() else {
+                *substituted += 1;
                 text.push(char::REPLACEMENT_CHARACTER);
                 break;
             };
             u16::from_be_bytes([first, second])
         };
-        text.push(decode_hchar(code).unwrap_or(char::REPLACEMENT_CHARACTER));
+        text.push(decode_hchar(code).unwrap_or_else(|| {
+            *substituted += 1;
+            char::REPLACEMENT_CHARACTER
+        }));
     }
     text
 }
@@ -322,7 +338,7 @@ impl<'a> Parser<'a> {
             }
             for _ in 0..count {
                 fonts.push(FaceName {
-                    name: kchar(self.input.read_bytes(40)?),
+                    name: kchar(self.input.read_bytes(40)?, &mut self.omissions),
                     ..Default::default()
                 });
             }
@@ -338,7 +354,7 @@ impl<'a> Parser<'a> {
             return Err(structure_limit("style table", 256));
         }
         for _ in 0..count {
-            let name = kchar(self.input.read_bytes(20)?);
+            let name = kchar(self.input.read_bytes(20)?, &mut self.omissions);
             let char_shape = self.read_char_shape()?;
             let para_shape = self.read_para_shape()?;
             self.document.header.styles.push(Style {
@@ -485,6 +501,9 @@ impl<'a> Parser<'a> {
             let style = if usize::from(head[11]) < self.document.header.styles.len() {
                 head[11]
             } else {
+                // A dangling style reference falls back to the first style, which is a
+                // substitution, so it is counted.
+                self.omissions += 1;
                 0
             };
             let mut para = Paragraph {
@@ -666,7 +685,7 @@ impl<'a> Parser<'a> {
             self.omissions += 1;
             return Ok(None);
         }
-        let name = kchar(&info[83..339]);
+        let name = kchar(&info[83..339], &mut self.omissions);
         if name.is_empty() {
             return Err(invalid("embedded picture has no name"));
         }
@@ -703,6 +722,9 @@ impl<'a> Parser<'a> {
             }
             let content = self.input.read_bytes(size)?;
             if tag != 1 {
+                // Only embedded images (tag 1) are lowered; any other addition is content the
+                // reader does not carry, so it is counted rather than skipped silently.
+                self.omissions += 1;
                 continue;
             }
             if images.len() >= 4096 {
@@ -711,7 +733,7 @@ impl<'a> Parser<'a> {
             if content.len() < 32 {
                 return Err(invalid("truncated embedded-image header"));
             }
-            let key = kchar(&content[..16]);
+            let key = kchar(&content[..16], &mut self.omissions);
             let data = &content[32..];
             let suffix = match data {
                 [137, b'P', b'N', b'G', 13, 10, 26, 10, ..] => Some("png"),
