@@ -47,7 +47,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Read-only HWPML (`.hml`) input (GJ-2). `cat`, `convert`, `render`, `info` and the other read
   commands detect it by content and lower body text, tables with merged cells, embedded pictures
   and summary metadata into the IR. Character and paragraph shapes are not carried over, and other
-  objects are skipped with a warning naming the element. Each `SECTION` becomes its own section,
+  objects are skipped with a warning naming the element. Shape tables, layout properties such as
+  a picture's size, and bytes replaced while decoding are reported the same way. Each `SECTION` becomes its own section,
   and blank, tab-only and NBSP-only paragraphs are kept. Field markers keep their text and are
   reported. Input size, table nesting, lowered
   size, picture count, section count and projected table grid slots are bounded before allocation, and
@@ -62,10 +63,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   detects the format from the head of stdin and streams the rest to its staging file under that
   format's input bound, refusing input past it.
   The complete HWP 3.00 signature routes to the read-only HWP 3.x (Johab) reader, so `cat`,
-  `info`, `grep`, `convert` (stdin included) and `render` read HWP 3.x documents. A
+  `info`, `grep`, `convert` (stdin included, staged under the reader's 64 MiB bound) and
+  `render` read HWP 3.x documents. A
   password-protected one is refused before its body is decoded, and `edit` refuses every legacy
   input whatever the output format, pointing at `convert` first. A legacy reader's omissions
-  are recorded as a typed `legacy_content_omitted` loss, so `convert --loss-report` lists them
+  (substituted characters in body, summary, font, style or picture names, dangling style
+  references, unread additions) are recorded as a typed `legacy_content_omitted` loss, so `convert --loss-report` lists them
   for every target and `convert --strict` refuses before publishing. Other 3.x revisions, HWP
   1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).

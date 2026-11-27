@@ -226,8 +226,11 @@ fn run_multi_with_options(
             anyhow::bail!("stdin이 비어 있습니다");
         }
         let ext = crate::format::detect_bytes(&head)?;
-        let limit = match ext {
-            "hml" => hwpx::HML_LIMITS.max_input_bytes,
+        let limit = match (ext, crate::format::detect_legacy_bytes(&head)?) {
+            ("hml", _) => hwpx::HML_LIMITS.max_input_bytes,
+            // HWP 3.x shares the `.hwp` extension but is read whole by its own reader, so it
+            // stages under that reader's bound rather than the native container bound.
+            (_, Some(crate::format::LegacyFormat::Hwp3)) => hwp5::hwp3::MAX_BYTES,
             _ => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
         };
         // Unpredictable name for exclusive creation (create_new) — prevents symlink

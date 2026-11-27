@@ -627,3 +627,55 @@ fn decoding_substitutions_are_a_loss_with_a_remedy() {
     );
     assert!(!out.exists());
 }
+
+/// Nothing the lowering does not carry passes silently: a char/para shape table, a picture's
+/// size and a page definition each reach the loss gate by name, so `--strict` refuses them.
+#[test]
+fn unlowered_shapes_and_properties_are_losses() {
+    let clean = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+                 <SECTION><P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>";
+    let cases = [
+        (
+            "MAPPINGTABLE",
+            clean.replace(
+                "<HEAD/>",
+                "<HEAD><MAPPINGTABLE><CHARSHAPELIST Count=\"1\"><CHARSHAPE Height=\"1000\"/>\
+                 </CHARSHAPELIST></MAPPINGTABLE></HEAD>",
+            ),
+            "CHARSHAPELIST",
+        ),
+        (
+            "SIZE",
+            clean.replace(
+                "<CHAR>깨끗한 문단</CHAR>",
+                "<CHAR>깨끗한 문단</CHAR><PICTURE><SHAPEOBJECT><SIZE Width=\"9000\" \
+                 Height=\"9000\"/></SHAPEOBJECT><IMAGE BinItem=\"1\"/></PICTURE>",
+            ),
+            "SIZE",
+        ),
+        (
+            "PAGEDEF",
+            clean.replace(
+                "<SECTION>",
+                "<SECTION><P><TEXT><SECDEF><PAGEDEF Width=\"59528\"/></SECDEF></TEXT></P>",
+            ),
+            "PAGEDEF",
+        ),
+    ];
+    for (label, xml, named) in cases {
+        let input = tmp(&format!("unlowered-{label}.hml"));
+        std::fs::write(&input, xml).unwrap();
+        let out = tmp(&format!("unlowered-{label}.md"));
+        let run = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            out.as_os_str(),
+            "--strict".as_ref(),
+        ]);
+        let err = stderr(&run);
+        assert!(!run.status.success(), "{label}: passed --strict\n{err}");
+        assert!(err.contains(named), "{label}: {err}");
+        assert!(!out.exists(), "{label}");
+    }
+}

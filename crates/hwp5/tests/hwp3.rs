@@ -278,3 +278,37 @@ fn undecodable_summary_characters_are_reported() {
     );
     assert_eq!(read.warnings.len(), 1, "{:?}", read.warnings);
 }
+
+/// Font and style names are kchar strings: an undecodable one is a substitution, and a
+/// paragraph naming a style the table does not hold falls back to the first style. Both are
+/// reported, so `--strict` can refuse them.
+#[test]
+fn name_substitutions_and_style_fallbacks_are_reported() {
+    let build = |name: [u8; 2], style_ref: u8| {
+        let mut bytes = prefix(false);
+        for _ in 0..7 {
+            bytes.extend(0u16.to_le_bytes());
+        }
+        // One style: 20-byte kchar name, then its char shape (31) and para shape (187).
+        bytes.extend(1u16.to_le_bytes());
+        let mut style = [0u8; 20];
+        style[..2].copy_from_slice(&name);
+        bytes.extend(style);
+        bytes.extend([0u8; 31]);
+        let mut para_shape = [0u8; 187];
+        word_at(&mut para_shape, 6, 160);
+        bytes.extend(para_shape);
+        let paragraph = bytes.len();
+        text_list(&mut bytes, &[0xd065]);
+        // The paragraph header's style byte (offset 11).
+        bytes[paragraph + 11] = style_ref;
+        bytes
+    };
+    // 0x88 0x61 decodes (Johab); 0x80 0x01 has no syllable slots and does not.
+    let clean = hwp5::hwp3::read_bytes(&build([0x88, 0x61], 0)).unwrap();
+    assert!(clean.warnings.is_empty(), "{:?}", clean.warnings);
+    for bytes in [build([0x80, 0x01], 0), build([0x88, 0x61], 9)] {
+        let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+        assert_eq!(read.warnings.len(), 1, "{:?}", read.warnings);
+    }
+}

@@ -202,3 +202,48 @@ fn edit_refuses_hwp3_and_points_at_convert() {
     assert!(!output.exists());
     assert_eq!(std::fs::read(&*input).unwrap(), before);
 }
+
+/// HWP 3.x on stdin stages under the HWP 3.x reader's own 64 MiB bound, not the native 2 GiB
+/// container bound: the writer never stops, so the run only finishes if staging refuses at
+/// that bound (and the message names it).
+#[test]
+fn convert_stdin_hwp3_stops_at_the_reader_bound() {
+    use std::io::Write as _;
+    let output = tmp("stdin-hwp3-over.hwpx");
+    let mut child = hwp()
+        .args(["convert", "-", "-o"])
+        .arg(&*output)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        if stdin.write_all(hwp5::hwp3::SIGNATURE).is_err() {
+            return;
+        }
+        let chunk = vec![0u8; 1 << 20];
+        while stdin.write_all(&chunk).is_ok() {}
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("convert - kept reading HWP 3.x stdin past the reader bound");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("stdin") && err.contains(&hwp5::hwp3::MAX_BYTES.to_string()),
+        "{err}"
+    );
+    assert!(!output.exists());
+}
