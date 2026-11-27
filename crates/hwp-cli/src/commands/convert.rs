@@ -226,7 +226,8 @@ fn run_multi_with_options(
             anyhow::bail!("stdin이 비어 있습니다");
         }
         let ext = crate::format::detect_bytes(&head)?;
-        let limit = match (ext, crate::format::detect_legacy_bytes(&head)?) {
+        let legacy = crate::format::detect_legacy_bytes(&head)?;
+        let limit = match (ext, legacy) {
             ("hml", _) => hwpx::HML_LIMITS.max_input_bytes,
             // HWP 3.x shares the `.hwp` extension but is read whole by its own reader, so it
             // stages under that reader's bound rather than the native container bound.
@@ -259,6 +260,14 @@ fn run_multi_with_options(
         match total {
             Ok(total) if total > limit => {
                 let _ = std::fs::remove_file(&path);
+                // The HWP 3.x reader applies the same bound to a file path, so for it only
+                // re-saving helps.
+                if legacy == Some(crate::format::LegacyFormat::Hwp3) {
+                    anyhow::bail!(
+                        "stdin 입력이 상한 {limit}바이트를 넘습니다. 한글(한컴오피스)에서 문서를 \
+                         나눠 다시 저장하세요"
+                    );
+                }
                 anyhow::bail!(
                     "stdin 입력이 상한 {limit}바이트를 넘습니다. 파일로 저장해 경로로 넘기거나, \
                      한글(한컴오피스)에서 문서를 나눠 다시 저장하세요"

@@ -645,6 +645,29 @@ fn unlowered_shapes_and_properties_are_losses() {
             "CHARSHAPELIST",
         ),
         (
+            "MAPPINGTABLE-empty-list",
+            clean.replace(
+                "<HEAD/>",
+                "<HEAD><MAPPINGTABLE><CHARSHAPELIST Count=\"1\"/></MAPPINGTABLE></HEAD>",
+            ),
+            "CHARSHAPELIST",
+        ),
+        (
+            "empty-unknown-in-section",
+            clean.replace("<SECTION>", "<SECTION><FUTUREMARK Kind=\"1\"/>"),
+            "FUTUREMARK",
+        ),
+        (
+            "empty-unknown-in-cell",
+            clean.replace(
+                "<CHAR>깨끗한 문단</CHAR></TEXT></P>",
+                "<CHAR>깨끗한 문단</CHAR></TEXT></P><P><TEXT><TABLE><ROW><CELL><PARALIST>\
+                 <CELLMARK/><P><TEXT><CHAR>칸</CHAR></TEXT></P></PARALIST></CELL></ROW>\
+                 </TABLE></TEXT></P>",
+            ),
+            "CELLMARK",
+        ),
+        (
             "SIZE",
             clean.replace(
                 "<CHAR>깨끗한 문단</CHAR>",

@@ -590,7 +590,14 @@ impl Lower {
                     }
                     skip(r, &e)?;
                 }
-                Ok(Event::Empty(_)) => {}
+                // A self-closed list carries nothing, but its presence is still a list this
+                // reader does not apply, so it is reported like the open form.
+                Ok(Event::Empty(e)) => {
+                    let name = name_of(&e);
+                    if name != "BINDATALIST" {
+                        self.dropped.insert(name);
+                    }
+                }
                 Ok(Event::End(e)) if e.local_name().into_inner() == "MAPPINGTABLE" => return Ok(()),
                 Ok(Event::Eof) => return Err(xml_err("닫히지 않은 MAPPINGTABLE")),
                 Err(e) => return Err(xml_err(&e.to_string())),
@@ -667,7 +674,8 @@ impl Lower {
                         // An empty section still becomes its own (blank) IR section.
                         self.open_section()?;
                         self.push_html("<p></p>")?;
-                    } else if SKIPPED.contains(&local) {
+                    } else if !TRANSPARENT.contains(&local) && !PROPERTIES.contains(&local) {
+                        // SKIPPED and unknown elements alike: same verdict as the open form.
                         self.dropped.insert(local.to_string());
                     }
                 }

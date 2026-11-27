@@ -245,5 +245,10 @@ fn convert_stdin_hwp3_stops_at_the_reader_bound() {
         err.contains("stdin") && err.contains(&hwp5::hwp3::MAX_BYTES.to_string()),
         "{err}"
     );
+    // The HWP 3.x reader bounds a file path the same way, so the file-path hint would mislead.
+    assert!(
+        err.contains("다시 저장") && !err.contains("경로로"),
+        "{err}"
+    );
     assert!(!output.exists());
 }
