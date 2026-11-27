@@ -56,11 +56,15 @@ done
 A target that trips the AC1 pass has its artifact replayed alone before it counts as a finding:
 
 ```sh
-cargo +nightly fuzz run <target> --sanitizer none -- -rss_limit_mb=256 <artifact>
+cargo +nightly fuzz run <target> --sanitizer none -- \
+    -timeout=2 -rss_limit_mb=256 -malloc_limit_mb=256 <artifact>
 ```
 
-A replay that reproduces is a per-input bound to harden. One that does not is a campaign-length
-artifact, reported as such rather than fixed by inventing a limit.
+The replay carries the same three bounds as the campaign's AC1 pass, so a repeated input is judged
+by the criterion rather than by a looser command: dropping `-timeout=2` or `-malloc_limit_mb=256`
+would let a genuine per-input timeout or oversized allocation replay clean. A replay that reproduces
+is a per-input bound to harden. One that does not is a campaign-length artifact, reported as such
+rather than fixed by inventing a limit.
 
 ## The committed inputs are synthetic
 
@@ -70,7 +74,7 @@ committed input carries its own evidence that it was built rather than saved by 
 | Input | Evidence |
 |---|---|
 | `fuzz_hwp5_read/seed-synthetic.hwp` | A document written by this repository's own HWP5 writer: the CFB `Application` property is `hwp-cli` (`crates/hwp5/src/write.rs`). |
-| `fuzz_hwp5_read/seed-legacy.hwp` | The 30-byte HWP 3.00 signature (`crates/hwp5/src/hwp3.rs` `SIGNATURE`) inside a 128-byte header, its compression flag set (`info[124]`, absolute byte 154), and a payload that starts with a gzip header but is not a valid stream. The flag matters: at `info[124]=0` the reader takes the uncompressed branch and never reaches the decompressor (`hwp3.rs`), which is why the byte is 1 here. The reader therefore enters its gzip/deflate step and rejects the truncated stream; a saved file is never in that shape. |
+| `fuzz_hwp5_read/seed-legacy.hwp` | The 30-byte HWP 3.00 signature (`crates/hwp5/src/hwp3.rs` `SIGNATURE`) inside a 128-byte header, its compression flag set (`info[124]`, absolute byte 154), and a 295-byte payload that is not a valid deflate stream. The flag matters: at `info[124]=0` the reader takes the uncompressed branch and never reaches the decompressor (`hwp3.rs`), which is why the byte is 1 here. The payload begins with zeros and holds no gzip magic - `1f 8b 08` sits at absolute offset 128, inside the header block, never in the payload - so the reader enters the compressed step, takes its raw-deflate branch for want of a gzip header, and rejects the stream. A saved file is never in that shape. |
 | `fuzz_hwp5_read/seed-truncated-cfb` | The 8-byte CFB signature and nothing else. |
 | `fuzz_hwp5_read/seed-short-record` | A 5-byte truncated record header. |
 | `fuzz_hwpx_read/seed-zip` | A hand-built ZIP: the `mimetype` entry stored uncompressed and first, then two deflated XML entries. |

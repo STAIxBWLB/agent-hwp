@@ -23,7 +23,7 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 if ! command -v cargo-fuzz >/dev/null; then
     echo "cargo-fuzz is not installed; installing it"
     if ! cargo install --locked cargo-fuzz; then
-        echo "cargo home is not writable; retrying into $here/.cargo-tools"
+        echo "cargo install failed (see the output above); retrying into $here/.cargo-tools"
         cargo install --locked cargo-fuzz --root "$here/.cargo-tools"
         PATH="$here/.cargo-tools/bin:$PATH"
     fi
