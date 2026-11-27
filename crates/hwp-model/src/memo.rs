@@ -187,6 +187,21 @@ pub fn is_memo_anchor(g: &crate::control::GenericControl) -> bool {
         && field_command(&g.data).is_some_and(|c| c.starts_with("MEMO/"))
 }
 
+/// A memo anchor's parsed Command together with the raw string, for the writers that synthesize
+/// a container from the IR.
+pub fn memo_anchor_command(g: &crate::control::GenericControl) -> Option<(MemoCommand, String)> {
+    if !is_memo_anchor(g) {
+        return None;
+    }
+    let command = field_command(&g.data)?;
+    parse_memo_command(&command).map(|parsed| (parsed, command))
+}
+
+/// The memo number a memo anchor carries (07 L3).
+pub fn memo_number(g: &crate::control::GenericControl) -> Option<u32> {
+    memo_anchor_command(g).map(|(parsed, _)| parsed.number)
+}
+
 /// Whether a field control is a memo anchor: HWP5 `%unk`/`%%me` or HWPX `MEMO`, recognized by
 /// its `MEMO/` Command string so a genuine `%unk` field of another kind never matches.
 fn memo_command_of(control: &Control) -> Option<MemoCommand> {
@@ -478,16 +493,15 @@ mod tests {
     #[test]
     fn build_memo_command_round_trips_through_parse() {
         // The first memo of fixtures/hwp5/memo3.hwp, byte for byte.
-        let command = build_memo_command(
-            1,
-            Some(31_292_991u64 << 32 | 2_485_147_664u64),
-            "yj.lee",
-        );
+        let command = build_memo_command(1, Some(31_292_991u64 << 32 | 2_485_147_664u64), "yj.lee");
         assert_eq!(command, "MEMO/65535/1/2485147664/31292991/yj.lee/\\;;");
         let parsed = parse_memo_command(&command).unwrap();
         assert_eq!(parsed.number, 1);
         assert_eq!(parsed.author, "yj.lee");
-        assert_eq!(parsed.filetime, Some(31_292_991u64 << 32 | 2_485_147_664u64));
+        assert_eq!(
+            parsed.filetime,
+            Some(31_292_991u64 << 32 | 2_485_147_664u64)
+        );
     }
 
     #[test]
