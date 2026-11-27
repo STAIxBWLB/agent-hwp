@@ -43,6 +43,15 @@
 뿐인 빈 템플릿으로 실제 개인정보·조직 식별 정보는 없다. 모든 픽스처는 위 Apache-2.0 저장소에서
 재배포된 것을 가져왔다(루트 `NOTICE` 참고).
 
+로컬 전용 `624-text-box.hwp`, `624-header-footer.hwp`, `624-footnote-endnote.hwp`는
+[hwp-swift CoreHwp 픽스처](https://github.com/sboh1214/hwp-swift/tree/eebe90d160b3d437b97d0bb1ea7a5752f419f225/Tests/CoreHwpTests/Fixtures)의
+`text-box/document.hwp`, `header-footer/document.hwp`, `footnote-endnote/document.hwp`를
+각각 `fixtures/hwp5/`에 복사한 것이다. 회귀 테스트는 저장된 글상자, 머리말, 꼬리말,
+각주와 미주 안에 표를 추가해 편집을 검증한다.
+한컴오피스에서 열어 볼 편집 결과를 보관하려면 추적 트리 밖의 디렉터리를
+`HWP_NATIVE_EDIT_CHECK_DIR`로 지정하고
+`cargo test -p agent-hwp --test edit_raw_backed_refusal native_`를 실행한다.
+
 ## hwpx/
 
 - `minimal.hwpx` — hwpx MCP 서버로 생성한 최소 문서 (한/영/숫자 혼합 3문단)
