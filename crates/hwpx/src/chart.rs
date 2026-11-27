@@ -325,16 +325,21 @@ pub(crate) fn write(data: &ChartData) -> Vec<u8> {
             .as_deref()
             .and_then(|color| color.strip_prefix('#'))
         {
-            if data.kind == Line {
-                let _ = write!(
-                    out,
-                    "<c:spPr><a:ln><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></a:ln></c:spPr>"
-                );
-            } else {
-                let _ = write!(
-                    out,
-                    "<c:spPr><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></c:spPr>"
-                );
+            let fill = format!(r#"<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>"#);
+            match data.kind {
+                // Measured on Hancom Office macOS at 59f1ee13: this pen colors a
+                // line and a scatter stroke, and this point style colors the
+                // markers; each kind was missing the other half. Unverified there:
+                // whether the exact width, dash and symbol values are required.
+                Line | Scatter => {
+                    let _ = write!(
+                        out,
+                        r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
+                    );
+                }
+                _ => {
+                    let _ = write!(out, "<c:spPr>{fill}</c:spPr>");
+                }
             }
         }
         if matches!(data.kind, Pie | Doughnut) {
@@ -489,5 +494,38 @@ mod tests {
             };
             assert_eq!(parse(&write(&data)), Some(data));
         }
+    }
+
+    #[test]
+    fn line_and_scatter_series_colors_use_line_fill() {
+        let chart = |kind| ChartData {
+            kind,
+            title: String::new(),
+            categories: Vec::new(),
+            series: vec![ChartSeries {
+                name: "S".into(),
+                values: vec![1.0, 2.0],
+                x_values: if kind == ChartKind::Scatter {
+                    vec![1.0, 2.0]
+                } else {
+                    Vec::new()
+                },
+                color: Some("#173F73".into()),
+            }],
+            legend: ChartLegend::None,
+            x_label: String::new(),
+            y_label: String::new(),
+        };
+        let fill = r#"<a:solidFill><a:srgbClr val="173F73"/></a:solidFill>"#;
+        let block = format!(
+            r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
+        );
+        for kind in [ChartKind::Line, ChartKind::Scatter] {
+            let xml = String::from_utf8(write(&chart(kind))).unwrap();
+            assert!(xml.contains(&block), "{xml}");
+        }
+        let area = String::from_utf8(write(&chart(ChartKind::Area))).unwrap();
+        assert!(area.contains(&format!("<c:spPr>{fill}</c:spPr>")), "{area}");
+        assert!(!area.contains("<a:ln"), "{area}");
     }
 }

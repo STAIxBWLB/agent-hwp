@@ -397,3 +397,15 @@ Hancom Office macOS 저장본은 `chartIDRef="Chart/chart1.xml"`로 패키지 �
 합성 파일에서 참조만 경로로 바꾸자 macOS Hancom이 7종 모두 지정된 데이터를 표시했다
 (#618 AC4). 합성 파일은 직접 차트 래퍼와 OPF 차트 항목을 계속 쓴다. 원본을 읽을 때는
 경로와 이전 매니페스트 ID를 해석하고, 재저장 시 전체 switch를 보존한다.
+
+계열 채우기만으로는 꺾은선·분산형 계열의 색이 정해지지 않는다. `d510c6a1`에서 꺾은선
+계열은 폭이 없는 `c:ser/c:spPr/a:ln` 채우기만, 분산형 계열은 `c:ser/c:spPr/a:solidFill`만
+내보냈고 macOS Hancom은 둘 다 기본 색으로 그렸다. `59f1ee13`에서는 폭을 지정한 펜이 꺾은선
+선을, `c:marker/c:spPr`이 분산형 표식을 지정된 색으로 그렸지만, 꺾은선의 표식과 분산형의
+연결선은 기본 색으로 남았다. 꺾은선은 `c:marker`를, 분산형은 펜을 내보내지 않았기 때문이다.
+`c1965f11`에서는 두 종류가 같은 블록을 내보낸다. 펜(`c:ser/c:spPr/a:ln`,
+`w="28575" cap="flat" cmpd="sng" algn="ctr"`, 실선 dash, 둥근 join)과, 같은 채우기를 두 번 담은
+`c:spPr`의 `c:marker`다. 표식 자체의 채우기와 `a:ln w="28575"` 안의 채우기이며, 펜의 `cap`·`cmpd`·
+`algn`이나 dash, 둥근 join은 그 표식에 없다. 이 헤드에서 macOS Hancom은 두 종류의 선과 표식,
+범례 견본을 모두 지정된 색으로 그렸다. 다만 그 정확한 폭·dash·기호 값이 필수인지 충분 조건인지,
+그리고 Windows Hancom이 같은 요소를 어떻게 그리는지는 이 환경에서 미검증이다.

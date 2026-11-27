@@ -14,7 +14,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
   render those charts, including Hancom switch-wrapped charts, and preserve the source wrappers
-  and fallback parts during HWPX edits. Emit package-path references for Hancom. Report
+  and fallback parts during HWPX edits. Emit package-path references for Hancom. Give line and
+  scatter series their stroke and point colors through their own DrawingML shape properties
+  instead of the series fill. Report
   `chart_control_unrepresentable` on HWP5 conversion
   ([#618](https://github.com/STAIxBWLB/agent-hwp/issues/618)).
 

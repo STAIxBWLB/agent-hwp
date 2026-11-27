@@ -39,10 +39,15 @@ fn compose_render_and_edit_native_hwpx_charts() {
     let mut blocks = vec![serde_json::json!({
         "type":"paragraph", "runs":[{"type":"text", "text":"Before charts"}]
     })];
-    for kind in ["column", "line", "pie"] {
+    for kind in ["column", "line", "pie", "scatter"] {
+        let categories: &[&str] = if kind == "scatter" {
+            &[]
+        } else {
+            &["One", "Two", "Three"]
+        };
         blocks.push(serde_json::json!({
             "type":"chart", "width_mm":100, "height_mm":48,
-            "data": {"kind":kind, "title":kind, "categories":["One", "Two", "Three"],
+            "data": {"kind":kind, "title":kind, "categories":categories,
                 "series":[{"name":"Series & data", "values":[1,4,2.5], "color":"#173F73"}]}
         }));
     }
@@ -66,7 +71,12 @@ fn compose_render_and_edit_native_hwpx_charts() {
     success(cli().arg("validate").arg(&input).output().unwrap());
     let manifest = String::from_utf8(entry(&input, "Contents/content.hpf")).unwrap();
     let section = String::from_utf8(entry(&input, "Contents/section0.xml")).unwrap();
-    for (n, tag) in [(1, "barChart"), (2, "lineChart"), (3, "pieChart")] {
+    for (n, tag) in [
+        (1, "barChart"),
+        (2, "lineChart"),
+        (3, "pieChart"),
+        (4, "scatterChart"),
+    ] {
         assert!(manifest.contains(&format!(r#"id="chart{n}" href="Chart/chart{n}.xml""#)));
         assert!(section.contains(&format!(r#"chartIDRef="Chart/chart{n}.xml""#)));
         let xml = String::from_utf8(entry(&input, &format!("Chart/chart{n}.xml"))).unwrap();
@@ -83,7 +93,10 @@ fn compose_render_and_edit_native_hwpx_charts() {
             _ => None,
         })
         .collect();
-    assert_eq!(charts.len(), 3);
+    assert_eq!(charts.len(), 4);
+    for chart in &charts {
+        assert_eq!(chart.series[0].color.as_deref(), Some("#173F73"));
+    }
     assert_eq!(charts[1].series[0].values, [1.0, 4.0, 2.5]);
 
     for extension in ["svg", "pdf", "png"] {
@@ -144,7 +157,7 @@ fn compose_render_and_edit_native_hwpx_charts() {
     let edited_section = String::from_utf8(entry(&edited, "Contents/section0.xml")).unwrap();
     assert_ne!(section, edited_section);
     assert_eq!(wrapper(&edited_section), wrapper(&section));
-    for n in 1..=3 {
+    for n in 1..=4 {
         let part = format!("Chart/chart{n}.xml");
         assert_eq!(entry(&input, &part), entry(&edited, &part));
         assert_eq!(entry(&input, &part), entry(&rewritten, &part));
