@@ -404,7 +404,7 @@ approximation, so it is **lost in an hwpx → hwpx round-trip**.
 
 | Object/element | Current handling | Evidence |
 |---|---|---|
-| `hp:chart` | `chartIDRef` resolves through `Contents/content.hpf` to `Chart/chartN.xml`. Original wrapper and part bytes are retained | ECMA-376 Part 1 §21.2. Provisional OWPML wrapper and manifest, Hancom open check pending |
+| `hp:chart` | Resolves `chartIDRef` as a package path or legacy OPF ID. Retains the original chart part and Hancom chart switch, including its fallback | ECMA-376 Part 1 §21.2. macOS Hancom saved file and path-reference experiment (#618 AC4) |
 | OLE objects (`hp:ole` and so on) | read fallback → write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video` and media | read fallback → write DROP | likewise |
 | `hp:container` (grouped objects) | read fallback (subList text only) → write DROP | :191 → :364 |

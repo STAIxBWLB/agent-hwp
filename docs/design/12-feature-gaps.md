@@ -375,8 +375,9 @@ lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip sinc
 | GB-14 | **NUMBERING start numbers and extended levels are unparsed**: paragraph head information (tables 39 and 40) is read and discarded (`_attr`, `_width`, `_dist`), and the global and per-level start numbers are hardcoded to `start: 1` at every level. Levels 8 to 10 extension fields do not even exist as a concept in the IR (fixed at 7 levels) | `hwp5/src/doc_info.rs:452-479` (`read_level`, `start: 1`) | §4.2.8 | approximated (start fixed at 1) | read (dump/json), synthesis | M (the record's trailing layout must be compared against genuine files) |
 | GB-15 | **Image and check bullets are unparsed**: only one bullet character is extracted from BULLET, while the image-bullet flag and id, image information (contrast, brightness, effects) and check characters are preserved only as raw | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5 raw-preserved / dropped in synthesis and render | synthesis, render | S to M (rare in practice, lowest priority) |
 
-The synthesized `Chart/` path, `hp:chart` object attributes, and OPF item are provisional. They
-follow the public OWPML model and ECMA-376 Part 1 §21.2 and await a Hancom-saved chart comparison.
+A Hancom macOS saved file and the #618 AC4 experiment confirmed package-path chart references.
+Synthesis keeps the direct `hp:chart` wrapper and OPF item. Rewrites of Hancom saved charts
+retain the full OOXML chart switch.
 The DocumentSpec block lives in the existing CLI compiler, `hwp-cli/src/document_spec.rs`.
 
 
@@ -388,8 +389,8 @@ same-format rewrite, and since 2026-08-15 (#90 PR 6a) hwpx containers render too
 now confined to synthesis. Restoring most of this series requires **reverse
 engineering the payload from a genuine file containing that object** (M/L), so obtaining ground truth
 comes first ([00](00-overview.md) §4). ★ The exception is **the hwpx path of GB-1**: in HWPX a
-chart is not OLE but an **OOXML DrawingML `chartSpace` XML part** (`Chart/chartN.xml` plus a manifest
-entry plus `hp:chart chartIDRef`), so it can be generated and interpreted with the existing hwpx
+chart is not OLE but an **OOXML DrawingML `chartSpace` XML part** (`Chart/chartN.xml` referenced
+by `hp:chart chartIDRef`), so it can be generated and interpreted with the existing hwpx
 writing infrastructure (precedent: kordoc v3.16, see [08](08-external-research.md)).
 
 ---

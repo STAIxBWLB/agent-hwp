@@ -54,8 +54,8 @@ pub fn content_hpf(
         r##"<opf:item id="settings" href="settings.xml" media-type="application/xml"/>"##
     );
     for (id, href, mime) in bin_items {
-        // Chart manifest spelling is provisional pending a Hancom-saved fixture.
-        // Use the same item shape when the part is later preserved as an extension.
+        // List synthesized chart parts as extensions for consistent compose and full rewrite.
+        // Hancom also reads path references without a chart manifest item.
         let embedded = if mime == crate::chart::MIME {
             ""
         } else {

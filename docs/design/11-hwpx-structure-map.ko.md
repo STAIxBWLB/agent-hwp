@@ -390,7 +390,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 
 | 개체/요소 | 현재 처리 | 근거 |
 |---|---|---|
-| `hp:chart` | `chartIDRef`로 `Contents/content.hpf`의 `Chart/chartN.xml` 해석. 원본 XML과 차트 파트 보존 | ECMA-376 Part 1 §21.2. OWPML 래퍼와 매니페스트는 잠정값이며 한컴오피스 확인 대기 |
+| `hp:chart` | `chartIDRef`의 패키지 경로와 이전 OPF ID를 해석한다. Hancom의 OOXML 차트 switch 및 대체 개체 원문과 차트 파트를 보존한다 | ECMA-376 Part 1 §21.2. macOS Hancom 저장본과 경로 참조 실험 (#618 AC4) |
 | OLE 개체(`hp:ole` 등) | read fallback→write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video`/미디어 | read fallback→write DROP | 동일 |
 | `hp:container`(그룹 개체) | read fallback(subList 텍스트만)→write DROP | :191 → :364 |

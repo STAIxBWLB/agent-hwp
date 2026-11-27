@@ -321,8 +321,9 @@ ASCII는 두 인코딩에서 바이트가 같으므로, 코퍼스에 자격 증�
 | GB-14 | **NUMBERING 시작번호·확장 수준 미파싱** — 문단머리정보(표 39·40)를 읽고 버리며(`_attr`·`_width`·`_dist`), 전역·수준별 시작번호는 파싱 없이 전 레벨 `start: 1` 하드코딩. 수준 8~10 확장 필드는 IR(7레벨 고정)에 개념 자체가 없음 | `hwp5/src/doc_info.rs:452-479`(`read_level`, `start: 1`) | §4.2.8 | 근사(start=1 고정) | 읽기(dump/json)·합성 | M(레코드 후미 레이아웃 정품 대조) |
 | GB-15 | **이미지·체크 글머리표 미해석** — BULLET에서 글머리 문자 1개만 추출, 이미지 글머리 여부/ID·이미지 정보(대비·밝기·효과)·체크 문자 등은 raw로만 보존 | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5=raw 보존 / 합성·렌더=드롭 | 합성·렌더 | S~M(실사용 빈도 낮음 — 우선순위 최하) |
 
-차트 합성의 `Chart/` 경로, `hp:chart` 개체 속성 및 OPF 항목은 공개 OWPML 모델과
-ECMA-376 Part 1 §21.2를 바탕으로 구성했다. 한컴 저장본으로는 확인되지 않았다.
+macOS Hancom 저장본과 #618 AC4 실험에서 차트의 패키지 경로 참조를 확인했다.
+차트 합성은 직접 `hp:chart` 래퍼와 OPF 항목을 유지한다. 저장본의 OOXML 차트 switch는
+전체 XML을 보존한다.
 DocumentSpec 블록 구현은 기존 CLI 컴파일러인 `hwp-cli/src/document_spec.rs`에 있다.
 
 
@@ -332,7 +333,7 @@ hwpx에서는 해석이 안 됐다. 2026-08-14(#90)부터 원문 XML이 같은 �
 2026-08-15(#90 PR 6a)부터 hwpx 컨테이너도 렌더돼 손실은 합성으로 한정된다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
 (M/L)해야 하므로 정답지 확보가 선행 조건이다([00](00-overview.ko.md) §4).
 ★예외가 **GB-1의 hwpx 경로**다: HWPX에서 차트는 OLE가 아니라 **OOXML DrawingML `chartSpace`
-XML 파트**(`Chart/chartN.xml` + manifest 등재 + `hp:chart chartIDRef`)여서, 기존 hwpx 쓰기
+XML 파트**(`hp:chart chartIDRef`가 가리키는 `Chart/chartN.xml`)여서, 기존 hwpx 쓰기
 인프라만으로 생성·해석이 가능하다(kordoc v3.16 구현 선례 — [08](08-external-research.ko.md) 생태계 대조).
 
 ---
