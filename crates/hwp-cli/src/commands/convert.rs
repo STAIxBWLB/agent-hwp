@@ -215,12 +215,21 @@ fn run_multi_with_options(
     // Input staging (`-` → stdin).
     let mut staged: Option<PathBuf> = None;
     let inputs: Vec<PathBuf> = if inputs.len() == 1 && inputs[0].as_os_str() == "-" {
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
-        if buf.is_empty() {
+        use std::io::Read as _;
+        // Detect from the head first, then stream the rest to the staging file under the
+        // detected format's own input bound: HWPML stops at its reader limit, while native
+        // HWP/HWPX keep the supported-container bound they had before (and never sit in memory).
+        let mut stdin = std::io::stdin().lock();
+        let mut head = Vec::with_capacity(4096);
+        (&mut stdin).take(4096).read_to_end(&mut head)?;
+        if head.is_empty() {
             anyhow::bail!("stdin이 비어 있습니다");
         }
-        let ext = crate::format::detect_bytes(&buf)?;
+        let ext = crate::format::detect_bytes(&head)?;
+        let limit = match ext {
+            "hml" => hwpx::HML_LIMITS.max_input_bytes,
+            _ => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+        };
         // Unpredictable name for exclusive creation (create_new) — prevents symlink
         // overwrite and concurrent-run collisions. On unix, make it owner-readable only (0600).
         let nanos = std::time::SystemTime::now()
@@ -239,8 +248,25 @@ fn run_multi_with_options(
         let mut file = opts.open(&path).with_context(|| {
             format!("stdin 스테이징 파일을 만들 수 없습니다: {}", path.display())
         })?;
-        std::io::Write::write_all(&mut file, &buf)?;
+        std::io::Write::write_all(&mut file, &head)?;
+        let rest = (&mut stdin).take((limit + 1).saturating_sub(head.len() as u64));
+        let copied = std::io::copy(&mut { rest }, &mut file);
         drop(file);
+        let total = copied.map(|n| n + head.len() as u64);
+        match total {
+            Ok(total) if total > limit => {
+                let _ = std::fs::remove_file(&path);
+                anyhow::bail!(
+                    "stdin 입력이 상한 {limit}바이트를 넘습니다. 파일로 저장해 경로로 넘기거나, \
+                     한글(한컴오피스)에서 문서를 나눠 다시 저장하세요"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(e.into());
+            }
+        }
         staged = Some(path.clone());
         vec![path]
     } else {

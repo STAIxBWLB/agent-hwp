@@ -391,6 +391,51 @@ fn convert_reads_hml_from_stdin() {
     assert!(stdout(&back).contains("병합 셀"), "{}", stdout(&back));
 }
 
+/// Stdin is bounded by the detected format's limit. The writer never closes the pipe and keeps
+/// writing past the HWPML limit, so the run can only finish if the reader stops at the bound
+/// and refuses (an unbounded read would block until the deadline and fail the test).
+#[test]
+fn convert_stdin_over_the_input_limit_is_refused() {
+    use std::io::Write as _;
+    let output = tmp("stdin-over.hwpx");
+    let mut child = hwp()
+        .args(["convert", "-", "-o"])
+        .arg(&*output)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let head = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\">";
+        if stdin.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let chunk = vec![b' '; 1 << 20];
+        // Endless: only a broken pipe (the reader gave up) ends it.
+        while stdin.write_all(&chunk).is_ok() {}
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("convert - kept reading stdin past the HWPML limit");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    let limit = hwpx::HML_LIMITS.max_input_bytes.to_string();
+    assert!(err.contains("stdin") && err.contains(&limit), "{err}");
+    assert!(!output.exists());
+}
+
 /// Content wins over a `.json` extension, and `--preview` names the legacy format.
 #[test]
 fn json_extension_and_preview_route_through_legacy_detection() {
