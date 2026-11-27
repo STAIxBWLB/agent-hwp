@@ -305,7 +305,7 @@ ASCII는 두 인코딩에서 바이트가 같으므로, 코퍼스에 자격 증�
 
 | ID | 개체(hwp5 태그 / hwpx 요소) | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
-| GB-1 | **차트**(`CHART_DATA` 0x5F / `hp:chart` ooxmlchart) | hwp5 `body_text.rs:617`(Opaque), hwpx 미구현 `write/section.rs:364`(DROP), [11](11-hwpx-structure-map.ko.md) §5(c) | §4.3.9.6 | hwp5=Opaque 보존 / hwpx=드롭(텍스트도 없음=완전 소실) | 왕복(hwpx만)·합성·렌더 | L / hwpx 생성=**M**★ |
+| GB-1 | **차트** | HWPX DrawingML 7종 읽기·합성·렌더, 원본 파트와 래퍼 보존 | ECMA-376 Part 1 §21.2, HWP 5.0 §4.3.9.6 | HWP5 차트는 Opaque로 보존. HWPX 차트를 HWP5로 변환하면 `chart_control_unrepresentable`이 기록됨. 한컴오피스 확인 대기 | 왕복·합성·렌더 | M |
 | GB-2 | **OLE 개체**(`SHAPE_COMPONENT_OLE` 0x54 / `hp:ole`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364`, [10](10-hwp5-structure-map.ko.md) 표 B | §4.3.9.5 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-3 | **동영상**(`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-4 | **글맵시**(`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`(fallback 텍스트)→`write/section.rs:364`(DROP) | §4.3.9(글맵시) | hwp5=Opaque 보존 / hwpx=텍스트만 fallback 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |

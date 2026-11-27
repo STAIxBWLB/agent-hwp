@@ -2572,7 +2572,11 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
             // their paragraph_lists can synthesize LIST_HEADER plus paragraphs, so preserve them.
             Control::Generic(g) if generic_payload_is_unwritable(g) => {
                 warnings.loss(
-                    PreservationCode::OpaqueControlUnrepresentable,
+                    if g.chart.is_some() {
+                        PreservationCode::ChartControlUnrepresentable
+                    } else {
+                        PreservationCode::OpaqueControlUnrepresentable
+                    },
                     PreservationResourceKind::Control,
                     PreservationDisposition::Unrepresentable,
                     1,
@@ -4508,6 +4512,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
         document.sections.push(document.sections[0].clone());
@@ -5140,6 +5145,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             })
         }
@@ -5971,6 +5977,7 @@ mod tests {
                 paragraphs: vec![hwp_model::Paragraph::default()],
             }),
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         };
         let node = emit_control(
@@ -6108,6 +6115,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
         let output =
@@ -6308,6 +6316,7 @@ mod tests {
                 }],
             }),
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -6938,6 +6947,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }),
         };
@@ -7211,6 +7221,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         });
 

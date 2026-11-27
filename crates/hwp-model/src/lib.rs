@@ -14,6 +14,7 @@
 //! 이 크레이트는 의존성을 극도로 아낀다(serde만). 모든 크레이트가 여기에
 //! 의존하므로 이 API의 안정성이 곧 전체 프로젝트의 안정성이다.
 
+pub mod chart;
 pub mod control;
 pub mod document;
 pub mod header;
@@ -26,6 +27,7 @@ pub mod slot;
 pub mod text;
 pub mod units;
 
+pub use chart::{Chart, ChartData, ChartKind, ChartLegend, ChartSeries};
 pub use control::{
     BinRef, Caption, CaptionDirection, CaptionSide, Cell, ColumnDef, ContainerBox, Control,
     Equation, GenericControl, GradientSpec, GsoPlacement, PageDef, ParagraphList, Picture,

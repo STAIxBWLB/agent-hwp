@@ -508,6 +508,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         };
         let field = generic(*b"%clk");

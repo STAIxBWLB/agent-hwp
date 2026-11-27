@@ -359,7 +359,7 @@ lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip sinc
 
 | ID | Object (hwp5 tag / hwpx element) | Code evidence | Spec | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|---|
-| GB-1 | **Charts** (`CHART_DATA` 0x5F / `hp:chart` ooxmlchart) | hwp5 `body_text.rs:617` (Opaque), hwpx unimplemented `write/section.rs:364` (DROP), [11](11-hwpx-structure-map.md) §5(c) | §4.3.9.6 | hwp5 Opaque preserved / hwpx dropped (no text either, that is a total loss) | round-trip (hwpx only), synthesis, render | L; hwpx generation **M** ★ |
+| GB-1 | **Charts** | Seven DrawingML chart kinds read, synthesized and rendered in HWPX. Original part and wrapper are retained | ECMA-376 Part 1 §21.2, HWP 5.0 §4.3.9.6 | HWP5 charts remain opaque. HWPX-to-HWP5 conversion reports `chart_control_unrepresentable`. Hancom open check pending | Round-trip, synthesis, rendering | M |
 | GB-2 | **OLE objects** (`SHAPE_COMPONENT_OLE` 0x54 / `hp:ole`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364`, [10](10-hwp5-structure-map.md) table B | §4.3.9.5 | hwp5 Opaque preserved / hwpx dropped | round-trip (hwpx only), synthesis, render | L |
 | GB-3 | **Video** (`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5 Opaque preserved / hwpx dropped | round-trip (hwpx only), synthesis, render | L |
 | GB-4 | **Word art** (`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191` (text fallback) → `write/section.rs:364` (DROP) | §4.3.9 (word art) | hwp5 Opaque preserved / hwpx falls back to text then drops | round-trip (hwpx only), synthesis, render | M |

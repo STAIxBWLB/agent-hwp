@@ -418,6 +418,9 @@ pub struct GenericControl {
     /// 이 문자열을 그대로 방출한다. hwp5 출신·합성 IR이면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwpx_raw_xml: Option<String>,
+    /// HWPX DrawingML chart data and object placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart: Option<Box<crate::chart::Chart>>,
     /// hwpx hp:container 상자 — Some이면 이 Generic은 컨테이너이며 gso_shapes는
     /// 컨테이너 원점 기준 자식 도형. 원문 XML(hwpx_raw_xml)이 재직렬화 원본이다.
     #[serde(default, skip_serializing_if = "Option::is_none")]

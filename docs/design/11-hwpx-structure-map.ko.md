@@ -390,7 +390,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 
 | 개체/요소 | 현재 처리 | 근거 |
 |---|---|---|
-| `hp:chart`(ooxmlchart) | read fallback(텍스트 없음)→write DROP | 네임스페이스 선언만(§2) |
+| `hp:chart` | `chartIDRef`로 `Contents/content.hpf`의 `Chart/chartN.xml` 해석. 원본 XML과 차트 파트 보존 | KS X 6101 문단 개체, ECMA-376 Part 1 §21.2. 한컴오피스 확인 대기 |
 | OLE 개체(`hp:ole` 등) | read fallback→write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video`/미디어 | read fallback→write DROP | 동일 |
 | `hp:container`(그룹 개체) | read fallback(subList 텍스트만)→write DROP | :191 → :364 |

@@ -879,6 +879,7 @@ fn generic_list(doc: &Document) -> hwp_model::GenericControl {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     }
 }

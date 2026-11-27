@@ -773,6 +773,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }
     }
@@ -2152,6 +2153,7 @@ mod run_control_tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         };
         let (md, segs) = emit(&doc_of(vec![host(Control::Generic(g), *b"gso ")]));
@@ -2594,6 +2596,7 @@ mod run_control_tests {
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        chart: None,
                         container_box: None,
                     }),
                     _ => unreachable!(),
@@ -2701,6 +2704,7 @@ mod run_control_tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             })],
             ..Default::default()

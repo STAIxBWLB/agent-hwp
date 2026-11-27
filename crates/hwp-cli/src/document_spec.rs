@@ -301,6 +301,11 @@ pub enum BlockSpec {
         #[serde(default)]
         placement: ImagePlacement,
     },
+    Chart {
+        width_mm: f32,
+        height_mm: f32,
+        data: hwp_model::ChartData,
+    },
     Equation {
         script: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1204,6 +1209,27 @@ impl Validator<'_> {
                             format!("{block_path}.alt"),
                             "image alt text is not representable by both native writers in v1",
                         );
+                    }
+                }
+                BlockSpec::Chart {
+                    width_mm,
+                    height_mm,
+                    data,
+                } => {
+                    self.validate_positive_dimension(*width_mm, &format!("{block_path}.width_mm"));
+                    self.validate_positive_dimension(
+                        *height_mm,
+                        &format!("{block_path}.height_mm"),
+                    );
+                    if *width_mm > body_width_mm {
+                        self.overflow(
+                            format!("{block_path}.width_mm"),
+                            *width_mm,
+                            "chart exceeds the available width",
+                        );
+                    }
+                    if let Err(message) = data.validate() {
+                        self.issue("invalid_value", format!("{block_path}.data"), message);
                     }
                 }
                 BlockSpec::Equation {
@@ -2158,6 +2184,54 @@ impl<'a> BlockCompiler<'a> {
                 )?;
                 Ok(vec![paragraph])
             }
+            BlockSpec::Chart {
+                width_mm,
+                height_mm,
+                data,
+            } => {
+                let mut paragraph = self.empty_paragraph();
+                let mut data = data.clone();
+                if data.kind == hwp_model::ChartKind::Scatter {
+                    for series in &mut data.series {
+                        if series.x_values.is_empty() {
+                            series.x_values =
+                                (0..series.values.len()).map(|i| i as f64 + 1.0).collect();
+                        }
+                    }
+                }
+                let chart = hwp_model::Chart {
+                    placement: hwp_model::GsoPlacement {
+                        width: mm_to_hwp(*width_mm),
+                        height: mm_to_hwp(*height_mm),
+                        treat_as_char: true,
+                        flow_with_text: true,
+                        vert_rel_to: 2,
+                        horz_rel_to: 3,
+                        ..Default::default()
+                    },
+                    part_id: None,
+                    data: Some(std::sync::Arc::new(data)),
+                };
+                append_control(
+                    &mut paragraph,
+                    hwp_model::ctrl_char::OBJECT,
+                    hwp_model::Control::Generic(hwp_model::GenericControl {
+                        ctrl_id: *b"chrt",
+                        data: Vec::new(),
+                        paragraph_lists: Vec::new(),
+                        extras: Vec::new(),
+                        raw_children: Vec::new(),
+                        gso_shapes: Vec::new(),
+                        equation: None,
+                        column_def: None,
+                        caption: None,
+                        chart: Some(Box::new(chart)),
+                        hwpx_raw_xml: None,
+                        container_box: None,
+                    }),
+                )?;
+                Ok(vec![paragraph])
+            }
             BlockSpec::Equation {
                 script,
                 width_mm,
@@ -2412,6 +2486,7 @@ impl<'a> BlockCompiler<'a> {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }),
         )?;
@@ -2796,6 +2871,7 @@ impl<'a> Compiler<'a> {
                 }),
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }),
         )?;
@@ -2895,6 +2971,7 @@ impl<'a> Compiler<'a> {
                     column_def: None,
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 }),
             )?;
@@ -3118,6 +3195,7 @@ fn generic_control(ctrl_id: [u8; 4], data: Vec<u8>) -> hwp_model::Control {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     })
 }
@@ -3172,6 +3250,7 @@ fn append_field(
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }),
     )?;
@@ -4029,7 +4108,7 @@ sections:
             .collect::<String>();
         assert_eq!(
             actual,
-            "ecba7d532ae96b8f8ac79007c04d41f3b9b2fa65e5d9a2d914965529d24e5ca2"
+            "65e50381d96e60166f2d332d5838b861d1ee3dc64acb9ada3b16701f7d3e149e"
         );
     }
 }

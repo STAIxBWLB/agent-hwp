@@ -46,6 +46,34 @@ impl BinCollector {
         Some(self.allocate(ext, mime, bytes))
     }
 
+    fn register_chart(&mut self, doc: &Document, data: &hwp_model::ChartData) -> Option<String> {
+        data.validate().ok()?;
+        let bytes = crate::chart::write(data);
+        if bytes.len() > crate::chart::MAX_PART {
+            return None;
+        }
+        let mut n = 1;
+        loop {
+            let id = format!("chart{n}");
+            let href = format!("Chart/{id}.xml");
+            if !self
+                .items
+                .iter()
+                .any(|(key, path, ..)| *key == id || *path == href)
+                && !doc
+                    .hwpx_opf_extra_items
+                    .iter()
+                    .any(|(key, path, _)| *key == id || *path == href)
+                && !doc.hwpx_extra_entries.iter().any(|(path, _)| *path == href)
+            {
+                self.items
+                    .push((id.clone(), href, crate::chart::MIME.to_owned(), bytes));
+                return Some(id);
+            }
+            n += 1;
+        }
+    }
+
     /// seed·기수집 항목과 id/href가 충돌하지 않는 새 이름으로 항목을 추가하고
     /// id를 돌려준다. seed가 없으면 기존과 같은 image1, image2, … 순서가 나온다.
     pub(crate) fn allocate(&mut self, ext: &str, mime: &str, bytes: Vec<u8>) -> String {
@@ -459,6 +487,28 @@ fn write_paragraph(
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         write_foot_end_note(out, doc, g, ids, bins, preserve_linesegs, report);
+                    }
+                    Control::Generic(g) if g.chart.is_some() => {
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        shape_break!();
+                        let chart = g.chart.as_deref().expect("checked chart");
+                        if let Some(raw) = &g.hwpx_raw_xml {
+                            out.push_str(raw);
+                        } else if let Some(key) = chart
+                            .data
+                            .as_deref()
+                            .and_then(|data| bins.register_chart(doc, data))
+                        {
+                            out.push_str(&chart_wrapper(chart, &key, ids.next()));
+                        } else {
+                            report.loss(
+                                PreservationCode::OpaqueControlUnrepresentable,
+                                PreservationResourceKind::Control,
+                                PreservationDisposition::Unrepresentable,
+                                1,
+                            );
+                        }
                     }
                     Control::Generic(g) if g.equation.is_some() => {
                         // 수식 — hp:ctrl이 아닌 run 직속 개체(리더 parse_equation의 역).
@@ -1124,6 +1174,60 @@ fn margin_attr(value: u16) -> u32 {
 /// ⚠ 3의 수식 전용 상수(version·baseLine·baseUnit·font)는 **정답지 미확보 상태의 표준
 /// 추정값**이다. 실기에서 수식이 깨져 보이면 정품 저장본 속성으로 교체할 것
 /// (12-feature-gaps.md GE-14).
+/// Serializes the KS X 6101 common shape placement and chart-part reference.
+pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> Option<&'a str> {
+    let chart = control.chart.as_deref()?;
+    let part = chart.part_id.as_deref()?;
+    let suffix = part.strip_prefix("chart")?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let xml = control.hwpx_raw_xml.as_deref()?;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let quick_xml::events::Event::Start(tag) = reader.read_event().ok()? else {
+        return None;
+    };
+    let id = crate::read::xml::attr_u32(&tag, "id")?;
+    if xml != chart_wrapper(chart, part, id) {
+        return None;
+    }
+    let href = format!("Chart/{part}.xml");
+    let data = chart.data.as_deref()?;
+    let bytes = crate::chart::write(data);
+    if doc
+        .hwpx_opf_extra_items
+        .iter()
+        .any(|(id, path, mime)| id == part && *path == href && mime == crate::chart::MIME)
+        && doc
+            .hwpx_extra_entries
+            .iter()
+            .any(|(path, stored)| *path == href && *stored == bytes)
+    {
+        Some(part)
+    } else {
+        None
+    }
+}
+
+fn chart_wrapper(chart: &hwp_model::Chart, part_id: &str, id: u32) -> String {
+    let placement = &chart.placement;
+    let (treat, flow) = (
+        u8::from(placement.treat_as_char),
+        u8::from(placement.flow_with_text),
+    );
+    format!(
+        r#"<hp:chart id="{id}" chartIDRef="{}" zOrder="{}" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None"><hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{}" horzRelTo="{}" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/></hp:chart>"#,
+        esc(part_id),
+        placement.z_order,
+        placement.width,
+        placement.height,
+        vert_rel_to_name(placement.vert_rel_to),
+        horz_rel_to_name(placement.horz_rel_to),
+        pos_offset(placement.vert_offset),
+        pos_offset(placement.horz_offset),
+    )
+}
+
 fn generated_equation_attrs(g: &GenericControl, eq: &Equation) -> String {
     // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
     // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).

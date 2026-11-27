@@ -343,6 +343,7 @@ fn hwpx_writer_aggregates_range_tag_records_in_nested_paragraphs() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         });
         let paragraph = &mut document.sections[0].paragraphs[0];

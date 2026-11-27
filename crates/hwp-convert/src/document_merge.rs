@@ -1763,6 +1763,7 @@ mod tests {
                     column_def: None,
                     caption: Some(caption_with_para(caption_paragraph)),
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 })],
                 ..Default::default()
@@ -2049,6 +2050,7 @@ mod tests {
                     column_def: None,
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 })],
                 ..Default::default()
@@ -3023,6 +3025,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -3225,6 +3228,7 @@ mod tests {
             column_def: None,
             caption: Some(caption_with(controls)),
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }

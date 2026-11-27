@@ -95,6 +95,7 @@ fn shape_with_caption(caption: Caption) -> GenericControl {
         column_def: None,
         caption: Some(caption),
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     }
 }

@@ -404,7 +404,7 @@ approximation, so it is **lost in an hwpx → hwpx round-trip**.
 
 | Object/element | Current handling | Evidence |
 |---|---|---|
-| `hp:chart` (ooxmlchart) | read fallback (no text) → write DROP | namespace declared only (§2) |
+| `hp:chart` | `chartIDRef` resolves through `Contents/content.hpf` to `Chart/chartN.xml`. Original wrapper and part bytes are retained | KS X 6101 paragraph objects, ECMA-376 Part 1 §21.2. Hancom open check pending |
 | OLE objects (`hp:ole` and so on) | read fallback → write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video` and media | read fallback → write DROP | likewise |
 | `hp:container` (grouped objects) | read fallback (subList text only) → write DROP | :191 → :364 |

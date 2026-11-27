@@ -1173,7 +1173,7 @@ fn layout_document_pages(
                         // HWPX containers (hp:container): render child shapes and text.
                         || matches!(c, Control::Generic(g) if g.container_box.is_some())
                         // Equations (hp:equation).
-                        || matches!(c, Control::Generic(g) if g.equation.is_some());
+                        || matches!(c, Control::Generic(g) if g.equation.is_some() || g.chart.is_some());
                     !rendered
                 })
                 .count();
@@ -3354,6 +3354,45 @@ fn layout_para_objects(
                 }
             }
             // Equations (hp:equation): lay out the script as mathematics (equation.rs).
+            Control::Generic(g) if g.chart.is_some() => {
+                let chart = g.chart.as_deref().expect("checked chart");
+                if let Some(data) = &chart.data
+                    && data.validate().is_ok()
+                {
+                    let placement = &chart.placement;
+                    let dimension = |stored: i32, fallback| {
+                        if stored > 0 {
+                            stored as f32 / 100.0
+                        } else {
+                            fallback
+                        }
+                    };
+                    let width = dimension(placement.width, 200.0);
+                    let height = dimension(placement.height, 120.0);
+                    let (left, top) = if placement.treat_as_char {
+                        (x, object_y)
+                    } else {
+                        (
+                            placement.horz_offset as f32 / 100.0,
+                            placement.vert_offset as f32 / 100.0,
+                        )
+                    };
+                    crate::chart::draw(
+                        doc,
+                        store,
+                        page,
+                        warnings,
+                        data,
+                        [left, top, width, height],
+                    );
+                    if placement.treat_as_char {
+                        object_y += height;
+                        bottom = bottom.max(object_y);
+                    }
+                } else {
+                    warnings.push(RenderIssueCode::UnsupportedControlOmitted, "opaque chart");
+                }
+            }
             Control::Generic(g) if g.equation.is_some() => {
                 let eq = g.equation.as_ref().expect("is_some");
                 let h = (eq.height as f32 / 100.0).max(12.0);
@@ -6187,6 +6226,7 @@ mod page_number_layout_tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -6677,6 +6717,7 @@ mod certification_budget_tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -6932,6 +6973,7 @@ mod control_classification_tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }

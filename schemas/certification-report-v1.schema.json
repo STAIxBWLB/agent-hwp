@@ -313,6 +313,7 @@
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
+        "chart_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "control_metadata_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "control_removed": { "$ref": "#/$defs/lossCount" },
         "document_metadata_superseded": { "$ref": "#/$defs/lossCount" },

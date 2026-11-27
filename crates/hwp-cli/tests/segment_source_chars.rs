@@ -146,6 +146,7 @@ fn generic(ctrl_id: [u8; 4], raw: Vec<OpaqueRecord>) -> Control {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     })
 }

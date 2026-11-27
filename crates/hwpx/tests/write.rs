@@ -63,6 +63,7 @@ fn typed_report_records_unsupported_control_without_warning_parsing() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }),
     );
@@ -160,6 +161,7 @@ fn typed_report_records_both_gso_drop_paths() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     };
@@ -615,6 +617,7 @@ fn caption_round_trip() {
             paragraphs: vec![caption_para("Shape 1")],
         }),
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     let para = &mut doc.sections[0].paragraphs[0];
@@ -978,6 +981,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         };
         // Attach the header control to the paragraph as ExtCtrl code 16.
@@ -1177,6 +1181,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
     }
@@ -1926,6 +1931,7 @@ fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     }
 }
@@ -1973,6 +1979,7 @@ fn 수식_hwpx_왕복() {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             },
         );
@@ -2038,6 +2045,7 @@ fn 글상자_hwp5출신_hwpx_왕복() {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
@@ -2143,6 +2151,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
@@ -2251,6 +2260,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
@@ -2848,6 +2858,7 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
     }
@@ -3036,6 +3047,7 @@ fn 각주_미주_왕복() {
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        chart: None,
                         container_box: None,
                     })],
                     ..Paragraph::default()
@@ -3048,6 +3060,7 @@ fn 각주_미주_왕복() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     };

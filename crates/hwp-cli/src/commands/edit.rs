@@ -5424,6 +5424,7 @@ fn canonical_document(
         paragraph: &mut hwp_model::Paragraph,
         target: Option<SemanticTarget>,
         source_doc: &hwp_model::Document,
+        generated_charts: &mut std::collections::BTreeSet<String>,
     ) {
         // Line layout and PARA_HEADER caches are nonsemantic state recalculated after edits.
         paragraph.line_segs.clear();
@@ -5488,7 +5489,7 @@ fn canonical_document(
                 };
                 if let Some(caption) = caption {
                     for paragraph in &mut caption.paragraphs {
-                        canonicalize_paragraph(paragraph, target, source_doc);
+                        canonicalize_paragraph(paragraph, target, source_doc, generated_charts);
                     }
                 }
             }
@@ -5563,11 +5564,22 @@ fn canonical_document(
                                 hwp5::write::synthesized_cell_header_tail(cell.width.0);
                         }
                         for paragraph in &mut cell.paragraphs {
-                            canonicalize_paragraph(paragraph, target, source_doc);
+                            canonicalize_paragraph(paragraph, target, source_doc, generated_charts);
                         }
                     }
                 }
                 hwp_model::Control::Generic(generic) => {
+                    if matches!(target, Some(SemanticTarget::Hwpx))
+                        && let Some(part) =
+                            hwpx::write::section::generated_chart_part(source_doc, generic)
+                    {
+                        generated_charts.insert(part.to_owned());
+                        generic.hwpx_raw_xml = None;
+                        if let Some(chart) = &mut generic.chart {
+                            chart.part_id = None;
+                        }
+                    }
+
                     if matches!(target, Some(SemanticTarget::Hwp)) {
                         canonicalize_hwp_generic(generic);
                     }
@@ -5627,7 +5639,7 @@ fn canonical_document(
                     }
                     for list in &mut generic.paragraph_lists {
                         for paragraph in &mut list.paragraphs {
-                            canonicalize_paragraph(paragraph, target, source_doc);
+                            canonicalize_paragraph(paragraph, target, source_doc, generated_charts);
                         }
                     }
                 }
@@ -6060,6 +6072,7 @@ fn canonical_document(
             }
         }
     }
+    let mut generated_charts = std::collections::BTreeSet::new();
     for section in &mut canonical.sections {
         if matches!(target, Some(SemanticTarget::Hwp))
             && let Some(first) = section.paragraphs.first_mut()
@@ -6073,9 +6086,19 @@ fn canonical_document(
             first.header.break_type |= 0x03;
         }
         for paragraph in &mut section.paragraphs {
-            canonicalize_paragraph(paragraph, target, doc);
+            canonicalize_paragraph(paragraph, target, doc, &mut generated_charts);
         }
     }
+    let paths: std::collections::BTreeSet<_> = generated_charts
+        .iter()
+        .map(|id| format!("Chart/{id}.xml"))
+        .collect();
+    canonical
+        .hwpx_extra_entries
+        .retain(|(path, _)| !paths.contains(path));
+    canonical
+        .hwpx_opf_extra_items
+        .retain(|(id, path, _)| !generated_charts.contains(id) || !paths.contains(path));
     canonical
 }
 
@@ -7088,6 +7111,7 @@ mod tests {
                     column_def: None,
                     caption,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 }),
                 _ => unreachable!(),
@@ -8216,6 +8240,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
         doc
@@ -8516,6 +8541,7 @@ mod tests {
                     column_def: None,
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 }));
             doc
@@ -8596,6 +8622,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }
     }
@@ -8930,6 +8957,7 @@ mod tests {
                     column_def: None,
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 }));
         }
@@ -9125,6 +9153,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
         let mut materialized = source.clone();

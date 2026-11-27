@@ -791,6 +791,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     // Attach an ExtCtrl code-11 anchor and control to the second paragraph.
@@ -1229,6 +1230,7 @@ fn official_hwp5_rejects_sixteenth_level_two_item_in_materializable_control_list
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 

@@ -320,6 +320,7 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
             }),
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
     for paragraph in &mut doc.sections[0].paragraphs {
@@ -383,6 +384,7 @@ fn hwpx_container_children_render_at_container_origin() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: Some(ContainerBox {
                 x: 10000,
                 y: 20000,
@@ -451,6 +453,7 @@ fn hwpx_container_skipped_objects_raise_typed_loss() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: Some(ContainerBox {
                 x: 10000,
                 y: 20000,
@@ -508,6 +511,7 @@ fn hwpx_container_child_text_layout_in_owning_boxes() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: Some(ContainerBox {
                 x: 10000,
                 y: 10000,
@@ -624,6 +628,7 @@ fn 수식_조판_렌더() {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
     }
@@ -1463,6 +1468,7 @@ fn 글상자_내부_개요_번호_마커_렌더() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 
@@ -1525,6 +1531,7 @@ fn nested_non_anchored_shape_is_placed_at_parent_origin_plus_its_own_offset() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })],
         ..hwp_model::Paragraph::default()
@@ -1552,6 +1559,7 @@ fn nested_non_anchored_shape_is_placed_at_parent_origin_plus_its_own_offset() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 
@@ -1605,6 +1613,7 @@ fn generic_control(
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     })
 }
@@ -3443,6 +3452,7 @@ fn generic_shape_caption_is_rendered() {
                 }],
             }),
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 
@@ -3892,6 +3902,7 @@ fn table_fragments_reserve_pending_footnote_space() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 
@@ -4060,6 +4071,7 @@ fn renders_multi_column_divider() {
             }),
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 
@@ -4247,6 +4259,7 @@ fn 미주는_구역끝_각주는_앵커페이지() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     };
@@ -4318,6 +4331,7 @@ fn endnotes_paginate_across_all_required_pages() {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }));
     }
@@ -4554,6 +4568,7 @@ fn 쪼개진_문단의_각주는_마커가_놓인_쪽에_그려진다() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
 

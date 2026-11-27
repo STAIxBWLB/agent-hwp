@@ -101,3 +101,25 @@ Regeneration is verified (`crates/hwp-cli/tests/regen.rs`) by validation passing
 output, an identical table map (count, rows/columns, merges, cell widths) and byte-identical secPr and
 tabProperties slices. What still differs is by design: the line layout cache (recomputed by Hancom
 Office on open), the preview image and settings.xml.
+
+## Native HWPX charts
+
+A DocumentSpec body can include a `chart` block with dimensions in millimeters and DrawingML data.
+Supported kinds include `column`, `bar`, `line`, `pie`, `doughnut`, `area`, and `scatter`.
+Pie and doughnut use one series with nonnegative values and a positive total. Scatter uses
+numeric `x_values`; omitted X coordinates are filled with consecutive positions starting at 1.
+The HWP5 writer reports `chart_control_unrepresentable` for these charts.
+
+```json
+{
+  "type": "chart",
+  "width_mm": 120,
+  "height_mm": 65,
+  "data": {
+    "kind": "column",
+    "title": "Enrollment",
+    "categories": ["2025", "2026"],
+    "series": [{"name": "Students", "values": [120, 145], "color": "#173F73"}]
+  }
+}
+```

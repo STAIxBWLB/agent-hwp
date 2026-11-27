@@ -7,7 +7,7 @@
   "required": ["version", "document"],
   "properties": {
     "version": { "const": "2.0" },
-    "document": { "$ref": "document-spec-v1.schema.json" },
+    "document": { "$ref": "document-spec-v1.schema.json", "description": "Document body, including additive native chart blocks." },
     "visuals": {
       "type": "array",
       "maxItems": 1000,

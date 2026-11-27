@@ -11,6 +11,7 @@
 //! M0에서는 컨테이너 수준([`package`])만 구현한다. OWPML 파싱(M2)과
 //! writer(M4)는 이후 마일스톤에서 추가한다.
 
+mod chart;
 pub mod error;
 pub mod package;
 pub mod patch;

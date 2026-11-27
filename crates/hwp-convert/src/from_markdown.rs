@@ -871,6 +871,7 @@ pub(crate) fn footnote_anchor(
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     });
     (ch, control)
@@ -1917,6 +1918,7 @@ pub(crate) fn inject_section_controls(
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }),
     );
@@ -1954,6 +1956,7 @@ pub(crate) fn inject_section_controls(
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             }),
         );

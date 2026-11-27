@@ -2317,6 +2317,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             })
         };
@@ -2365,6 +2366,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         });
         let cell_para = Paragraph {
@@ -2421,6 +2423,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             })
         };
@@ -2809,6 +2812,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                chart: None,
                 container_box: None,
             })
         };
@@ -3144,6 +3148,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -3413,6 +3418,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
