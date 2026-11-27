@@ -63,16 +63,10 @@ impl LegacyFormat {
         }
     }
 
-    /// Recovery for an in-place edit. HWPML converts in this build; HWP 3.x reading is not
-    /// wired until #114, so `convert` cannot help yet and Hancom re-saving is the path.
+    /// Recovery for an in-place edit: both legacy formats are read-only, so convert first.
     pub fn edit_hint(self) -> String {
-        match self {
-            Self::Hml => {
-                "먼저 `ahwp convert <입력> -o <출력>.hwpx`(또는 .hwp)로 변환한 뒤 그 파일을 편집하세요"
-                    .to_string()
-            }
-            Self::Hwp3 => format!("이 빌드는 HWP 3.x를 아직 읽지 못합니다. {LEGACY_RESAVE_HINT}"),
-        }
+        "먼저 `ahwp convert <입력> -o <출력>.hwpx`(또는 .hwp)로 변환한 뒤 그 파일을 편집하세요"
+            .to_string()
     }
 }
 

@@ -234,14 +234,15 @@ fn legacy_hwp_signatures_get_typed_refusals() {
         "{err}"
     );
 
-    // The complete 30-byte V3.00 signature is the valid legacy input; reading it is #114.
+    // The complete 30-byte V3.00 signature routes to the HWP 3.x reader (#114); a bare
+    // signature with no body is a read failure with a recovery step, not a refusal.
     let v3 = tmp("v3.hwp");
     std::fs::write(&v3, b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05").unwrap();
     let out = run(&["cat".as_ref(), v3.as_os_str()]);
     assert!(!out.status.success());
     let err = stderr(&out);
     assert!(
-        err.contains("HWP 3.x 읽기") && err.contains("다시 저장"),
+        err.contains("HWP 3.x 읽기 실패") && err.contains("다시 저장"),
         "{err}"
     );
 
