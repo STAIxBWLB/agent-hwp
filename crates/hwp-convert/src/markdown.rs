@@ -1677,6 +1677,10 @@ fn render_control(
                 return;
             }
             // Exclude headers/footers and hidden comments according to the text extraction policy.
+            // A memo's body is an annotation, not body text (`cat --with-memos` lists it).
+            if hwp_model::memo::is_memo_anchor(g) {
+                return;
+            }
             if (code == ctrl_char::HEADER_FOOTER && !ctx.include_header_footer)
                 || (code == ctrl_char::HIDDEN_COMMENT && !ctx.include_hidden)
             {

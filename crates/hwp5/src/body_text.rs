@@ -222,7 +222,9 @@ fn parse_line_segs(data: &[u8]) -> Result<Vec<LineSeg>> {
     Ok(segs)
 }
 
-/// ExtCtrl 문자 ↔ CTRL_HEADER 레코드를 등장 순서로 연결하고 ctrl_id를 교차 검증.
+/// Links ExtCtrl chars to CTRL_HEADER records in order of appearance and cross-checks ctrl_id.
+/// Hangul writes a memo field's inline char as `%%me` but its CTRL_HEADER as `%unk`, measured
+/// on every memo file saved by Hangul (07-hangul-compat-rules), so that pair is not a mismatch.
 fn link_controls(para: &mut Paragraph, warnings: &mut Vec<String>) {
     let mut next = 0u32;
     let control_ids: Vec<[u8; 4]> = para.controls.iter().map(Control::ctrl_id).collect();
@@ -235,7 +237,7 @@ fn link_controls(para: &mut Paragraph, warnings: &mut Vec<String>) {
         {
             if (next as usize) < control_ids.len() {
                 let expected = control_ids[next as usize];
-                if *ctrl_id != expected {
+                if *ctrl_id != expected && !(ctrl_id == b"%%me" && &expected == b"%unk") {
                     warnings.push(format!(
                         "ExtCtrl ctrl_id 불일치: 텍스트 {:?} vs CTRL_HEADER {:?}",
                         String::from_utf8_lossy(ctrl_id),
