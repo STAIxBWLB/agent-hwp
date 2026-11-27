@@ -3000,36 +3000,18 @@ struct MemoSite<'a> {
     index: usize,
 }
 
-fn find_memo_site_in_lists<'a>(
-    lists: &'a mut [hwp_model::control::ParagraphList],
-    number: u32,
-) -> Option<MemoSite<'a>> {
-    for list in lists {
-        if let Some(site) = find_memo_site_mut(&mut list.paragraphs, number) {
-            return Some(site);
-        }
-    }
-    None
-}
-
-/// Whether any memo anchor inside `control` carries `number` (cells, captions and nested lists).
+/// Whether any memo anchor inside `control` carries `number`: its own anchor first, then every
+/// paragraph list [`hwp_model::memo::nested_paragraph_lists`] names (cells, captions, nested
+/// lists), so a container kind cannot be walked by one memo helper and missed by another.
 fn control_holds_memo(control: &Control, number: u32) -> bool {
-    match control {
-        Control::Generic(g) => {
-            crate::field::memo_number(g) == Some(number)
-                || g.paragraph_lists
-                    .iter()
-                    .any(|list| paragraphs_hold_memo(&list.paragraphs, number))
-                || g.caption
-                    .as_ref()
-                    .is_some_and(|caption| paragraphs_hold_memo(&caption.paragraphs, number))
-        }
-        Control::Table(t) => t
-            .cells
-            .iter()
-            .any(|cell| paragraphs_hold_memo(&cell.paragraphs, number)),
-        _ => false,
+    if let Control::Generic(g) = control
+        && crate::field::memo_number(g) == Some(number)
+    {
+        return true;
     }
+    hwp_model::memo::nested_paragraph_lists(control)
+        .iter()
+        .any(|paras| paragraphs_hold_memo(paras, number))
 }
 
 fn paragraphs_hold_memo(paras: &[Paragraph], number: u32) -> bool {
@@ -3039,7 +3021,7 @@ fn paragraphs_hold_memo(paras: &[Paragraph], number: u32) -> bool {
 }
 
 /// The paragraph holding memo `number`'s anchor and the control's index in it, searched through
-/// body paragraphs, cells and nested paragraph lists.
+/// body paragraphs and every list [`hwp_model::memo::nested_paragraph_lists_mut`] names.
 fn find_memo_site_mut(paras: &mut [Paragraph], number: u32) -> Option<MemoSite<'_>> {
     for para in paras {
         if let Some(index) = para.controls.iter().position(
@@ -3054,25 +3036,10 @@ fn find_memo_site_mut(paras: &mut [Paragraph], number: u32) -> Option<MemoSite<'
         else {
             continue;
         };
-        match &mut para.controls[nested] {
-            Control::Generic(g) => {
-                if let Some(site) = find_memo_site_in_lists(&mut g.paragraph_lists, number) {
-                    return Some(site);
-                }
-                if let Some(caption) = &mut g.caption
-                    && let Some(site) = find_memo_site_mut(&mut caption.paragraphs, number)
-                {
-                    return Some(site);
-                }
+        for list in hwp_model::memo::nested_paragraph_lists_mut(&mut para.controls[nested]) {
+            if let Some(site) = find_memo_site_mut(list, number) {
+                return Some(site);
             }
-            Control::Table(t) => {
-                for cell in &mut t.cells {
-                    if let Some(site) = find_memo_site_mut(&mut cell.paragraphs, number) {
-                        return Some(site);
-                    }
-                }
-            }
-            _ => {}
         }
     }
     None
@@ -3282,7 +3249,7 @@ pub fn set_memo_text(
     })?;
     if !memo_exists(sec, number) {
         return Err(format!(
-            "구역 {section}에 메모 {number}(이)가 없습니다. hwp memo로 번호를 확인하세요"
+            "구역 {section}에 메모 {number}(이)가 없습니다. `ahwp cat --with-memos <파일>`로 메모 번호를 확인하세요"
         ));
     }
     let body_range = hwp5_memo_body_range(sec, number);
@@ -3315,42 +3282,12 @@ pub fn set_memo_text(
 }
 
 /// Whether `section` holds memo `number`, by its anchor control or by an HWP5 body group.
+///
+/// The anchor half goes through the same predicate the edit walkers use, so "is this memo here"
+/// and "remove this memo" cannot disagree about which containers they look in.
 fn memo_exists(section: &hwp_model::Section, number: u32) -> bool {
     hwp5_memo_body_range(section, number).is_some()
-        || section_has_memo_anchor(&section.paragraphs, number)
-}
-
-fn section_has_memo_anchor(paras: &[Paragraph], number: u32) -> bool {
-    for para in paras {
-        for control in &para.controls {
-            match control {
-                Control::Generic(g) if crate::field::memo_number(g) == Some(number) => return true,
-                Control::Generic(g) => {
-                    if g.paragraph_lists
-                        .iter()
-                        .any(|l| section_has_memo_anchor(&l.paragraphs, number))
-                    {
-                        return true;
-                    }
-                    if let Some(caption) = &g.caption
-                        && section_has_memo_anchor(&caption.paragraphs, number)
-                    {
-                        return true;
-                    }
-                }
-                Control::Table(t) => {
-                    if t.cells
-                        .iter()
-                        .any(|c| section_has_memo_anchor(&c.paragraphs, number))
-                    {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    false
+        || paragraphs_hold_memo(&section.paragraphs, number)
 }
 
 /// Removes memo `number` from `section`: its anchor field, its body, and the now-stale FIELD_END
@@ -3362,7 +3299,7 @@ pub fn remove_memo(doc: &mut Document, section: usize, number: u32) -> Result<()
     })?;
     if !memo_exists(sec, number) {
         return Err(format!(
-            "구역 {section}에 메모 {number}(이)가 없습니다. hwp memo로 번호를 확인하세요"
+            "구역 {section}에 메모 {number}(이)가 없습니다. `ahwp cat --with-memos <파일>`로 메모 번호를 확인하세요"
         ));
     }
     let body_range = hwp5_memo_body_range(sec, number);
@@ -5125,6 +5062,87 @@ mod tests {
         split_cell(&mut doc, 0, 0, 1).unwrap();
         delete_table_column(&mut doc, 0, 3).unwrap();
         validate_table_invariants(first_table(&doc)).unwrap();
+    }
+
+    /// A memo whose anchor sits inside a table caption is found by every memo walker, so a
+    /// remove-by-number clears the field pair where it actually lives instead of refusing the
+    /// memo as absent. Before the caption arms were unified through
+    /// `hwp_model::memo::nested_paragraph_lists`, the `Table` arm covered cells only.
+    #[test]
+    fn remove_memo_reaches_an_anchor_inside_a_table_caption() {
+        let mut doc = crate::from_markdown::from_markdown("본문 문단\n\n둘째 문단\n");
+        let number = add_memo(
+            &mut doc,
+            0,
+            // A zero-width anchor: this test is about which container the walkers reach, and the
+            // markdown builder's paragraph opens with a control block, so an inner offset would
+            // not be a character boundary.
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "yj.lee",
+            Some(1),
+            &["메모 본문".to_string()],
+        )
+        .unwrap();
+        add_table(&mut doc, "본문", &[vec!["칸".to_string()]]).unwrap();
+
+        let anchored = doc.sections[0].paragraphs.remove(0);
+        first_table_mut(&mut doc).caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![anchored],
+        });
+
+        assert!(
+            memo_exists(&doc.sections[0], number),
+            "the walkers must see a memo anchored in a caption"
+        );
+        remove_memo(&mut doc, 0, number).unwrap();
+        assert!(!memo_exists(&doc.sections[0], number));
+        let caption = first_table(&doc)
+            .caption
+            .as_ref()
+            .expect("the caption survives the memo removal");
+        assert!(
+            !caption
+                .paragraphs
+                .iter()
+                .any(|p| p.controls.iter().any(|c| matches!(
+                    c,
+                    Control::Generic(g) if crate::field::memo_number(g) == Some(number)
+                ))),
+            "the anchor control must be gone from the caption paragraph"
+        );
+        assert!(
+            !caption.paragraphs.iter().any(|p| p.chars.iter().any(
+                |ch| matches!(ch, HwpChar::InlineCtrl { payload, .. } if payload.starts_with(b"em%\\0"))
+            )),
+            "no FIELD_END of the removed memo may survive in the caption"
+        );
+    }
+
+    /// The only signal of a refused memo op is its message, so it names the command that exists:
+    /// `ahwp cat --with-memos` prints the memo numbers. `hwp memo` never did.
+    #[test]
+    fn missing_memo_refusal_names_a_command_that_lists_memo_numbers() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        let removed = remove_memo(&mut doc, 0, 7).unwrap_err();
+        assert!(
+            removed.contains("ahwp cat --with-memos"),
+            "remove_memo must point at a real command: {removed}"
+        );
+        let set = set_memo_text(&mut doc, 0, 7, &["본문".to_string()]).unwrap_err();
+        assert!(
+            set.contains("ahwp cat --with-memos"),
+            "set_memo_text must point at a real command: {set}"
+        );
+        assert!(!removed.contains("hwp memo") && !set.contains("hwp memo"));
     }
 }
 

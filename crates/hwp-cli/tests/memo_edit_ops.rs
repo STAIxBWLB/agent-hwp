@@ -114,6 +114,59 @@ fn hwp5_add_memo_writes_its_memo_list_body() {
     assert_eq!(kept.created_filetime, original.created_filetime);
 }
 
+/// 07 B4: nchars bit31 marks the last paragraph of a list, so a two-line memo body carries it on
+/// the final line only. ORing the anchor template's own flag (the anchor paragraph is usually the
+/// section's last, so it holds bit31) would mark every line as the end of the list.
+#[test]
+fn hwp5_added_memo_marks_only_its_last_body_line_as_list_final() {
+    let input = fixtures().join("hwp5/memo1.hwp");
+    if fixture_skip::fixture_missing(&input) {
+        return;
+    }
+    let doc = hwp5::read_document(&input).unwrap().document;
+    let para = anchor_paragraph(&doc);
+    let dir = test_dir("hwp5-last-flag");
+    let out = dir.join("out.hwp");
+    run_ops(
+        &dir,
+        &input,
+        &out,
+        &format!(
+            r#"[{{"op":"memo_add","section":0,"anchor":{{"para":{para},"start":0,"end":2}},"author":"테스터","body":["첫 줄","둘째 줄"]}}]"#
+        ),
+    );
+
+    let doc = hwp5::read_document(&out).unwrap().document;
+    let extras = &doc.sections[0]
+        .paragraphs
+        .last()
+        .expect("section body")
+        .extras;
+    let flags = |number: u32| -> Vec<u8> {
+        let start = extras
+            .iter()
+            .position(|e| e.tag == hwp_model::memo::MEMO_LIST_TAG && e.data == number.to_le_bytes())
+            .unwrap_or_else(|| panic!("no MEMO_LIST for memo {number}"));
+        extras[start + 1..]
+            .iter()
+            .take_while(|e| e.tag != hwp_model::memo::MEMO_LIST_TAG)
+            .filter(|e| e.tag == hwp_model::memo::PARA_HEADER_TAG)
+            .map(|e| e.data[3] & 0x80)
+            .collect()
+    };
+
+    assert_eq!(
+        flags(2),
+        vec![0x00, 0x80],
+        "only the final body line is list-final"
+    );
+    assert_eq!(
+        flags(1),
+        vec![0x80],
+        "the fixture's single-line memo keeps its flag"
+    );
+}
+
 #[test]
 fn hwp5_set_and_remove_memo_body() {
     let input = fixtures().join("hwp5/memo1.hwp");

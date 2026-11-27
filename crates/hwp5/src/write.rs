@@ -3137,8 +3137,9 @@ fn synthesize_memo_bodies(doc: &mut hwp_model::Document, warnings: &mut WriteRep
                 data: list_header,
                 children: Vec::new(),
             });
-            for paragraph in &paragraphs {
-                last.extras.push(memo_body_record(paragraph));
+            for (index, paragraph) in paragraphs.iter().enumerate() {
+                last.extras
+                    .push(memo_body_record(paragraph, index + 1 == paragraphs.len()));
             }
             if paragraphs.is_empty() {
                 warnings.warning(format!("메모 {number} 본문이 비어 있음"));
@@ -3148,39 +3149,31 @@ fn synthesize_memo_bodies(doc: &mut hwp_model::Document, warnings: &mut WriteRep
 }
 
 /// Takes the paragraphs of every op-created memo anchor in this section, leaving its lists empty.
+///
+/// The walk reaches the same containers as [`hwp_model::memo::nested_paragraph_lists_mut`] (cells,
+/// captions, nested lists) so a memo cannot be collected in one container kind and dropped in
+/// another; a memo anchor's own lists are its body and are drained here instead of walked.
 fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragraph>)>) {
     for para in paras {
         for control in &mut para.controls {
-            match control {
-                Control::Generic(g)
-                    if g.raw_children.is_empty()
-                        && g.hwpx_raw_xml.is_none()
-                        && hwp_model::memo::is_memo_anchor(g)
-                        && !g.paragraph_lists.is_empty() =>
-                {
-                    if let Some(number) = hwp_model::memo::memo_number(g) {
-                        let paragraphs = g
-                            .paragraph_lists
-                            .drain(..)
-                            .flat_map(|list| list.paragraphs)
-                            .collect();
-                        out.push((number, paragraphs));
-                    }
+            if let Control::Generic(g) = control
+                && g.raw_children.is_empty()
+                && g.hwpx_raw_xml.is_none()
+                && hwp_model::memo::is_memo_anchor(g)
+                && !g.paragraph_lists.is_empty()
+            {
+                if let Some(number) = hwp_model::memo::memo_number(g) {
+                    let paragraphs = g
+                        .paragraph_lists
+                        .drain(..)
+                        .flat_map(|list| list.paragraphs)
+                        .collect();
+                    out.push((number, paragraphs));
                 }
-                Control::Generic(g) => {
-                    for list in &mut g.paragraph_lists {
-                        collect_pure_ir_memos(&mut list.paragraphs, out);
-                    }
-                    if let Some(caption) = &mut g.caption {
-                        collect_pure_ir_memos(&mut caption.paragraphs, out);
-                    }
-                }
-                Control::Table(t) => {
-                    for cell in &mut t.cells {
-                        collect_pure_ir_memos(&mut cell.paragraphs, out);
-                    }
-                }
-                _ => {}
+                continue;
+            }
+            for list in hwp_model::memo::nested_paragraph_lists_mut(control) {
+                collect_pure_ir_memos(list, out);
             }
         }
     }
@@ -3189,13 +3182,24 @@ fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragr
 /// One memo body paragraph as the measured `PARA_HEADER` record: the paragraph-end character, the
 /// list-final bit (`0x8000_0000`), the template's shape ids, and `PARA_TEXT`/`PARA_CHAR_SHAPE`
 /// children (07 L2).
-fn memo_body_record(para: &Paragraph) -> hwp_model::OpaqueRecord {
+///
+/// `last` follows 07 B4: bit31 marks the last paragraph of a list, so it is set on the final body
+/// line and cleared on the others. The four fixtures only ever hold single-line memo bodies, so
+/// every body paragraph they show carries it; inheriting the anchor template's own flag would put
+/// it on every line and make Hangul treat each line as the end of the list.
+fn memo_body_record(para: &Paragraph, last: bool) -> hwp_model::OpaqueRecord {
     let mut chars = para.chars.clone();
     if chars.last() != Some(&HwpChar::CharCtrl(13)) {
         chars.push(HwpChar::CharCtrl(13));
     }
     let char_count = chars.iter().map(HwpChar::wchar_width).sum::<u32>();
-    let nchars = char_count | (u32::from(para.header.chars_flags) << 24);
+    let mut chars_flags = para.header.chars_flags;
+    if last {
+        chars_flags |= 0x80;
+    } else {
+        chars_flags &= !0x80;
+    }
+    let nchars = char_count | (u32::from(chars_flags) << 24);
     let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&nchars.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes()); // ctrl_mask: no control in a plain body line

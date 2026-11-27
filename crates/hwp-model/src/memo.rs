@@ -413,6 +413,43 @@ pub fn nested_paragraph_lists(control: &Control) -> Vec<&[Paragraph]> {
     lists
 }
 
+/// The mutable twin of [`nested_paragraph_lists`], for the walks that rewrite what they find: an
+/// op-created memo's body being drained out of its own lists, or the site of a memo to edit or
+/// remove. Both build their list from the same container kinds, so a memo inside a table cell, a
+/// caption or a nested list cannot be seen by one walk and missed by the other.
+pub fn nested_paragraph_lists_mut(control: &mut Control) -> Vec<&mut [Paragraph]> {
+    // Read the command before taking a mutable borrow of the control's fields.
+    let is_memo = memo_command_of(control).is_some();
+    let mut lists: Vec<&mut [Paragraph]> = Vec::new();
+    match control {
+        Control::Table(t) => {
+            lists.extend(t.cells.iter_mut().map(|c| c.paragraphs.as_mut_slice()));
+            if let Some(c) = t.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        Control::Picture(p) => {
+            if let Some(c) = p.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        Control::Generic(g) => {
+            if !is_memo {
+                lists.extend(
+                    g.paragraph_lists
+                        .iter_mut()
+                        .map(|l| l.paragraphs.as_mut_slice()),
+                );
+            }
+            if let Some(c) = g.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        _ => {}
+    }
+    lists
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
