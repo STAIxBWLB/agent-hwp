@@ -391,6 +391,42 @@ fn convert_reads_hml_from_stdin() {
     assert!(stdout(&back).contains("병합 셀"), "{}", stdout(&back));
 }
 
+/// Stdin is read with a bound: one byte past the input limit is refused with the limit
+/// message instead of being buffered whole and handed to format detection.
+#[test]
+fn convert_stdin_over_the_input_limit_is_refused() {
+    use std::io::Write as _;
+    let limit = hwp_cli::certification::MAX_INPUT_BYTES as usize;
+    let output = tmp("stdin-over.hwpx");
+    let mut child = hwp()
+        .args(["convert", "-", "-o"])
+        .arg(&*output)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let chunk = vec![b' '; 1 << 20];
+        let mut left = limit + 1;
+        while left > 0 {
+            let n = left.min(chunk.len());
+            // The child stops reading at limit + 1; a broken pipe after that is expected.
+            if stdin.write_all(&chunk[..n]).is_err() {
+                return;
+            }
+            left -= n;
+        }
+    });
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("stdin") && err.contains("상한"), "{err}");
+    assert!(!output.exists());
+}
+
 /// Content wins over a `.json` extension, and `--preview` names the legacy format.
 #[test]
 fn json_extension_and_preview_route_through_legacy_detection() {

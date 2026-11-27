@@ -54,6 +54,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   HWPML on stdin, an `.hml` renamed to `.json` and `cat --preview` all route through content
   detection. The shared HTML table builder places cells in linear time and refuses grids past
   the IR's 65,535 rows or columns.
+  Field and marker controls (auto and page numbers, bookmarks, index marks) keep their text
+  and are reported in both empty and paired forms, and an entity with no known replacement is
+  reported, in body text and in `DOCSUMMARY`. `convert -` reads stdin with a bound and refuses
+  input past it.
   The complete HWP 3.00 signature is detected ahead of its reader. Other 3.x revisions, HWP
   1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).

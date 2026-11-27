@@ -170,6 +170,9 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
             .iter()
             .map(|name| format!("HWPML <{name}> 필드는 글자만 남기고 필드 정보는 건너뜁니다")),
     );
+    warnings.extend(lower.unresolved.iter().map(|name| {
+        format!("HWPML 엔티티 &{name}; 는 풀 수 없어 건너뜁니다 (한글에서 HWPX로 다시 저장해 변환하세요)")
+    }));
     Ok(HmlReadResult { document, warnings })
 }
 
@@ -235,6 +238,8 @@ struct Lower {
     section_starts: Vec<usize>,
     /// Inline controls whose text is kept but whose control semantics are dropped.
     flattened: BTreeSet<String>,
+    /// Entity references with no known replacement; the reference is dropped and reported.
+    unresolved: BTreeSet<String>,
 }
 
 /// Mirrors the first-free-slot placement of `hwp_convert::from_html`'s table builder so the
@@ -364,6 +369,20 @@ const SKIPPED: &[&str] = &[
     "HIDDENCOMMENT",
 ];
 
+/// Inline field and marker controls. Any text inside them is kept, but the control itself
+/// (auto number, page number, bookmark, index mark ...) is not lowered, so it is reported.
+const MARKERS: &[&str] = &[
+    "MARKPENEND",
+    "TITLEMARK",
+    "BOOKMARK",
+    "AUTONUM",
+    "NEWNUM",
+    "PAGENUMCTRL",
+    "PAGEHIDING",
+    "PAGENUM",
+    "INDEXMARK",
+];
+
 /// Wrapper/property elements that are transparent or carry no text.
 const TRANSPARENT: &[&str] = &[
     "BODY",
@@ -402,17 +421,8 @@ const TRANSPARENT: &[&str] = &[
     "PARAMETERSET",
     "PARAMETERARRAY",
     "ITEM",
-    "MARKPENEND",
-    "TITLEMARK",
     "FIELDBEGIN",
     "FIELDEND",
-    "BOOKMARK",
-    "AUTONUM",
-    "NEWNUM",
-    "PAGENUMCTRL",
-    "PAGEHIDING",
-    "PAGENUM",
-    "INDEXMARK",
     "COMPOSE",
     "COMPCHARSHAPE",
     "DUTMAL",
@@ -542,7 +552,7 @@ impl Lower {
             match r.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = name_of(&e);
-                    let value = text_of(r, &name)?;
+                    let value = text_of(r, &name, &mut self.unresolved)?;
                     let value = value.trim().to_string();
                     if value.is_empty() {
                         continue;
@@ -641,6 +651,9 @@ impl Lower {
                         "FIELDBEGIN" | "FIELDEND" => {
                             self.flattened.insert("FIELDBEGIN/FIELDEND".into());
                         }
+                        n if MARKERS.contains(&n) => {
+                            self.flattened.insert(n.to_string());
+                        }
                         n if SKIPPED.contains(&n) => {
                             self.dropped.insert(name);
                             skip(r, &e)?;
@@ -660,6 +673,9 @@ impl Lower {
                     "FIELDBEGIN" | "FIELDEND" => {
                         self.flattened.insert("FIELDBEGIN/FIELDEND".into());
                     }
+                    n if MARKERS.contains(&n) => {
+                        self.flattened.insert(n.to_string());
+                    }
                     n if SKIPPED.contains(&n) => {
                         self.dropped.insert(n.to_string());
                     }
@@ -668,11 +684,10 @@ impl Lower {
                 Ok(Event::Text(t)) if in_char > 0 => {
                     self.push_escaped(&mut buf, &t.xml10_content())?;
                 }
-                Ok(Event::GeneralRef(g)) if in_char > 0 => {
-                    if let Some(c) = resolve_entity(&g) {
-                        self.push_escaped(&mut buf, c.encode_utf8(&mut [0u8; 4]))?;
-                    }
-                }
+                Ok(Event::GeneralRef(g)) if in_char > 0 => match resolve_entity(&g) {
+                    Some(c) => self.push_escaped(&mut buf, c.encode_utf8(&mut [0u8; 4]))?,
+                    None => note_unresolved(&mut self.unresolved, &g),
+                },
                 Ok(Event::CData(c)) if in_char > 0 => {
                     self.push_escaped(&mut buf, &c.into_inner())?;
                 }
@@ -933,16 +948,25 @@ fn skip(r: &mut Reader<&[u8]>, e: &BytesStart<'_>) -> Result<()> {
         .map_err(|err| xml_err(&err.to_string()))
 }
 
-fn text_of(r: &mut Reader<&[u8]>, end: &str) -> Result<String> {
+/// Records an entity reference that `resolve_entity` cannot map; the set is bounded by the
+/// input size and each name is truncated so a hostile name cannot bloat the warning.
+fn note_unresolved(set: &mut BTreeSet<String>, g: &quick_xml::events::BytesRef<'_>) {
+    if set.len() >= 16 {
+        return;
+    }
+    let name: &str = g;
+    set.insert(name.chars().take(32).collect());
+}
+
+fn text_of(r: &mut Reader<&[u8]>, end: &str, unresolved: &mut BTreeSet<String>) -> Result<String> {
     let mut out = String::new();
     loop {
         match r.read_event() {
             Ok(Event::Text(t)) => out.push_str(&t.xml10_content()),
-            Ok(Event::GeneralRef(g)) => {
-                if let Some(c) = resolve_entity(&g) {
-                    out.push(c);
-                }
-            }
+            Ok(Event::GeneralRef(g)) => match resolve_entity(&g) {
+                Some(c) => out.push(c),
+                None => note_unresolved(unresolved, &g),
+            },
             Ok(Event::CData(c)) => out.push_str(&c.into_inner()),
             Ok(Event::End(e)) if e.local_name().into_inner() == end => return Ok(out),
             Ok(Event::Eof) => return Err(xml_err(&format!("닫히지 않은 {end}"))),
@@ -1425,6 +1449,40 @@ mod tests {
                       <FIELDEND></FIELDEND></TEXT></P>";
         let result = read_hml(doc(paired, "").as_bytes()).unwrap();
         assert!(result.warnings.join("\n").contains("FIELDBEGIN"));
+    }
+
+    /// Every marker control warns in both the empty and the paired form, and its text stays.
+    #[test]
+    fn marker_controls_are_reported_empty_and_paired() {
+        for name in MARKERS {
+            for body in [
+                format!("<P><TEXT><CHAR>a</CHAR><{name}/></TEXT></P>"),
+                format!("<P><TEXT><{name}><CHAR>a</CHAR></{name}></TEXT></P>"),
+            ] {
+                let result = read_hml(doc(&body, "").as_bytes()).unwrap();
+                assert!(result.document.plain_text().contains('a'), "{body}");
+                let w = result.warnings.join("\n");
+                assert!(w.contains(&format!("<{name}>")), "{body}: {w}");
+            }
+        }
+    }
+
+    /// An entity with no known replacement is reported, in body text and in DOCSUMMARY, and the
+    /// known entities around it still resolve.
+    #[test]
+    fn unresolved_entities_are_reported() {
+        let body = "<P><TEXT><CHAR>a&amp;b&bogus;c</CHAR></TEXT></P>";
+        let result = read_hml(doc(body, "").as_bytes()).unwrap();
+        assert!(result.document.plain_text().contains("a&bc"));
+        let w = result.warnings.join("\n");
+        assert!(w.contains("&bogus;"), "{w}");
+        assert!(!w.contains("&amp;"), "{w}");
+
+        let text = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD>\
+                    <DOCSUMMARY><TITLE>t&nope;</TITLE></DOCSUMMARY></HEAD>\
+                    <BODY><SECTION><P><TEXT><CHAR>x</CHAR></TEXT></P></SECTION></BODY></HWPML>";
+        let result = read_hml(text.as_bytes()).unwrap();
+        assert!(result.warnings.join("\n").contains("&nope;"));
     }
 
     /// With a BINITEM table, a refused mapped binary is never replaced by the BINDATA whose Id

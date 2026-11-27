@@ -215,8 +215,20 @@ fn run_multi_with_options(
     // Input staging (`-` → stdin).
     let mut staged: Option<PathBuf> = None;
     let inputs: Vec<PathBuf> = if inputs.len() == 1 && inputs[0].as_os_str() == "-" {
+        // Bounded before allocation: read at most one byte past the largest input any
+        // supported format accepts, so an endless stream is refused instead of buffered.
+        let limit = hwp_cli::certification::MAX_INPUT_BYTES;
         let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(std::io::stdin(), limit + 1),
+            &mut buf,
+        )?;
+        if buf.len() as u64 > limit {
+            anyhow::bail!(
+                "stdin 입력이 상한 {limit}바이트를 넘습니다. 파일로 저장해 경로로 넘기거나, \
+                 한글(한컴오피스)에서 문서를 나눠 다시 저장하세요"
+            );
+        }
         if buf.is_empty() {
             anyhow::bail!("stdin이 비어 있습니다");
         }
