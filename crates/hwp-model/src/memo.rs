@@ -298,7 +298,12 @@ fn hwp5_bodies(section: &Section) -> Vec<(u32, Vec<String>)> {
     out
 }
 
-/// Every memo in the document, in body order.
+/// Every memo in the document, in the order its anchor sits in the text.
+///
+/// A paragraph is walked character by character, and a control is entered where its block sits,
+/// so a memo anchored in a table that precedes a direct anchor in the same paragraph is reported
+/// first. Within one control the order is [`nested_paragraph_lists`]'s: table cells, then the
+/// caption.
 pub fn memos(doc: &Document) -> Vec<Memo> {
     let mut out = Vec::new();
     for (si, section) in doc.sections.iter().enumerate() {
@@ -318,44 +323,24 @@ fn collect_paragraph(
 ) {
     // Anchor text: characters between a memo FIELD_START and its FIELD_END (depth-aware).
     let mut open: Vec<(usize, String)> = Vec::new(); // (index into out, accumulated text)
+    // A control is visited where its block sits in the text, so a memo inside a table that
+    // precedes a direct anchor is reported first. A control the text never references keeps the
+    // after-the-text position it had before.
+    let mut visited = vec![false; para.controls.len()];
     for ch in &para.chars {
         match ch {
             HwpChar::ExtCtrl {
-                code: 3,
-                ctrl_index,
-                ..
+                code, ctrl_index, ..
             } => {
                 let control = ctrl_index.and_then(|i| para.controls.get(i as usize));
-                match control.and_then(|c| memo_command_of(c).map(|m| (c, m))) {
-                    Some((control, cmd)) => {
-                        let inline_body = match control {
-                            Control::Generic(g) => g
-                                .paragraph_lists
-                                .iter()
-                                .flat_map(|l| l.paragraphs.iter().map(paragraph_text))
-                                .collect::<Vec<_>>(),
-                            _ => Vec::new(),
-                        };
-                        let body = if inline_body.is_empty() {
-                            bodies
-                                .iter()
-                                .find(|(n, _)| *n == cmd.number)
-                                .map(|(_, b)| b.clone())
-                                .unwrap_or_default()
-                        } else {
-                            inline_body
-                        };
-                        out.push(Memo {
-                            section: si,
-                            number: cmd.number,
-                            author: cmd.author,
-                            created_filetime: cmd.filetime,
-                            anchor_text: String::new(),
-                            body,
-                        });
-                        open.push((out.len() - 1, String::new()));
+                if *code == 3 {
+                    collect_field_start(si, control, bodies, out, &mut open);
+                }
+                if let (Some(index), Some(control)) = (ctrl_index, control) {
+                    if let Some(slot) = visited.get_mut(*index as usize) {
+                        *slot = true;
                     }
-                    None => open.push((usize::MAX, String::new())),
+                    collect_nested(si, control, bodies, out);
                 }
             }
             HwpChar::InlineCtrl { code: 4, .. } => {
@@ -377,11 +362,65 @@ fn collect_paragraph(
             }
         }
     }
-    for control in &para.controls {
-        for list in nested_paragraph_lists(control) {
-            for p in list {
-                collect_paragraph(si, p, bodies, out);
-            }
+    for (i, control) in para.controls.iter().enumerate() {
+        if !visited.get(i).copied().unwrap_or(true) {
+            collect_nested(si, control, bodies, out);
+        }
+    }
+}
+
+/// Records the memo a field start opens, if the control behind it is one, and pushes its range
+/// onto the anchor-text stack.
+fn collect_field_start(
+    si: usize,
+    control: Option<&Control>,
+    bodies: &[(u32, Vec<String>)],
+    out: &mut Vec<Memo>,
+    open: &mut Vec<(usize, String)>,
+) {
+    match control.and_then(|c| memo_command_of(c).map(|m| (c, m))) {
+        Some((control, cmd)) => {
+            let inline_body = match control {
+                Control::Generic(g) => g
+                    .paragraph_lists
+                    .iter()
+                    .flat_map(|l| l.paragraphs.iter().map(paragraph_text))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            let body = if inline_body.is_empty() {
+                bodies
+                    .iter()
+                    .find(|(n, _)| *n == cmd.number)
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or_default()
+            } else {
+                inline_body
+            };
+            out.push(Memo {
+                section: si,
+                number: cmd.number,
+                author: cmd.author,
+                created_filetime: cmd.filetime,
+                anchor_text: String::new(),
+                body,
+            });
+            open.push((out.len() - 1, String::new()));
+        }
+        None => open.push((usize::MAX, String::new())),
+    }
+}
+
+/// Collects the memos of every paragraph list `control` holds, in that control's own order.
+fn collect_nested(
+    si: usize,
+    control: &Control,
+    bodies: &[(u32, Vec<String>)],
+    out: &mut Vec<Memo>,
+) {
+    for list in nested_paragraph_lists(control) {
+        for p in list {
+            collect_paragraph(si, p, bodies, out);
         }
     }
 }
@@ -453,6 +492,7 @@ pub fn nested_paragraph_lists_mut(control: &mut Control) -> Vec<&mut [Paragraph]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BorderFillId, Cell, GenericControl, HwpUnit, Table};
 
     /// An HWP5 memo body paragraph keeps line breaks, tabs, hyphens and nb/fw spaces through
     /// the shared character mapping, the same text the HWPX path produces; extended controls
@@ -577,5 +617,117 @@ mod tests {
         // instant, so the epoch arithmetic cannot silently drift to the wrong era.
         assert!(now > 116_444_736_000_000_000, "after 1970");
         assert!(filetime_to_rfc3339(now).starts_with("20"));
+    }
+
+    fn memo_anchor(number: u32) -> Control {
+        let units: Vec<u16> = build_memo_command(number, None, "someone")
+            .encode_utf16()
+            .collect();
+        let mut data = vec![0u8; 5];
+        data.extend_from_slice(&(units.len() as u16).to_le_bytes());
+        for unit in units {
+            data.extend_from_slice(&unit.to_le_bytes());
+        }
+        Control::Generic(GenericControl {
+            ctrl_id: *b"%unk",
+            data,
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            chart: None,
+            container_box: None,
+        })
+    }
+
+    /// A paragraph holding one memo anchored to `text`, the anchor at control index 0.
+    fn anchored_paragraph(text: &str, number: u32) -> Paragraph {
+        let mut chars = vec![HwpChar::ExtCtrl {
+            code: 3,
+            ctrl_id: *b"%unk",
+            payload: hwp5_field_begin_payload().to_vec(),
+            ctrl_index: Some(0),
+        }];
+        chars.extend(text.chars().map(HwpChar::Text));
+        chars.push(HwpChar::InlineCtrl {
+            code: 4,
+            payload: hwp5_field_end_payload(number, true).to_vec(),
+        });
+        Paragraph {
+            chars,
+            controls: vec![memo_anchor(number)],
+            ..Paragraph::default()
+        }
+    }
+
+    fn one_cell_table(para: Paragraph) -> Control {
+        Control::Table(Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: vec![Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(100),
+                height: HwpUnit(100),
+                margins: [0; 4],
+                border_fill: BorderFillId(0),
+                header_tail: Vec::new(),
+                paragraphs: vec![para],
+            }],
+            caption: None,
+            extras: Vec::new(),
+        })
+    }
+
+    /// A table's cell memo sits before a direct anchor in the same paragraph's text, so the
+    /// numbers must come back in that order rather than every direct anchor first.
+    #[test]
+    fn memos_follow_the_anchor_position_inside_a_paragraph() {
+        let para = Paragraph {
+            chars: vec![
+                HwpChar::ExtCtrl {
+                    code: 11,
+                    ctrl_id: *b"tbl ",
+                    payload: Vec::new(),
+                    ctrl_index: Some(0),
+                },
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_id: *b"%unk",
+                    payload: hwp5_field_begin_payload().to_vec(),
+                    ctrl_index: Some(1),
+                },
+                HwpChar::InlineCtrl {
+                    code: 4,
+                    payload: hwp5_field_end_payload(2, true).to_vec(),
+                },
+            ],
+            controls: vec![one_cell_table(anchored_paragraph("셀", 1)), memo_anchor(2)],
+            ..Paragraph::default()
+        };
+        let doc = Document {
+            sections: vec![Section {
+                paragraphs: vec![para],
+                extras: Vec::new(),
+            }],
+            ..Document::default()
+        };
+        let numbers: Vec<u32> = memos(&doc).iter().map(|m| m.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
     }
 }
