@@ -250,8 +250,20 @@ fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Resu
     use crate::format::LegacyFormat;
     match legacy {
         LegacyFormat::Hml => {
-            let bytes = std::fs::read(path)
+            // Bound the input before allocating it: read at most one byte past the limit.
+            let limit = hwpx::HML_LIMITS.max_input_bytes;
+            let file = std::fs::File::open(path)
                 .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
+            let mut bytes = Vec::new();
+            file.take(limit + 1)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
+            if bytes.len() as u64 > limit {
+                anyhow::bail!(
+                    "{}: HWPML 입력이 상한 {limit}바이트를 넘습니다",
+                    path.display()
+                );
+            }
             let result = hwpx::read_hml(&bytes)
                 .map_err(|e| anyhow::anyhow!("{}: HWPML 읽기 실패: {e}", path.display()))?;
             for w in &result.warnings {

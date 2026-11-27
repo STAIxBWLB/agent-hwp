@@ -39,7 +39,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Read-only HWPML (`.hml`) input (GJ-2). `cat`, `convert`, `render`, `info` and the other read
   commands detect it by content and lower body text, tables with merged cells, embedded pictures
   and summary metadata into the IR. Character and paragraph shapes are not carried over, and other
-  objects are skipped with a warning naming the element. Editing in place is refused. HWP 1.x/2.x
+  objects are skipped with a warning naming the element. Input size, table nesting, lowered
+  size and picture count are bounded, and compressed embedded binaries are skipped with a
+  warning. Editing in place is refused. HWP 1.x/2.x
   signatures get a typed refusal, and HWP 3.x is detected ahead of its reader
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).
 

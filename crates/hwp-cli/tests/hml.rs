@@ -241,3 +241,18 @@ fn non_hml_xml_keeps_the_signature_error() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("시그니처"), "{}", stderr(&out));
 }
+
+#[test]
+fn oversized_hml_is_refused_before_reading_it_whole() {
+    // A sparse file one byte over the limit: the loader must refuse it from a bounded read.
+    let input = tmp("huge.hml");
+    let head = synthetic_hml();
+    let file = std::fs::File::create(&*input).unwrap();
+    use std::io::Write as _;
+    (&file).write_all(head.as_bytes()).unwrap();
+    file.set_len(hwpx::HML_LIMITS.max_input_bytes + 1).unwrap();
+    drop(file);
+    let out = run(&["cat".as_ref(), input.as_os_str()]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("상한"), "{}", stderr(&out));
+}
