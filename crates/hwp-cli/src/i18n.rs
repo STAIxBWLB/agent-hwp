@@ -144,6 +144,16 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     (
         "cat",
+        "with_memos",
+        "본문 뒤에 문서의 메모를 덧붙여 출력: 번호, 메모가 달린 글자, UTC 작성 시각, 내용 (plain/markdown). 작성자는 --memo-authors를 함께 줄 때만 출력",
+    ),
+    (
+        "cat",
+        "memo_authors",
+        "--with-memos와 함께, 각 메모의 작성자(계정 이름)도 출력",
+    ),
+    (
+        "cat",
         "with_segments",
         "각 출력 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 함께 출력. 버전은 --segments로 고른다 — v1은 markdown 전용, v2는 --format json도 받는다",
     ),

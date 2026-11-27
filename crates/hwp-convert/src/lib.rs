@@ -48,8 +48,8 @@ pub use edit::{
     table_dims, table_placement_stats,
 };
 pub use field::{
-    FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,
-    replace_slots, scan_placeholders, set_field,
+    FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, is_memo_anchor,
+    list_fields, memo_raw_ids, replace_slots, scan_placeholders, set_field,
 };
 pub use form::{FormField, FormFieldSource, fill_form_fields, scan_form_fields};
 pub use format::{

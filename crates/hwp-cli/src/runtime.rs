@@ -57,6 +57,8 @@ fn real_main() -> anyhow::Result<()> {
             preview,
             with_header_footer,
             with_hidden,
+            with_memos,
+            memo_authors,
             with_segments,
             segments,
             password,
@@ -66,6 +68,7 @@ fn real_main() -> anyhow::Result<()> {
             preview,
             with_header_footer,
             with_hidden,
+            commands::cat::MemoOutput::from_flags(with_memos, memo_authors),
             // The switch and the version are two flags at the CLI and one value here:
             // `None` is the envelope switched off.
             with_segments.then_some(segments),

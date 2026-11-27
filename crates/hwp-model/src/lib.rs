@@ -20,6 +20,7 @@ pub mod document;
 pub mod header;
 pub mod ids;
 pub mod list;
+pub mod memo;
 pub mod opaque;
 pub mod paragraph;
 pub mod preservation;

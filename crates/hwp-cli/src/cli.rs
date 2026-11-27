@@ -95,6 +95,14 @@ pub enum Cmd {
         /// Also extract hidden comment text (default: excluded)
         #[arg(long = "with-hidden")]
         with_hidden: bool,
+        /// Append the document's memos (comments) after the body: number, anchored text,
+        /// UTC creation time and body (plain/markdown). Authors are omitted unless
+        /// --memo-authors is also given
+        #[arg(long = "with-memos")]
+        with_memos: bool,
+        /// With --with-memos, also print each memo's author (an account name)
+        #[arg(long = "memo-authors", requires = "with_memos")]
+        memo_authors: bool,
         /// Emit the output together with the source coordinates of each output
         /// character range, as a one-line JSON envelope. Version selected by
         /// --segments; v1 is markdown-only, v2 also accepts --format json

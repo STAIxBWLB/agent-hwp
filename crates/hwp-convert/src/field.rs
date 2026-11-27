@@ -106,6 +106,31 @@ pub fn owpml_field_type(ctrl_id: &[u8; 4]) -> &'static str {
     }
 }
 
+/// Whether a field control is a memo anchor (`%unk`/`%%me` with a `MEMO/` Command string).
+pub fn is_memo_anchor(g: &GenericControl) -> bool {
+    hwp_model::memo::is_memo_anchor(g)
+}
+
+/// The `(id, fieldid)` of a memo anchor read from HWPX, taken from the start tag of its
+/// verbatim `<hp:fieldBegin type="MEMO">` capture. `None` for every other control, so the
+/// writer re-emits only genuine HWPX memo captures and never synthesizes one.
+pub fn memo_raw_ids(g: &GenericControl) -> Option<(String, String)> {
+    let raw = g.hwpx_raw_xml.as_deref()?;
+    let start = &raw[..raw.find('>')?];
+    if !start.contains("fieldBegin") || attr_value(start, "type")? != "MEMO" {
+        return None;
+    }
+    Some((attr_value(start, "id")?, attr_value(start, "fieldid")?))
+}
+
+/// Value of ` name="..."` in a start tag (exact attribute name, double quotes).
+fn attr_value(start: &str, name: &str) -> Option<String> {
+    let key = format!(" {name}=\"");
+    let at = start.find(&key)? + key.len();
+    let end = start[at..].find('"')?;
+    Some(start[at..at + end].to_string())
+}
+
 /// Map an OWPML fieldBegin type back to a control ID, using `%unk` for unknown types.
 pub fn field_ctrl_id_from_owpml(t: &str) -> [u8; 4] {
     match t {

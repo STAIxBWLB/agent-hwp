@@ -242,6 +242,10 @@ fn write_paragraph(
     let mut emitted_any_run = false;
     // 열려 있는 필드(FIELD_START)의 id — FIELD_END의 beginIDRef로 연결(필드 비중첩 가정).
     let mut current_field_id: Option<u32> = None;
+    // A verbatim memo fieldBegin's own (id, fieldid), echoed by its fieldEnd.
+    let mut current_memo_ids: Option<(String, String)> = None;
+    // Set when a dropped memo anchor's FIELD_END must be skipped as well.
+    let mut skip_memo_end = false;
     // 현재 run에 방출한 그리기 도형 수 — 한글은 run당 앞쪽 ~21개만 그리고 나머지를 버린다
     // (annual 6쪽 링 미렌더 실기 확정: 도형 35개/run → 22번째 이후 타원 전부 누락). 한계
     // 전에 run을 강제 분할해 모든 도형이 렌더되게 한다.
@@ -319,7 +323,17 @@ fn write_paragraph(
                 }
                 4 => {
                     // FIELD_END — 앞의 fieldBegin과 beginIDRef로 연결.
-                    if let Some(fid) = current_field_id.take() {
+                    if std::mem::take(&mut skip_memo_end) {
+                    } else if let Some((id, fieldid)) = current_memo_ids.take() {
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        let _ = write!(
+                            out,
+                            r##"<hp:ctrl><hp:fieldEnd beginIDRef="{}" fieldid="{}"/></hp:ctrl>"##,
+                            esc(&id),
+                            esc(&fieldid),
+                        );
+                    } else if let Some(fid) = current_field_id.take() {
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         let _ = write!(
@@ -363,6 +377,27 @@ fn write_paragraph(
                         let before = out.len();
                         write_picture(out, doc, pic, ids, bins, report);
                         run_shapes += count_shape_tags(&out[before..]);
+                    }
+                    Control::Generic(g)
+                        if g.ctrl_id == *b"%unk" && hwp_convert::memo_raw_ids(g).is_some() =>
+                    {
+                        // Memo anchor read from HWPX: re-emit its fieldBegin (with the inline
+                        // subList body) verbatim; the matching FIELD_END echoes its ids.
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        current_memo_ids = hwp_convert::memo_raw_ids(g);
+                        let _ = write!(
+                            out,
+                            "<hp:ctrl>{}</hp:ctrl>",
+                            g.hwpx_raw_xml.as_deref().expect("memo_raw_ids guard")
+                        );
+                    }
+                    Control::Generic(g) if hwp_convert::field::is_memo_anchor(g) => {
+                        // A memo whose body is not an HWPX capture (HWP5 source, or synthesized)
+                        // has no verified OWPML emission yet: keep the anchor text and drop the
+                        // field, its body and its FIELD_END. The conversion's semantic check
+                        // reports the dropped control as control_removed.
+                        skip_memo_end = true;
                     }
                     Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {
                         // 필드(누름틀·계산식·하이퍼링크 등) — fieldBegin 방출. 값 텍스트는

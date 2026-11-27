@@ -281,6 +281,69 @@ fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Resu
     }
 }
 
+/// What `cat --with-memos` prints. Authors are account names, so they need a second flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoOutput {
+    Off,
+    WithoutAuthors,
+    WithAuthors,
+}
+
+impl MemoOutput {
+    pub fn from_flags(with_memos: bool, authors: bool) -> Self {
+        match (with_memos, authors) {
+            (false, _) => Self::Off,
+            (true, false) => Self::WithoutAuthors,
+            (true, true) => Self::WithAuthors,
+        }
+    }
+}
+
+/// The memo appendix: one entry per memo with its number, anchored text, UTC creation time and
+/// body. Markdown gets a heading and list items; plain text gets one `[memo N]` block per memo.
+pub(crate) fn render_memos(
+    memos: &[hwp_model::memo::Memo],
+    format: TextFormat,
+    output: MemoOutput,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if memos.is_empty() {
+        return out;
+    }
+    let markdown = matches!(format, TextFormat::Markdown);
+    out.push_str(if markdown { "\n## 메모\n\n" } else { "\n" });
+    for memo in memos {
+        let mut meta = Vec::new();
+        if let Some(time) = memo.created_utc() {
+            meta.push(time);
+        }
+        if output == MemoOutput::WithAuthors && !memo.author.is_empty() {
+            meta.push(memo.author.clone());
+        }
+        let meta = if meta.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", meta.join(", "))
+        };
+        let body = memo.body.join(if markdown { "<br>" } else { "\n  " });
+        if markdown {
+            let _ = writeln!(
+                out,
+                "- **메모 {}**{meta} \"{}\": {body}",
+                memo.number, memo.anchor_text
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "[메모 {}]{meta} \"{}\"\n  {body}",
+                memo.number, memo.anchor_text
+            );
+        }
+    }
+    out
+}
+
 /// Recovery for an HWPML input this reader refuses (over a bound, malformed, or not lowerable).
 const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP 5.0(.hwp)로 다시 저장하거나, \
      문서를 나눠 다시 시도하세요";
@@ -300,9 +363,22 @@ pub fn run(
     preview: bool,
     with_header_footer: bool,
     with_hidden: bool,
+    memos: MemoOutput,
     segments: Option<SegmentVersion>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
+    if memos != MemoOutput::Off {
+        // Memos are an appendix after the body text, so they would sit outside every segment
+        // envelope and PrvText preview; keep the features apart instead of guessing offsets.
+        if segments.is_some() || preview {
+            anyhow::bail!("--with-memos는 --with-segments·--preview와 함께 쓸 수 없습니다");
+        }
+        if !matches!(format, TextFormat::Plain | TextFormat::Markdown) {
+            anyhow::bail!(
+                "--with-memos는 --format plain 또는 markdown 전용입니다 (json IR에는 메모 원본이 이미 들어 있습니다)"
+            );
+        }
+    }
     if let Some(segments) = segments {
         if preview {
             // Not version- or format-specific: --preview prints PrvText without parsing the
@@ -399,6 +475,12 @@ pub fn run(
         TextFormat::Html => print!("{}", hwp_convert::to_html(&doc)),
         TextFormat::Json => println!("{}", hwp_convert::to_json(&doc, true, false)?),
         TextFormat::Csv => print!("{}", hwp_convert::to_csv(&doc)),
+    }
+    if memos != MemoOutput::Off {
+        print!(
+            "{}",
+            render_memos(&hwp_model::memo::memos(&doc), format, memos)
+        );
     }
     Ok(())
 }

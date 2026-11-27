@@ -2169,6 +2169,33 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
 // either kind of content for strip_unwritable_pictures to remove. Correct per-kind synthesis from
 // genuine templates remains follow-up work requiring repeated owner hardware checks.
 
+/// Removes the FIELD_END (inline code 4) that closes each removed FIELD_START, matching LIFO so
+/// nested fields keep their own ends. Runs before `removed` controls' ExtCtrls are dropped.
+fn drop_field_ends_of(para: &mut Paragraph, removed: &[u32]) {
+    let mut stack: Vec<bool> = Vec::new(); // true = the open field is being removed
+    let mut drop = vec![false; para.chars.len()];
+    for (k, ch) in para.chars.iter().enumerate() {
+        match ch {
+            HwpChar::ExtCtrl {
+                code: 3,
+                ctrl_index,
+                ..
+            } => stack.push(ctrl_index.is_some_and(|i| removed.contains(&i))),
+            HwpChar::InlineCtrl { code: 4, .. } => {
+                if stack.pop() == Some(true) {
+                    drop[k] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut k = 0;
+    para.chars.retain(|_| {
+        k += 1;
+        !drop[k - 1]
+    });
+}
+
 /// Caption lists represented semantically in the emitted document. A raw-backed Generic's
 /// caption is only an extraction mirror; its raw tree remains the serialization source.
 fn semantic_caption_mut(control: &mut Control) -> Option<&mut Caption> {
@@ -2878,6 +2905,7 @@ fn append_gso_description(
 /// readjusts remaining ExtCtrl ctrl_index values recursively.
 fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     let mut removed: Vec<u32> = Vec::new();
+    let mut removed_memo = false;
     let mut kept = Vec::with_capacity(para.controls.len());
     for (i, mut control) in std::mem::take(&mut para.controls).into_iter().enumerate() {
         if matches!(&control, Control::Generic(g) if !g.raw_children.is_empty()) {
@@ -2893,6 +2921,24 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
                     1,
                 );
                 removed.push(i as u32);
+                continue;
+            }
+            Control::Generic(g)
+                if g.raw_children.is_empty() && hwp_model::memo::is_memo_anchor(g) =>
+            {
+                // A memo anchor that is not an HWP5 original (read from HWPX, or synthesized):
+                // HWP5 keeps memo bodies as MEMO_LIST lists on the section's last paragraph,
+                // which this writer does not synthesize yet, and a `%%me` field without its
+                // body must never be written. Drop the field with its FIELD_END, keep the
+                // anchor text, and record the loss.
+                warnings.loss(
+                    PreservationCode::ControlRemoved,
+                    PreservationResourceKind::Control,
+                    PreservationDisposition::Removed,
+                    1,
+                );
+                removed.push(i as u32);
+                removed_memo = true;
                 continue;
             }
             // Omit only controls whose HWP5 payload cannot be synthesized (HWPX/Markdown headers,
@@ -2939,6 +2985,9 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     para.controls = kept;
     if removed.is_empty() {
         return;
+    }
+    if removed_memo {
+        drop_field_ends_of(para, &removed);
     }
     para.chars.retain(|ch| match ch {
         HwpChar::ExtCtrl {

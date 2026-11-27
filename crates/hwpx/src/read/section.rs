@@ -768,6 +768,16 @@ fn parse_ctrl(
                 // InlineCtrl(4).
                 if name.as_slice() == b"fieldBegin" {
                     let ty = attr(e, "type").unwrap_or_default();
+                    // A memo anchor carries its body inline (hp:subList). Keep the whole element
+                    // verbatim for same-format re-emission and lower the body into
+                    // paragraph_lists for text views; the field stays %unk like HWP5 stores it.
+                    if ty == "MEMO" && matches!(event, Event::Start(_)) {
+                        let raw = capture_element(reader, e, false)?;
+                        let generic = parse_memo_field(&raw, warnings)?;
+                        push_ext_ctrl(para, wchar_pos, 3, *b"%unk");
+                        para.controls.push(Control::Generic(generic));
+                        continue;
+                    }
                     let ctrl_id = hwp_convert::field::field_ctrl_id_from_owpml(&ty);
                     let fname = attr(e, "name").unwrap_or_default();
                     // For Start, read Command from the hp:parameters child; self-closing elements have
@@ -903,6 +913,47 @@ fn parse_ctrl(
         }
     }
     Ok(())
+}
+
+/// Lowers a captured `<hp:fieldBegin type="MEMO">` element: the Command string into HWP5-style
+/// field command data, the `hp:subList` paragraphs into `paragraph_lists`, and the element
+/// itself into `hwpx_raw_xml` for verbatim re-emission.
+fn parse_memo_field(raw: &str, warnings: &mut Vec<String>) -> Result<GenericControl> {
+    let mut reader = Reader::from_str(raw);
+    let mut command = None;
+    let mut paragraph_lists = Vec::new();
+    loop {
+        match next_event(&mut reader)? {
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == b"stringParam" => {
+                if attr(&e, "name").as_deref() == Some("Command") {
+                    command = Some(read_element_text(&mut reader, b"stringParam")?);
+                }
+            }
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == b"subList" => {
+                paragraph_lists.push(read_sub_list(&mut reader, warnings)?);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let data = command
+        .as_deref()
+        .map(|c| hwp_convert::field::make_field_command_data(b"%unk", c))
+        .unwrap_or_default();
+    Ok(GenericControl {
+        ctrl_id: *b"%unk",
+        data,
+        paragraph_lists,
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: Some(raw.to_string()),
+        chart: None,
+        container_box: None,
+    })
 }
 
 /// Reads Command stringParam text from fieldBegin's hp:parameters child through /hp:fieldBegin. Returns
