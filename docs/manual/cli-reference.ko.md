@@ -63,6 +63,8 @@
 | `--preview` |  |  | 본문 파싱 없이 PrvText 미리보기만 출력 |
 | `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
+| `--with-memos` |  |  | 본문 뒤에 문서의 메모를 덧붙여 출력: 번호, 메모가 달린 글자, UTC 작성 시각, 내용 (plain/markdown). 작성자는 --memo-authors를 함께 줄 때만 출력 |
+| `--memo-authors` |  |  | --with-memos와 함께, 각 메모의 작성자(계정 이름)도 출력 |
 | `--with-segments` |  |  | 각 출력 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 함께 출력. 버전은 --segments로 고른다 — v1은 markdown 전용, v2는 --format json도 받는다 |
 | `--segments` | `v1` \| `v2` | `v1` | --with-segments 봉투 버전. v1은 바이트가 고정된 v0.8.x 봉투(markdown 전용), v2는 7종 세그먼트·안정 id·세그먼트별 스타일을 담고 markdown과 json에서 쓸 수 있다 |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |

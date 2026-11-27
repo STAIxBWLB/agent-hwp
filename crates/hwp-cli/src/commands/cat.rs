@@ -303,6 +303,102 @@ pub(crate) fn read_legacy(
     }
 }
 
+/// Memo text as one markdown list-item line: metacharacters are backslash-escaped, so memo
+/// text can never open emphasis, a link, raw HTML or a heading, and a line break becomes
+/// `<br>`, so a multi-line memo stays inside its list item.
+fn markdown_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '~' | '!' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' => out.push_str("<br>"),
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// What `cat --with-memos` prints. Authors are account names, so they need a second flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoOutput {
+    Off,
+    WithoutAuthors,
+    WithAuthors,
+}
+
+impl MemoOutput {
+    pub fn from_flags(with_memos: bool, authors: bool) -> Self {
+        match (with_memos, authors) {
+            (false, _) => Self::Off,
+            (true, false) => Self::WithoutAuthors,
+            (true, true) => Self::WithAuthors,
+        }
+    }
+}
+
+/// The memo appendix: one entry per memo with its number, anchored text, UTC creation time and
+/// body. Markdown gets a heading and list items; plain text gets one `[memo N]` block per memo.
+pub(crate) fn render_memos(
+    memos: &[hwp_model::memo::Memo],
+    format: TextFormat,
+    output: MemoOutput,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if memos.is_empty() {
+        return out;
+    }
+    let markdown = matches!(format, TextFormat::Markdown);
+    out.push_str(if markdown { "\n## 메모\n\n" } else { "\n" });
+    for memo in memos {
+        let mut meta = Vec::new();
+        if let Some(time) = memo.created_utc() {
+            meta.push(time);
+        }
+        if output == MemoOutput::WithAuthors && !memo.author.is_empty() {
+            meta.push(memo.author.clone());
+        }
+        let meta = if meta.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", meta.join(", "))
+        };
+        let body = if markdown {
+            memo.body
+                .iter()
+                .map(|p| markdown_inline(p))
+                .collect::<Vec<_>>()
+                .join("<br>")
+        } else {
+            memo.body
+                .iter()
+                .map(|p| p.replace('\n', "\n  "))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        };
+        if markdown {
+            let _ = writeln!(
+                out,
+                "- **메모 {}**{} \"{}\": {body}",
+                memo.number,
+                markdown_inline(&meta),
+                markdown_inline(&memo.anchor_text)
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "[메모 {}]{meta} \"{}\"\n  {body}",
+                memo.number, memo.anchor_text
+            );
+        }
+    }
+    out
+}
+
 /// Recovery for an HWPML input this reader refuses (over a bound, malformed, or not lowerable).
 const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP 5.0(.hwp)로 다시 저장하거나, \
      문서를 나눠 다시 시도하세요";
@@ -316,15 +412,32 @@ const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP
 /// JSON 봉투로 함께 내고, 그 값이 봉투 버전을 고른다 — v1은 markdown 전용으로 바이트가
 /// 고정된 v0.8.x 봉투(D-04), v2는 markdown과 json 두 포맷 전용(D-03)이며
 /// `schemas/segment-envelope-v2.schema.json`이 정본이다.
+/// `memos` appends the memo appendix (`--with-memos`) after plain or markdown output.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     path: &Path,
     format: TextFormat,
     preview: bool,
     with_header_footer: bool,
     with_hidden: bool,
+    memos: MemoOutput,
     segments: Option<SegmentVersion>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
+    if memos != MemoOutput::Off {
+        // Memos are an appendix after the body text, so they would sit outside every segment
+        // envelope and PrvText preview; keep the features apart instead of guessing offsets.
+        if segments.is_some() || preview {
+            anyhow::bail!(
+                "--with-memos는 --with-segments·--preview와 함께 쓸 수 없습니다\n해결: --with-segments·--preview를 빼거나, 메모는 따로 `ahwp cat --with-memos <파일>`로 출력하세요"
+            );
+        }
+        if !matches!(format, TextFormat::Plain | TextFormat::Markdown) {
+            anyhow::bail!(
+                "--with-memos는 --format plain 또는 markdown 전용입니다 (json IR에는 메모 원본이 이미 들어 있습니다)"
+            );
+        }
+    }
     if let Some(segments) = segments {
         if preview {
             // Not version- or format-specific: --preview prints PrvText without parsing the
@@ -422,6 +535,12 @@ pub fn run(
         TextFormat::Json => println!("{}", hwp_convert::to_json(&doc, true, false)?),
         TextFormat::Csv => print!("{}", hwp_convert::to_csv(&doc)),
     }
+    if memos != MemoOutput::Off {
+        print!(
+            "{}",
+            render_memos(&hwp_model::memo::memos(&doc), format, memos)
+        );
+    }
     Ok(())
 }
 
@@ -491,4 +610,63 @@ fn decode_utf16le(raw: &[u8]) -> String {
     // 후행 NUL 제거 후 손실 허용 디코드
     let end = units.iter().rposition(|&u| u != 0).map_or(0, |i| i + 1);
     String::from_utf16_lossy(&units[..end])
+}
+
+#[cfg(test)]
+mod memo_render_tests {
+    use super::{MemoOutput, TextFormat, render_memos};
+    use hwp_model::memo::Memo;
+
+    fn memo(number: u32) -> Memo {
+        Memo {
+            section: 0,
+            number,
+            author: "synthetic-author".into(),
+            // 2020-01-01T00:00:00Z as a Windows FILETIME.
+            created_filetime: Some(132_223_104_000_000_000),
+            anchor_text: "앵커".into(),
+            body: vec!["첫 줄".into(), "둘째 줄".into()],
+        }
+    }
+
+    #[test]
+    fn authors_are_printed_only_on_opt_in() {
+        let memos = [memo(1), memo(2)];
+        for format in [TextFormat::Plain, TextFormat::Markdown] {
+            let off = render_memos(&memos, format, MemoOutput::WithoutAuthors);
+            assert!(!off.contains("synthetic-author"), "{off}");
+            let on = render_memos(&memos, format, MemoOutput::WithAuthors);
+            assert_eq!(on.matches("synthetic-author").count(), 2, "{on}");
+        }
+    }
+
+    /// Memo text cannot inject markdown, and a multi-line memo stays inside its list item.
+    #[test]
+    fn markdown_appendix_escapes_and_keeps_lines_in_the_item() {
+        let mut m = memo(1);
+        m.anchor_text = "*굵게* [링크](x) <b>".into();
+        m.body = vec!["# 제목\n둘째 줄".into()];
+        let out = render_memos(&[m], TextFormat::Markdown, MemoOutput::WithoutAuthors);
+        let item = out.lines().find(|l| l.starts_with("- ")).unwrap();
+        assert_eq!(out.lines().filter(|l| !l.is_empty()).count(), 2, "{out}");
+        assert!(item.contains(r"\*굵게\* \[링크\](x) \<b\>"), "{item}");
+        assert!(item.ends_with(r"\# 제목<br>둘째 줄"), "{item}");
+    }
+
+    #[test]
+    fn plain_and_markdown_layouts() {
+        let memos = [memo(1)];
+        assert_eq!(
+            render_memos(&memos, TextFormat::Plain, MemoOutput::WithoutAuthors),
+            "\n[메모 1] (2020-01-01T00:00:00Z) \"앵커\"\n  첫 줄\n  둘째 줄\n"
+        );
+        assert_eq!(
+            render_memos(&memos, TextFormat::Markdown, MemoOutput::WithoutAuthors),
+            "\n## 메모\n\n- **메모 1** (2020-01-01T00:00:00Z) \"앵커\": 첫 줄<br>둘째 줄\n"
+        );
+        assert_eq!(
+            render_memos(&[], TextFormat::Plain, MemoOutput::WithAuthors),
+            ""
+        );
+    }
 }

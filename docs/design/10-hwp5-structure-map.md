@@ -240,7 +240,7 @@ TRACK_CHANGE and TRACK_CHANGE_AUTHOR, which moved to table A).
 | 0x58 | EQEDIT | +72 | 4.3.9.3 | Script, size, color, baseline, version and font parsed, with the original bytes retained | IR + raw | `body_text.rs:find_eqedit` |
 | 0x5A | SHAPE_COMPONENT_TEXTART | +74 | 4.3.9 (word art) | word art; unparsed | Opaque | `body_text.rs:617` |
 | 0x5B | FORM_OBJECT | +75 | 4.3.9 (forms) | form object; unparsed | Opaque | `body_text.rs:617` |
-| 0x5D | MEMO_LIST | +77 | 4.3 (memos) | memo list; unparsed | Opaque | `body_text.rs:617` |
+| 0x5D | MEMO_LIST | +77 | 4.3 (memos) | memo list (u32 memo number, then LIST_HEADER + body paragraphs), always in the section's last paragraph; read by `hwp_model::memo` ([07](07-hangul-compat-rules.md) L2) | Opaque | `body_text.rs:617` |
 | 0x5F | CHART_DATA | +79 | 4.3.9.6 | chart object; unparsed | Opaque | `body_text.rs:617` |
 | 0x62 | VIDEO_DATA | +82 | 4.3.9.8 | video object; unparsed | Opaque | `body_text.rs:617` |
 | 0x73 | SHAPE_COMPONENT_UNKNOWN | +99 | *(none)* | unknown object; unparsed | Opaque | `body_text.rs:617` |

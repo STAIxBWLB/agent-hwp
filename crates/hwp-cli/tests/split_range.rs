@@ -1409,6 +1409,12 @@ fn raw_fields_in_the_model() -> std::collections::BTreeSet<String> {
         kept.push_str(rest);
         let mut current: Option<String> = None;
         for line in kept.lines() {
+            // A column-0 `}` ends the item, so struct literals in the functions after it are
+            // not read as its fields.
+            if line.starts_with('}') {
+                current = None;
+                continue;
+            }
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") {
                 continue;

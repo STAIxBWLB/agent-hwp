@@ -175,7 +175,7 @@ Preview text는 재생성한다. `META-INF/*`는 여전히 IR 읽기 경로가 �
 
 | 요소 | ctrl_id/코드 | 읽는 속성 | IR 대상 | 상태 | 근거 |
 |---|---|---|---|---|---|
-| `fieldBegin` | (type→id) / 3 | type, name, 자식 Command | `Generic`+CTRL_DATA(0x0057) | 의미파싱 | :516 |
+| `fieldBegin` | (type→id) / 3 | type, name, 자식 Command | `Generic`+CTRL_DATA(0x0057), `type="MEMO"`는 `subList` 본문과 함께 원본 그대로 보관하고 재방출([07](07-hangul-compat-rules.ko.md) L2) | 의미파싱 | :516 |
 | `fieldEnd` | — / 4 | (LIFO 매칭) | `InlineCtrl(4)` 역순 ctrl_id | 의미파싱 | :550 |
 | `bookmark` | `bokm` / 22 | name | `Generic`+이름 CTRL_DATA | 의미파싱 | :562 |
 | `colPr` | `cold` / 2 | type, layout, colCount, sameSz, sameGap | `Generic{column_def}` | 부분파싱(colSz/colLine 미수집) | :586 → `parse_col_pr` :377 |

@@ -155,6 +155,8 @@ fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
             }
             push_newline(out);
         }
+        // A memo's body is an annotation, not document text: `cat --with-memos` lists it.
+        Control::Generic(g) if crate::memo::is_memo_anchor(g) => {}
         Control::Generic(g) => {
             if let Some(caption) = g
                 .caption

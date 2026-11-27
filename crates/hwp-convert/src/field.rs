@@ -106,6 +106,44 @@ pub fn owpml_field_type(ctrl_id: &[u8; 4]) -> &'static str {
     }
 }
 
+/// Whether a field control is a memo anchor (`%unk`/`%%me` with a `MEMO/` Command string).
+pub fn is_memo_anchor(g: &GenericControl) -> bool {
+    hwp_model::memo::is_memo_anchor(g)
+}
+
+/// The `(id, fieldid)` of a memo anchor read from HWPX, taken from the start tag of its
+/// verbatim `<hp:fieldBegin type="MEMO">` capture. `None` for every other control, so the
+/// writer re-emits only genuine HWPX memo captures and never synthesizes one.
+pub fn memo_raw_ids(g: &GenericControl) -> Option<(String, String)> {
+    let raw = g.hwpx_raw_xml.as_deref()?;
+    // Parse the captured start tag with the XML reader, so any valid attribute spelling
+    // (single quotes, spaces around `=`, entity references) is read the same way.
+    let mut reader = quick_xml::Reader::from_str(raw);
+    let start = loop {
+        match reader.read_event().ok()? {
+            quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => break e,
+            quick_xml::events::Event::Eof => return None,
+            _ => {}
+        }
+    };
+    let local = |name: &[u8]| name.rsplit(|b| *b == b':').next().unwrap_or(name).to_vec();
+    if local(start.name().as_ref().as_bytes()) != b"fieldBegin" {
+        return None;
+    }
+    let attr = |name: &[u8]| -> Option<String> {
+        start
+            .attributes()
+            .flatten()
+            .find(|a| local(a.key.as_ref().as_bytes()) == name)
+            .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+            .map(|v| v.into_owned())
+    };
+    if attr(b"type")? != "MEMO" {
+        return None;
+    }
+    Some((attr(b"id")?, attr(b"fieldid")?))
+}
+
 /// Map an OWPML fieldBegin type back to a control ID, using `%unk` for unknown types.
 pub fn field_ctrl_id_from_owpml(t: &str) -> [u8; 4] {
     match t {

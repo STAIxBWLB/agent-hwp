@@ -63,6 +63,8 @@ Extract text
 | `--preview` |  |  | Print only the PrvText preview, without parsing the body |
 | `--with-header-footer` |  |  | Also extract header and footer text (default: excluded) |
 | `--with-hidden` |  |  | Also extract hidden comment text (default: excluded) |
+| `--with-memos` |  |  | Append the document's memos (comments) after the body: number, anchored text, UTC creation time and body (plain/markdown). Authors are omitted unless --memo-authors is also given |
+| `--memo-authors` |  |  | With --with-memos, also print each memo's author (an account name) |
 | `--with-segments` |  |  | Emit the output together with the source coordinates of each output character range, as a one-line JSON envelope. Version selected by --segments; v1 is markdown-only, v2 also accepts --format json |
 | `--segments` | `v1` \| `v2` | `v1` | Segment envelope version for --with-segments. v1 is the pinned v0.8.x envelope (markdown only); v2 publishes the seven segment kinds, stable ids and per-segment style, and is accepted for markdown and json |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |

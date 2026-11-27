@@ -225,7 +225,7 @@ ID_MAPPINGS(0x11) 페이로드는 **u32 카운트 배열**이고, 실제 테이�
 | 0x58 | EQEDIT | +72 | 4.3.9.3 | 스크립트, 글자 크기, 색상, 기준선, 버전과 글꼴을 해석하고 원본 레코드 보존 | IR + raw | `body_text.rs:find_eqedit` |
 | 0x5A | SHAPE_COMPONENT_TEXTART | +74 | 4.3.9(글맵시) | 글맵시 — 미해석 | Opaque | `body_text.rs:617` |
 | 0x5B | FORM_OBJECT | +75 | 4.3.9(양식) | 양식 개체 — 미해석 | Opaque | `body_text.rs:617` |
-| 0x5D | MEMO_LIST | +77 | 4.3(메모) | 메모 리스트 — 미해석 | Opaque | `body_text.rs:617` |
+| 0x5D | MEMO_LIST | +77 | 4.3(메모) | 메모 리스트(u32 메모 번호, 이어서 LIST_HEADER + 본문 문단), 항상 구역 마지막 문단에 있음, `hwp_model::memo`가 읽음([07](07-hangul-compat-rules.ko.md) L2) | Opaque | `body_text.rs:617` |
 | 0x5F | CHART_DATA | +79 | 4.3.9.6 | 차트 개체 — 미해석 | Opaque | `body_text.rs:617` |
 | 0x62 | VIDEO_DATA | +82 | 4.3.9.8 | 동영상 개체 — 미해석 | Opaque | `body_text.rs:617` |
 | 0x73 | SHAPE_COMPONENT_UNKNOWN | +99 | *(없음)* | 미지 개체 — 미해석 | Opaque | `body_text.rs:617` |
