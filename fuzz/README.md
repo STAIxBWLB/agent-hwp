@@ -22,22 +22,45 @@ campaign on the remote host, not on a workstation:
 dot remote run "$PWD" -- bash fuzz/campaign.sh 60
 ```
 
-`fuzz/campaign.sh` installs `cargo-fuzz` when it is missing, builds one target at a time, and prints
-one `target=<name> seconds=<n> exit=<code> execs=<n> new_artifacts=<n>` line per target. The same
-loop runs by hand, with the limits #623 AC1 sets (no panic, no OOM over 256 MiB per input, no
-timeout over 2 s per input):
+`fuzz/campaign.sh` installs `cargo-fuzz` when it is missing, builds one target at a time, and runs
+two passes per target, printing one `target=<name> pass=<ac1|asan> seconds=<n> exit=<code>
+execs=<n> new_artifacts=<n>` line each.
+
+**The AC1 pass** is the one #623's criteria are read from: no sanitizer, so RSS is the heap plus a
+small runtime baseline, and the limits are the criterion's own (no panic, no OOM over 256 MiB per
+input, no timeout over 2 s per input).
 
 ```sh
 export CARGO_BUILD_JOBS=2
 for target in fuzz_hwp5_read fuzz_hwpx_read fuzz_wmf_dib fuzz_equation_markdown; do
-    cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=2 -rss_limit_mb=256 -malloc_limit_mb=256
+    cargo +nightly fuzz run "$target" --sanitizer none -- \
+        -max_total_time=60 -timeout=2 -rss_limit_mb=256 -malloc_limit_mb=256
 done
 ```
 
-The RSS limit is what enforces AC1's per-input ceiling: `-malloc_limit_mb` caps a single
-allocation, so an input holding several smaller buffers would pass that limit while exceeding the
-bound. If a target's own baseline ever trips the 256 MiB limit, report the measured baseline and run
-that target at baseline + 256 with the number stated.
+`-malloc_limit_mb` caps a single allocation, so it cannot bound what one input accumulates; the RSS
+limit is what enforces the 256 MiB ceiling. Running this pass without a sanitizer is what keeps that
+number meaningful: ASAN's quarantine and shadow grow the process far past the heap, so the same cap
+under ASAN reports memory that no input caused.
+
+**The memory-safety pass** keeps ASAN, with `-rss_limit_mb=2048` stated for what it is — that pass's
+process cap, not AC1:
+
+```sh
+for target in fuzz_hwp5_read fuzz_hwpx_read fuzz_wmf_dib fuzz_equation_markdown; do
+    cargo +nightly fuzz run "$target" -- \
+        -max_total_time=60 -timeout=2 -rss_limit_mb=2048 -malloc_limit_mb=256
+done
+```
+
+A target that trips the AC1 pass has its artifact replayed alone before it counts as a finding:
+
+```sh
+cargo +nightly fuzz run <target> --sanitizer none -- -rss_limit_mb=256 <artifact>
+```
+
+A replay that reproduces is a per-input bound to harden. One that does not is a campaign-length
+artifact, reported as such rather than fixed by inventing a limit.
 
 ## The committed inputs are synthetic
 
