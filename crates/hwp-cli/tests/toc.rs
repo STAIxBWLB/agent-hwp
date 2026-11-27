@@ -475,6 +475,19 @@ fn a_first_block_strip_survives_definitions_and_the_page_restart() {
                 md.lines().any(|l| l == "### 1. 첫 절"),
                 "{label} {ext}\n{md}"
             );
+            // The page-numbered preset's page number survives the strip (and the TOC).
+            let doc = match ext {
+                "hwp" => hwp5::read_document(&out).unwrap().document,
+                _ => hwpx::read_document(&out).unwrap().document,
+            };
+            let pgnp = doc.sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .filter(|c| c.ctrl_id() == *b"pgnp")
+                .count();
+            let expected = usize::from(label.ends_with("report"));
+            assert_eq!(pgnp, expected, "{label} {ext}: pgnp controls");
         }
     }
 }

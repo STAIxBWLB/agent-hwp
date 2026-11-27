@@ -203,7 +203,8 @@ fn toc_fits_one_page(
 /// applies to an indivisible table (`layout.rs`, `page_h = body_bottom - body_top`). It uses the
 /// same margin sums as `hwp_render::lineseg::body_box` (bottom margin plus footer margin), so a
 /// TOC that ends over the footer or page-number band counts as not fitting. Without a page
-/// definition the paper height is the bound, as before.
+/// definition the paper height is the bound: unreachable today, since every TOC document is
+/// built with a section definition, so the renderer's `default_page()` fallback is not mirrored.
 fn body_bottom_pt(doc: &Document, page_height_pt: f32) -> f32 {
     doc.sections
         .first()

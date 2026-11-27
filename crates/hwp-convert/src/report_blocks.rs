@@ -296,10 +296,11 @@ pub fn apply_section_strips(doc: &mut Document) -> usize {
                 ),
             ];
             let mut strip = table_paragraph(table(1, 3, cells), style);
-            // A first-block heading carries the section/column definitions: keep them first.
+            // A first-block heading carries the section/column definitions and, under a
+            // page-numbered preset, the page-number position: keep every one, in order, first.
             let old = &mut doc.sections[si].paragraphs[pi];
             strip.header.break_type = old.header.break_type;
-            move_leading_definitions(old, &mut strip);
+            move_controls(old, &mut strip, old.controls.len());
             doc.sections[si].paragraphs[pi] = strip;
             count += 1;
         }
@@ -452,6 +453,12 @@ fn move_leading_definitions(from: &mut Paragraph, to: &mut Paragraph) {
         .iter()
         .take_while(|c| matches!(c, Control::SectionDef(_)) || c.ctrl_id() == *b"cold")
         .count();
+    move_controls(from, to, lead);
+}
+
+/// Moves the first `lead` controls of `from` (and their extended-control characters) to the
+/// front of `to`, in order, re-linking `ctrl_index` and shifting run positions in both.
+fn move_controls(from: &mut Paragraph, to: &mut Paragraph, lead: usize) {
     if lead == 0 {
         return;
     }
