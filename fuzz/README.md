@@ -30,9 +30,14 @@ timeout over 2 s per input):
 ```sh
 export CARGO_BUILD_JOBS=2
 for target in fuzz_hwp5_read fuzz_hwpx_read fuzz_wmf_dib fuzz_equation_markdown; do
-    cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=2 -rss_limit_mb=2048 -malloc_limit_mb=256
+    cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=2 -rss_limit_mb=256 -malloc_limit_mb=256
 done
 ```
+
+The RSS limit is what enforces AC1's per-input ceiling: `-malloc_limit_mb` caps a single
+allocation, so an input holding several smaller buffers would pass that limit while exceeding the
+bound. If a target's own baseline ever trips the 256 MiB limit, report the measured baseline and run
+that target at baseline + 256 with the number stated.
 
 ## The committed inputs are synthetic
 
@@ -42,7 +47,7 @@ committed input carries its own evidence that it was built rather than saved by 
 | Input | Evidence |
 |---|---|
 | `fuzz_hwp5_read/seed-synthetic.hwp` | A document written by this repository's own HWP5 writer: the CFB `Application` property is `hwp-cli` (`crates/hwp5/src/write.rs`). |
-| `fuzz_hwp5_read/seed-legacy.hwp` | The 30-byte HWP 3.00 signature (`crates/hwp5/src/hwp3.rs` `SIGNATURE`) inside a 128-byte header, followed by a literal paragraph. It carries no compressed body, so the reader's gzip/deflate step rejects it; a saved file is never in that shape. |
+| `fuzz_hwp5_read/seed-legacy.hwp` | The 30-byte HWP 3.00 signature (`crates/hwp5/src/hwp3.rs` `SIGNATURE`) inside a 128-byte header, its compression flag set (`info[124]`, absolute byte 154), and a payload that starts with a gzip header but is not a valid stream. The flag matters: at `info[124]=0` the reader takes the uncompressed branch and never reaches the decompressor (`hwp3.rs`), which is why the byte is 1 here. The reader therefore enters its gzip/deflate step and rejects the truncated stream; a saved file is never in that shape. |
 | `fuzz_hwp5_read/seed-truncated-cfb` | The 8-byte CFB signature and nothing else. |
 | `fuzz_hwp5_read/seed-short-record` | A 5-byte truncated record header. |
 | `fuzz_hwpx_read/seed-zip` | A hand-built ZIP: the `mimetype` entry stored uncompressed and first, then two deflated XML entries. |

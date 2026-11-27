@@ -42,11 +42,11 @@ for target in "${targets[@]}"; do
     code=0
     (
         cd "$here"
-        # #623 AC1: zero panics, OOMs (>256 MiB per input) or timeouts (>2 s per input). The malloc
-        # limit is the per-input allocation ceiling AC1 names; the RSS limit stays above it so
-        # process baseline (fonts, mmaps) cannot manufacture an OOM that no input caused.
+        # #623 AC1: zero panics, OOMs (>256 MiB per input) or timeouts (>2 s per input). A malloc
+        # limit caps one allocation, not what an input accumulates, so AC1's per-input ceiling is
+        # enforced by the RSS limit at its own 256 MiB, not by a looser process cap.
         cargo +nightly fuzz run "$target" -- \
-            -max_total_time="$seconds" -timeout=2 -rss_limit_mb=2048 -malloc_limit_mb=256
+            -max_total_time="$seconds" -timeout=2 -rss_limit_mb=256 -malloc_limit_mb=256
     ) >"$log" 2>&1 || code=$?
     after="$(ls -1 "$artifacts" | wc -l | tr -d ' ')"
     execs="$(sed -n 's/^Done \([0-9][0-9]*\) runs.*/\1/p' "$log" | tail -1)"
