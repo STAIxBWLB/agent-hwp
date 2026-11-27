@@ -402,6 +402,14 @@ impl<'a> Parser<'a> {
         Ok(id)
     }
 
+    fn count_paragraph(&mut self) -> Result<()> {
+        self.remaining_paragraphs = self
+            .remaining_paragraphs
+            .checked_sub(1)
+            .ok_or_else(|| structure_limit("paragraphs", MAX_PARAGRAPHS))?;
+        Ok(())
+    }
+
     fn paragraphs(&mut self, depth: usize) -> Result<Vec<Paragraph>> {
         if depth >= 16 {
             return Err(structure_limit("paragraph nesting", 16));
@@ -417,10 +425,7 @@ impl<'a> Parser<'a> {
                 self.input.read_bytes(31)?;
                 break;
             }
-            self.remaining_paragraphs = self
-                .remaining_paragraphs
-                .checked_sub(1)
-                .ok_or_else(|| structure_limit("paragraphs", MAX_PARAGRAPHS))?;
+            self.count_paragraph()?;
             self.remaining_characters = self
                 .remaining_characters
                 .checked_sub(count)
@@ -458,20 +463,6 @@ impl<'a> Parser<'a> {
             let mut legacy = 0;
             while legacy < count {
                 let id = shapes.get(legacy).copied().unwrap_or(representative);
-                if para
-                    .char_shape_runs
-                    .last()
-                    .is_none_or(|&(_, previous)| previous != id)
-                {
-                    if para
-                        .char_shape_runs
-                        .last()
-                        .is_some_and(|&(offset, _)| offset == position)
-                    {
-                        para.char_shape_runs.pop();
-                    }
-                    para.char_shape_runs.push((position, id));
-                }
                 let code = self.input.read_u16()?;
                 if code == 13 {
                     if legacy + 1 != count {
@@ -486,6 +477,14 @@ impl<'a> Parser<'a> {
                     return Err(invalid(
                         "paragraph exceeds declared length or has no terminator",
                     ));
+                }
+                if before != para.chars.len()
+                    && para
+                        .char_shape_runs
+                        .last()
+                        .is_none_or(|&(_, previous)| previous != id)
+                {
+                    para.char_shape_runs.push((position, id));
                 }
                 position += para.chars[before..]
                     .iter()
@@ -573,6 +572,7 @@ impl<'a> Parser<'a> {
         for _ in 0..count {
             let mut paragraphs = self.paragraphs(depth)?;
             if paragraphs.is_empty() {
+                self.count_paragraph()?;
                 paragraphs.push(Paragraph::default());
             }
             content.push(paragraphs);
@@ -654,7 +654,7 @@ impl<'a> Parser<'a> {
         })))
     }
 
-    fn images(&mut self) -> Result<BTreeMap<String, String>> {
+    fn images(&mut self) -> Result<BTreeMap<String, Option<String>>> {
         // §3.8: size-delimited additions; §8.1: embedded-image entries.
         let mut images = BTreeMap::new();
         while self.input.remaining() > 0 {
@@ -667,29 +667,34 @@ impl<'a> Parser<'a> {
             if tag != 1 {
                 continue;
             }
-            if content.len() < 32 || images.len() >= 4096 {
-                return Err(invalid("invalid embedded-image entry"));
+            if images.len() >= 4096 {
+                return Err(structure_limit("embedded images", 4096));
+            }
+            if content.len() < 32 {
+                return Err(invalid("truncated embedded-image header"));
             }
             let key = kchar(&content[..16]);
             let data = &content[32..];
             let suffix = match data {
-                [137, b'P', b'N', b'G', 13, 10, 26, 10, ..] => "png",
-                [0xff, 0xd8, 0xff, ..] => "jpg",
-                [b'B', b'M', ..] => "bmp",
-                [b'G', b'I', b'F', b'8', ..] => "gif",
-                _ => {
-                    self.omissions += 1;
-                    continue;
-                }
+                [137, b'P', b'N', b'G', 13, 10, 26, 10, ..] => Some("png"),
+                [0xff, 0xd8, 0xff, ..] => Some("jpg"),
+                [b'B', b'M', ..] => Some("bmp"),
+                [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+                _ => None,
             };
-            let name = format!("BinData/legacy-image-{}.{suffix}", images.len() + 1);
+            let name =
+                suffix.map(|suffix| format!("BinData/legacy-image-{}.{suffix}", images.len() + 1));
             if key.is_empty() || images.insert(key, name.clone()).is_some() {
                 return Err(invalid("duplicate or empty embedded-image name"));
             }
-            self.document.bin_streams.push(BinStream {
-                name,
-                data: data.to_vec(),
-            });
+            if let Some(name) = name {
+                self.document.bin_streams.push(BinStream {
+                    name,
+                    data: data.to_vec(),
+                });
+            } else {
+                self.omissions += 1;
+            }
         }
         Ok(images)
     }
@@ -768,20 +773,22 @@ fn rect(entry: &[u8]) -> (u32, u32, u32, u32) {
     )
 }
 
-fn bind_images(paragraphs: &mut [Paragraph], images: &BTreeMap<String, String>) -> Result<()> {
+fn bind_images(
+    paragraphs: &mut [Paragraph],
+    images: &BTreeMap<String, Option<String>>,
+) -> Result<()> {
     for paragraph in paragraphs {
         for control in &mut paragraph.controls {
             let caption = match control {
                 Control::Picture(picture) => {
                     if let BinRef::ItemRef(key) = &mut picture.bin_ref {
-                        if let Some(name) = images.get(key) {
-                            *key = name.clone();
-                        } else {
-                            // A picture referenced from the document must resolve in its own stream.
-                            return Err(invalid(
-                                "embedded-picture payload not found or its format is unsupported",
-                            ));
-                        }
+                        picture.bin_ref = match images.get(key) {
+                            Some(Some(name)) => BinRef::ItemRef(name.clone()),
+                            // Keep the picture anchor and caption. Writers report the
+                            // unresolved payload as a preservation loss.
+                            Some(None) => BinRef::Id(hwp_model::BinDataId(0)),
+                            None => return Err(invalid("embedded-picture payload not found")),
+                        };
                     }
                     &mut picture.caption
                 }

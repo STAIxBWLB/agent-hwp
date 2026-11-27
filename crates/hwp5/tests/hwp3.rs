@@ -103,3 +103,32 @@ fn truncated_records_and_invalid_nested_grids_fail_closed() {
     word_at(&mut overlap, table_cells + 27 + 6, 0);
     assert!(hwp5::hwp3::read_bytes(&overlap).is_err());
 }
+
+#[test]
+fn unsupported_embedded_picture_keeps_the_document_readable() {
+    let mut bytes = rich_document();
+    let signature = bytes.len() - 8 - PNG.len();
+    bytes[signature..signature + 4].copy_from_slice(b"PCX!");
+    let read = hwp5::hwp3::read_bytes(&bytes);
+    assert!(
+        read.is_ok(),
+        "unsupported image blocked import: {:?}",
+        read.as_ref().err()
+    );
+    let read = read.unwrap();
+    assert!(read.document.plain_text().contains("한글伽"));
+    assert_eq!(read.warnings.len(), 1);
+    let picture = read.document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|control| match control {
+            Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .unwrap();
+    assert!(read.document.resolve_bin(&picture.bin_ref).is_none());
+
+    bytes[signature - 32] = b'X';
+    assert!(hwp5::hwp3::read_bytes(&bytes).is_err());
+}
