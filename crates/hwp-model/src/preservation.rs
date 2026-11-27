@@ -281,6 +281,7 @@ mod tests {
             HwpxOpaqueEntryChanged,
             HwpxPackageEntryRemoved,
             ImageFillUnrepresentable,
+            LegacyContentOmitted,
             MetadataValueRemoved,
             OpaqueControlUnrepresentable,
             PageRangeParagraphRounded,
@@ -307,6 +308,7 @@ mod tests {
                 | HwpxOpaqueEntryChanged
                 | HwpxPackageEntryRemoved
                 | ImageFillUnrepresentable
+                | LegacyContentOmitted
                 | MetadataValueRemoved
                 | OpaqueControlUnrepresentable
                 | PageRangeParagraphRounded
