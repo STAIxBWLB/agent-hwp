@@ -39,9 +39,9 @@ pub struct FieldInfo {
 /// Unknown control IDs are otherwise dropped by the HWPX writer catch-all, so recognized
 /// kinds preserve fieldBegin/End and their text even when their kind label is unknown.
 /// The OWPML type then uses the UNKNOWN fallback in [`owpml_field_type`] (GF-1 loss level).
-/// Memo fields must pair with memo lists (GB-7), whose bodies are not yet emitted.
-/// A dangling memo field could corrupt the document in Hangul, so this kind remains
-/// intentionally excluded until genuine-file evidence establishes safe emission.
+/// Memo fields must pair with memo lists (GB-7), so a bare `fieldBegin` is never the right
+/// emission for one; both writers handle that kind in their own arms instead, which is why it
+/// stays out of this list rather than being recognized here.
 pub fn is_field_ctrl_id(ctrl_id: &[u8; 4]) -> bool {
     matches!(
         ctrl_id,
