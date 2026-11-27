@@ -185,23 +185,60 @@ fn execute_spec_v2_with_source(
     if dry_run {
         return Ok(report);
     }
-    let document = compiled.document;
+    let mut document = compiled.document;
+    let mut toc_warnings = Vec::new();
+    if spec.report_blocks.toc {
+        match hwp_convert::report_blocks::insert_toc(&mut document) {
+            Some(plan) => {
+                // The CLI lays out from HWP_FONT_DIR like `render`; hermetic font files (MCP)
+                // lay out from exactly those files with no system fallback.
+                let font_dirs: Vec<std::path::PathBuf> = if font_files.is_some() {
+                    Vec::new()
+                } else {
+                    crate::commands::convert::resolve_font_dirs(Vec::new())
+                };
+                let layout = hwp_cli::toc::TocLayout {
+                    fonts: match font_files {
+                        Some(files) => hwp_cli::toc::TocFonts::Isolated(files),
+                        None => hwp_cli::toc::TocFonts::Dirs(&font_dirs),
+                    },
+                    switch: "report_blocks.toc",
+                };
+                // Measure each candidate with exactly the writer that publishes `document`
+                // below (`compose_writer`), so the layout runs on what the output re-reads as
+                // and the published input is the same document as without the TOC.
+                let filled = hwp_cli::toc::backfill(&mut document, &plan, &layout, |doc| {
+                    crate::commands::new::published_round_trip(
+                        doc,
+                        write_hwp,
+                        "compose",
+                        "report_blocks.toc",
+                        |d, p| compose_writer(d, p, write_hwp, font_files),
+                    )
+                })?;
+                if filled.font_fallbacks > 0 {
+                    let remedy = if font_files.is_some() {
+                        "문서가 쓰는 글꼴 파일을 글꼴 목록에 더하세요"
+                    } else {
+                        "HWP_FONT_DIR로 문서 글꼴을 지정하세요"
+                    };
+                    toc_warnings.push(format!(
+                        "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 {remedy}",
+                        filled.font_fallbacks
+                    ));
+                }
+            }
+            None => toc_warnings.push(
+                "report_blocks.toc: 목차에 넣을 개요 2·개요 3 제목이 첫 구역에 없어(또는 65535개를 넘어) 목차를 만들지 않았습니다. 해결: 제목 문단의 스타일을 개요 2·개요 3으로 지정하세요"
+                    .to_string(),
+            ),
+        }
+    }
+    let document = document;
     let writer_report = crate::commands::output::write_validated(
         output,
         source_path,
-        |staged| {
-            if write_hwp {
-                if let Some(font_files) = font_files {
-                    crate::commands::convert::write_hwp_structural_isolated(
-                        &document, staged, font_files,
-                    )
-                } else {
-                    crate::commands::convert::write_hwp_structural(&document, staged)
-                }
-            } else {
-                Ok(hwpx::write_document_with_report(&document, staged)?)
-            }
-        },
+        |staged| compose_writer(&document, staged, write_hwp, font_files),
         |staged, writer_report| {
             crate::commands::reject_preservation_loss("compose", &writer_report.preservation)?;
             if font_files.is_some() {
@@ -213,7 +250,28 @@ fn execute_spec_v2_with_source(
         },
     )?;
     report.warnings = writer_report.warnings;
+    report.warnings.extend(toc_warnings);
     Ok(report)
+}
+
+/// The writer DocumentSpec v2 compose publishes with; the `report_blocks.toc` layout pass
+/// measures candidates through this same function.
+fn compose_writer(
+    document: &hwp_model::Document,
+    staged: &Path,
+    write_hwp: bool,
+    font_files: Option<&[std::path::PathBuf]>,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    if write_hwp {
+        match font_files {
+            Some(files) => {
+                crate::commands::convert::write_hwp_structural_isolated(document, staged, files)
+            }
+            None => crate::commands::convert::write_hwp_structural(document, staged),
+        }
+    } else {
+        Ok(hwpx::write_document_with_report(document, staged)?)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

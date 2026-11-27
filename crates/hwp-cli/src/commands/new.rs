@@ -13,6 +13,12 @@ pub struct NewOptions {
     pub frames: hwp_convert::FrameFields,
     /// Table placement switch (#296, `--table-placement`). None keeps the historical default.
     pub table_placement: Option<hwp_convert::TablePlacement>,
+    /// `--section-strips` (#620): numbered `### N. Title` headings become 1x3 strip tables.
+    pub section_strips: bool,
+    /// `--toc` (#620): a front table of contents with layout-verified page numbers.
+    pub toc: bool,
+    /// Font directories for the `--toc` layout pass (`--font-dir`, else `HWP_FONT_DIR`).
+    pub font_dirs: Vec<std::path::PathBuf>,
 }
 
 impl NewOptions {
@@ -56,6 +62,9 @@ impl NewOptions {
             strict,
             frames: hwp_convert::FrameFields::default(),
             table_placement: None,
+            section_strips: false,
+            toc: false,
+            font_dirs: Vec::new(),
         })
     }
 
@@ -118,6 +127,58 @@ pub enum NewInput<'a> {
     },
     Json(&'a str),
     Empty,
+}
+
+/// Writes `doc` with `write` (the exact writer the command publishes with) to a private temp
+/// file and reads it back, so the `--toc` layout pass measures what the published file holds.
+/// A preservation loss refuses here as it would at publish time, so the measurement never
+/// runs on a silently reduced document. `command` names the caller (`new`, `compose`) and
+/// `switch` the option to drop (`--toc`, `report_blocks.toc`) in messages.
+pub(crate) fn published_round_trip(
+    doc: &hwp_model::Document,
+    write_hwp: bool,
+    command: &str,
+    switch: &str,
+    write: impl Fn(&hwp_model::Document, &std::path::Path) -> anyhow::Result<hwp_model::WriteReport>,
+) -> anyhow::Result<hwp_model::Document> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ext = if write_hwp { "hwp" } else { "hwpx" };
+    let path = std::env::temp_dir().join(format!("ahwp-toc-{}-{nanos}.{ext}", std::process::id()));
+    // Claim the path exclusively (0600 on unix), so a file planted at the guessable name is
+    // refused instead of being followed or overwritten.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    opts.open(&path).map_err(|e| {
+        anyhow::anyhow!(
+            "{switch}: 레이아웃용 임시 파일을 만들 수 없습니다: {} ({e})\n해결: 임시 디렉터리(TMPDIR)의 권한을 확인하거나 {switch} 없이 생성하세요",
+            path.display()
+        )
+    })?;
+    let result = (|| {
+        let report = write(doc, &path)?;
+        crate::commands::reject_preservation_loss(command, &report.preservation)?;
+        crate::commands::cat::load_document(&path).map_err(|e| {
+            anyhow::anyhow!(
+                "{switch}: 레이아웃용 재읽기 실패: {e:#}\n해결: {switch} 없이 생성한 뒤 한글에서 목차를 넣으세요"
+            )
+        })
+    })();
+    let _ = std::fs::remove_file(&path);
+    result
+}
+
+/// Which kind of input `execute` read, kept after `input` is consumed.
+enum InputKind {
+    Json,
+    Markdown,
 }
 
 #[derive(Debug)]
@@ -247,6 +308,10 @@ pub fn execute(
     };
     let preset = options.preset;
     let mut import_warnings = Vec::new();
+    let input_kind = match &input {
+        NewInput::Json(_) => InputKind::Json,
+        _ => InputKind::Markdown,
+    };
     let mut doc = match input {
         NewInput::Json(text) => {
             if preset.is_some() || options.margins != hwp_convert::PageMarginOverrides::default() {
@@ -327,6 +392,55 @@ pub fn execute(
     // remains available for that topology.
     if write_hwp && preset.is_some() {
         hwp5::validate_official_hwp_numbering(&doc).map_err(|error| anyhow::anyhow!(error))?;
+    }
+
+    if !options.toc && !options.font_dirs.is_empty() {
+        import_warnings.push(
+            "--font-dir는 --toc 레이아웃 계산에만 쓰입니다. --toc 없이 지정해 무시했습니다"
+                .to_string(),
+        );
+    }
+    // Opt-in report blocks (#620). Strips come first, so the TOC lists a strip's `N. Title`.
+    if options.section_strips || options.toc {
+        if matches!(input_kind, InputKind::Json) {
+            anyhow::bail!(
+                "--toc/--section-strips는 markdown 입력 전용입니다\n해결: markdown 원본으로 생성하거나 두 플래그를 빼세요"
+            );
+        }
+        if options.section_strips {
+            hwp_convert::report_blocks::apply_section_strips(&mut doc);
+        }
+        if options.toc {
+            match hwp_convert::report_blocks::insert_toc(&mut doc) {
+                Some(plan) => {
+                    let font_dirs =
+                        crate::commands::convert::resolve_font_dirs(options.font_dirs.clone());
+                    let layout = hwp_cli::toc::TocLayout {
+                        fonts: hwp_cli::toc::TocFonts::Dirs(&font_dirs),
+                        switch: "--toc",
+                    };
+                    // Measure with the writer `new` publishes with (below).
+                    let filled = hwp_cli::toc::backfill(&mut doc, &plan, &layout, |candidate| {
+                        published_round_trip(candidate, write_hwp, "new", "--toc", |d, p| {
+                            if write_hwp {
+                                crate::commands::convert::write_hwp(d, p, false)
+                            } else {
+                                Ok(hwpx::write_document_with_report(d, p)?)
+                            }
+                        })
+                    })?;
+                    if filled.font_fallbacks > 0 {
+                        import_warnings.push(format!(
+                            "--toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 --font-dir로 문서 글꼴을 지정하세요",
+                            filled.font_fallbacks
+                        ));
+                    }
+                }
+                None => import_warnings.push(
+                    "--toc: 목차에 넣을 `##`·`###`(개요 2·개요 3) 제목이 첫 구역에 없어(또는 65535개를 넘어) 목차를 만들지 않았습니다. 해결: 목차에 넣을 제목을 `##`·`###`로 쓰세요".to_string(),
+                ),
+            }
+        }
     }
 
     // 메타데이터 지정("키=값")을 덮어쓴다(JSON IR에 있던 값보다 우선).

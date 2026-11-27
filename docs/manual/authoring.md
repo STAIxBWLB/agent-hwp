@@ -88,6 +88,41 @@ a warning. The command is advisory and exits 0 unless `--strict` is given.
 **Table styling** `ahwp edit --style-tables <preset>` applies the profile's table look. Single-column
 tables are skipped, and applying it twice produces byte-identical output.
 
+## Report blocks: table of contents and section strips
+
+Both are opt-in and leave the output unchanged when absent. They apply to markdown input to
+`ahwp new` and to DocumentSpec v2 (`report_blocks`).
+
+```bash
+ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
+```
+
+- `--section-strips` turns each `### N. Title` heading into a 1x3 strip table (shaded number,
+  spacer, bottom-bordered title). `cat --format markdown` reads it back as the same heading.
+- `--toc` inserts a front table of contents over the `##` and `###` headings (styles `개요 2` and
+  `개요 3`; the `#` title is not listed). The body page number restarts at 1 after it. Page
+  numbers come from a layout pass on the written file, repeated until they stop changing.
+  Pagination depends on fonts: give the document's fonts with `--font-dir` or `HWP_FONT_DIR`,
+  otherwise a warning reports the substitutions and Hangul may break pages differently.
+- In DocumentSpec v2: `"report_blocks": {"toc": true, "section_strips": true}`. Headings are
+  paragraphs whose style is named `개요 2` or `개요 3`.
+- Limits: the TOC must fit in the first page's body area, above the bottom and footer margins
+  (an inline table never splits); a longer one is refused
+  with a next step. Only the first section's headings are listed. A DocumentSpec `page_number.start` other
+  than 1 conflicts with the TOC's restart at 1, so leave it unset with `toc`. For `.hwp` output the
+  writer synthesizes line caches from `HWP_FONT_DIR` only; `--font-dir` reaches the TOC layout
+  pass but not that synthesis, so set `HWP_FONT_DIR` for `.hwp`. `cat --format markdown` reads
+  any 1x3 table of that shape under a `개요 3` paragraph back as `### N. Title`, whether or not it
+  came from `--section-strips`.
+- Pagination against Hancom: the TOC page numbers come from ahwp's own layout pass, and Hancom
+  can paginate differently. On the measured 16-entry sample (not a general bound), `.hwp` matched
+  Hancom on 15 of 16 entries, the miss being 1 page near a page bottom (page-fill rule,
+  [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). `.hwpx` matched on 5 of 16, the
+  others off by 1-2 pages, because the `.hwpx` carries no line layout cache, so Hancom re-wraps
+  the lines and fits more characters per line than ahwp
+  ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before
+  distributing the document.
+
 ## Regenerate a document from the JSON IR
 
 A document can be recreated from scratch rather than edited in place.

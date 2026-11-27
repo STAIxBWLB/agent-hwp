@@ -360,6 +360,21 @@ pub enum Cmd {
         /// default (no explicit placement)
         #[arg(long = "table-placement")]
         table_placement: Option<TablePlacementArg>,
+        /// Turn each numbered level-3 heading (`### N. Title`) into a 1x3 section strip: a
+        /// shaded number cell, a spacer and a bottom-bordered title. Reads back as the same
+        /// heading in `cat --format markdown`. Markdown input only; off by default
+        #[arg(long = "section-strips")]
+        section_strips: bool,
+        /// Insert a front table of contents listing the `##` and `###` headings (styles 개요 2
+        /// and 개요 3; the `#` title is not listed), with page numbers taken from a layout pass.
+        /// Body pages restart at 1 after the TOC page. Pagination depends on fonts: pass
+        /// --font-dir (or HWP_FONT_DIR) with the document's fonts. Markdown input only; off by
+        /// default
+        #[arg(long)]
+        toc: bool,
+        /// Font directory for the --toc layout pass (repeatable)
+        #[arg(long)]
+        font_dir: Vec<PathBuf>,
     },
 
     /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)

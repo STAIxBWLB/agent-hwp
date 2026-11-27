@@ -985,6 +985,47 @@ fn render_paragraph(
     let own = fragments.iter().any(Fragment::emits);
 
     if let Some(level) = heading {
+        // An opt-in section strip (#620) is a 1x3 table under a `개요 3` anchor; it reads
+        // back as the `### N. Title` heading it was built from. Only a paragraph holding
+        // nothing but that table (besides invisible section-level controls such as the TOC's
+        // page-number restart or a leading section definition) qualifies, so no other text is
+        // dropped. The table and cell
+        // segments still reach the envelope (as points at the heading line), so the join
+        // with `render --layout-json` stays total.
+        if level == 3
+            && para
+                .controls
+                .iter()
+                .filter(|c| !crate::report_blocks::is_strip_neutral_control(c))
+                .count()
+                == 1
+            && para.chars.iter().all(|c| match c {
+                HwpChar::ExtCtrl { .. } => true,
+                HwpChar::CharCtrl(code) => *code == hwp_model::ctrl_char::PARA_BREAK,
+                _ => false,
+            })
+            && let Some((number, title)) = para.controls.iter().find_map(|c| match c {
+                Control::Table(t) => crate::report_blocks::strip_heading(doc, para, t),
+                _ => None,
+            })
+        {
+            close_list_block(ctx, &mut out.s);
+            let at = out.s.len();
+            out.s.push_str(&format!("### {number}. {title}\n\n"));
+            for fragment in fragments {
+                let (Fragment::Inline(body) | Fragment::Block(body)) = fragment;
+                let segs = body
+                    .segs
+                    .into_iter()
+                    .map(|mut seg| {
+                        seg.point = true;
+                        seg
+                    })
+                    .collect();
+                out.absorb(segs, 0, 0, &[(0, at)]);
+            }
+            return true;
+        }
         close_list_block(ctx, &mut out.s);
         emit_paragraph_fragments(fragments, out, Some(&format!("{} ", "#".repeat(level))));
         return own;
