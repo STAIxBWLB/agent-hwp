@@ -411,7 +411,7 @@ impl SegmentRecorder {
     /// geometry header is too short to place, or an object kind no arm draws - so every
     /// envelope id under it still has a row. Nothing is drawn, so every row is unmeasured and
     /// `finish` keeps it exactly when the envelope has a segment for it. Headers, footers,
-    /// notes and hidden comments are skipped, as the default envelope skips them.
+    /// notes, hidden comments and memo annotations follow the default envelope exclusion.
     pub(crate) fn unlaid(
         &mut self,
         control_index: usize,
@@ -419,6 +419,7 @@ impl SegmentRecorder {
         page: &PageList,
     ) {
         if !self.enabled
+            || hwp_model::memo::is_memo_anchor(control)
             || matches!(
                 &control.ctrl_id,
                 b"head" | b"foot" | b"fn  " | b"en  " | b"tcmt"

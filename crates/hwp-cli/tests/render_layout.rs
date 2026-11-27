@@ -947,6 +947,48 @@ fn join_orphans(
     (layout_orphans, envelope_orphans)
 }
 
+/// A synthetic HWPX section keeps this regression visible without local Hancom files.
+#[test]
+fn hwpx_memo_annotations_do_not_create_orphan_layout_rows() {
+    let xml = r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+        <hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+            <hp:run charPrIDRef="0">
+                <hp:ctrl><hp:fieldBegin id="1" fieldid="623209829" type="MEMO">
+                    <hp:parameters><hp:stringParam name="Command">MEMO/65535/1/1/0/Test/</hp:stringParam></hp:parameters>
+                    <hp:subList><hp:p id="1" paraPrIDRef="0" styleIDRef="0">
+                        <hp:run charPrIDRef="0"><hp:t>Annotation</hp:t></hp:run>
+                    </hp:p></hp:subList>
+                </hp:fieldBegin></hp:ctrl>
+                <hp:t>Anchor</hp:t>
+                <hp:ctrl><hp:fieldEnd beginIDRef="1" fieldid="623209829"/></hp:ctrl>
+            </hp:run>
+        </hp:p>
+    </hs:sec>"#;
+    let (section, _) = hwpx::read::section::parse_section(xml).expect("synthetic HWPX section");
+    let mut doc = hwp_convert::from_markdown("Anchor");
+    doc.sections = vec![section];
+    let memos = hwp_model::memo::memos(&doc);
+    assert_eq!(memos.len(), 1);
+    assert_eq!(memos[0].body, ["Annotation"]);
+
+    let (markdown, segments) =
+        hwp_convert::to_markdown_with_segments_v2(&doc, &Default::default()).unwrap();
+    assert_eq!(markdown.trim(), "Anchor");
+    let envelope = hwp_cli::segment_envelope::envelope_v2(&markdown, &segments);
+    let mut store = hwp_render::FontStore::new_isolated();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let (list, map) =
+        hwp_render::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+    let selected: Vec<usize> = (1..=list.pages.len()).collect();
+    let layout = hwp_cli::render_layout::layout_json(&list, &map, &selected);
+    assert_eq!(
+        join_orphans(&layout, &envelope),
+        (Vec::new(), Vec::new()),
+        "the annotation should add no layout row while the anchor remains in both artifacts"
+    );
+}
+
 /// The cross-artifact join is total, in both directions, on every document this checkout has.
 ///
 /// This is the only check that reads the two PUBLISHED artifacts. `hwp-convert` and
