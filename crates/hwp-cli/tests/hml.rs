@@ -190,7 +190,11 @@ fn edit_refuses_hml_and_leaves_source_untouched() {
         output.as_os_str(),
     ]);
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("읽기 전용"), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("읽기 전용") && err.contains("ahwp convert"),
+        "{err}"
+    );
     assert!(!output.exists());
     assert_eq!(std::fs::read(&*input).unwrap(), before);
 }
@@ -224,13 +228,86 @@ fn legacy_hwp_signatures_get_typed_refusals() {
     std::fs::write(&v2, b"HWP Document File V2.00 \x1a\x01\x02\x03\x04\x05").unwrap();
     let out = run(&["cat".as_ref(), v2.as_os_str()]);
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("HWP 2.x"), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("HWP 2.00") && err.contains("다시 저장"),
+        "{err}"
+    );
 
+    // The complete 30-byte V3.00 signature is the valid legacy input; reading it is #114.
     let v3 = tmp("v3.hwp");
     std::fs::write(&v3, b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05").unwrap();
     let out = run(&["cat".as_ref(), v3.as_os_str()]);
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("HWP 3.x"), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("HWP 3.x 읽기") && err.contains("다시 저장"),
+        "{err}"
+    );
+
+    // A V3.10 revision, a V3.00 prefix with a different trailer, and a cut-off signature are
+    // each refused with their own cause, never as the valid HWP 3.x input.
+    let cases: [(&str, &[u8], &str); 3] = [
+        (
+            "v31.hwp",
+            b"HWP Document File V3.10 \x1a\x01\x02\x03\x04\x05",
+            "HWP 3.10",
+        ),
+        (
+            "v3bad.hwp",
+            b"HWP Document File V3.00 \x1a\x09\x09\x09\x09\x09",
+            "끝 6바이트",
+        ),
+        ("cut.hwp", b"HWP Document File V3.0", "잘려 있습니다"),
+    ];
+    for (name, bytes, cause) in cases {
+        let path = tmp(name);
+        std::fs::write(&path, bytes).unwrap();
+        let out = run(&["cat".as_ref(), path.as_os_str()]);
+        assert!(!out.status.success(), "{name}");
+        let err = stderr(&out);
+        assert!(err.contains(cause), "{name}: {err}");
+        assert!(
+            !err.contains("HWP 3.x 읽기"),
+            "{name} read as valid HWP 3.x: {err}"
+        );
+    }
+}
+
+#[test]
+fn render_hml_produces_pages() {
+    let input = write_hml("render.hml");
+    let output = tmp("render-out.svg");
+    let report = tmp("render-report.json");
+    let out = run(&[
+        "render".as_ref(),
+        "--format".as_ref(),
+        "svg".as_ref(),
+        "--report".as_ref(),
+        report.as_os_str(),
+        "-o".as_ref(),
+        output.as_os_str(),
+        input.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Structure only: glyphs and page counts depend on the host fonts.
+    let svg = std::fs::read_to_string(&*output).unwrap();
+    assert!(svg.contains("<svg"), "no svg root");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&*report).unwrap()).unwrap();
+    assert_eq!(report["contract"], "hwp-render-report-v1");
+}
+
+#[test]
+fn grep_finds_hml_body_and_cell_text() {
+    let input = write_hml("grep.hml");
+    for needle in ["둘째 줄", "오른쪽"] {
+        let out = run(&["grep".as_ref(), needle.as_ref(), input.as_os_str()]);
+        assert!(out.status.success(), "{needle}: {}", stderr(&out));
+        assert!(stdout(&out).contains(needle), "{needle}: {}", stdout(&out));
+    }
+    let out = run(&["grep".as_ref(), "없는 문자열".as_ref(), input.as_os_str()]);
+    assert!(!out.status.success());
 }
 
 #[test]
@@ -254,5 +331,6 @@ fn oversized_hml_is_refused_before_reading_it_whole() {
     drop(file);
     let out = run(&["cat".as_ref(), input.as_os_str()]);
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("상한"), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("상한") && err.contains("다시 저장"), "{err}");
 }

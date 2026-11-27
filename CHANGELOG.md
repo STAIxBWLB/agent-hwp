@@ -40,9 +40,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   commands detect it by content and lower body text, tables with merged cells, embedded pictures
   and summary metadata into the IR. Character and paragraph shapes are not carried over, and other
   objects are skipped with a warning naming the element. Input size, table nesting, lowered
-  size and picture count are bounded, and compressed embedded binaries are skipped with a
-  warning. Editing in place is refused. HWP 1.x/2.x
-  signatures get a typed refusal, and HWP 3.x is detected ahead of its reader
+  size, picture count and projected table grid slots are bounded before allocation, and
+  compressed embedded binaries are skipped with a warning. With a `BINITEM` table, a missing
+  or refused binary is never replaced by another `BINDATA`. Editing in place is refused.
+  The complete HWP 3.00 signature is detected ahead of its reader. Other 3.x revisions, HWP
+  1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).
 
 - Typeset equation matrices, centered operator limits, and stretchy delimiters in PNG, SVG,

@@ -55,7 +55,7 @@ The full feature list, implementation status, known limitations and roadmap, for
 | MCP server (24 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HWPML (`.hml`) | Read-only: text, tables with merged cells, embedded pictures and summary metadata convert to every output format; character/paragraph shapes are not carried over and other objects are skipped with a warning (unverified against Hancom-saved files) |
-| HWP 3.x and earlier | Detected; HWP 3.x reading is not implemented yet, HWP 1.x/2.x are refused |
+| HWP 3.x and earlier | The complete HWP 3.00 signature is detected; reading it is not wired yet, so it fails with advice to re-save in Hancom. Other 3.x revisions, HWP 1.x/2.x and truncated signatures are refused with their own message |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
 | Charts, OLE | Not supported |

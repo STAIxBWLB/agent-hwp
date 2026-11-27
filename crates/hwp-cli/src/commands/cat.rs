@@ -260,23 +260,29 @@ fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Resu
                 .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
             if bytes.len() as u64 > limit {
                 anyhow::bail!(
-                    "{}: HWPML 입력이 상한 {limit}바이트를 넘습니다",
+                    "{}: HWPML 입력이 상한 {limit}바이트를 넘습니다. {HML_RECOVERY}",
                     path.display()
                 );
             }
-            let result = hwpx::read_hml(&bytes)
-                .map_err(|e| anyhow::anyhow!("{}: HWPML 읽기 실패: {e}", path.display()))?;
+            let result = hwpx::read_hml(&bytes).map_err(|e| {
+                anyhow::anyhow!("{}: HWPML 읽기 실패: {e}. {HML_RECOVERY}", path.display())
+            })?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
             Ok(result.document)
         }
         LegacyFormat::Hwp3 => anyhow::bail!(
-            "{}: HWP 3.x 읽기는 아직 지원하지 않습니다 (GJ-3)",
+            "{}: HWP 3.x 읽기는 아직 지원하지 않습니다 (GJ-3). 한글(한컴오피스)에서 열어 \
+             HWP 5.0(.hwp) 또는 HWPX로 다시 저장한 뒤 사용하세요",
             path.display()
         ),
     }
 }
+
+/// Recovery for an HWPML input this reader refuses (over a bound, malformed, or not lowerable).
+const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP 5.0(.hwp)로 다시 저장하거나, \
+     문서를 나눠 다시 시도하세요";
 
 /// 본문 텍스트 추출.
 ///

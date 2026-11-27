@@ -14,13 +14,17 @@
 //!   `MAPPINGTABLE` are not carried over;
 //! - picture size: images take their natural size, `SHAPEOBJECT/SIZE` is ignored;
 //! - the `IMAGE@BinItem` -> `BINITEM@BinData` -> `BINDATA@Id` chain is followed as written in the
-//!   spec structure; when no `BINITEM` table exists, `BinItem` is matched to `BINDATA@Id` directly.
+//!   spec structure. Only when the document has no `BINITEM` table at all is `BinItem` matched to
+//!   `BINDATA@Id` directly; with a table, a missing or refused mapped binary skips the picture
+//!   instead of substituting an unrelated `BINDATA`.
 //!
 //! - `BINDATA@Compress="true"` is refused with a warning: the compressed stream format is not
 //!   pinned by a genuine file. An absent `Compress` is read as uncompressed.
 //!
-//! Untrusted input is bounded by [`HML_LIMITS`] (input size, table depth, lowered size and
-//! picture count), each checked before the allocation it guards.
+//! Untrusted input is bounded by [`HML_LIMITS`] (input size, table depth, lowered size, picture
+//! count and projected table slots), each checked before the allocation it guards. Every append
+//! to the lowering, including a paragraph buffer not yet flushed, is counted against
+//! `max_lowered_bytes` before it is made.
 //!
 //! Content the lowering cannot express (shapes, equations, fields, headers/footers, notes) is
 //! dropped with a warning naming the element, never silently.
@@ -97,6 +101,11 @@ pub struct HmlLimits {
     pub max_lowered_bytes: usize,
     /// Maximum number of picture references lowered.
     pub max_pictures: usize,
+    /// Maximum projected table grid slots (rows x columns, summed over every table). The IR
+    /// builder allocates one occupancy slot per grid position and synthesizes an empty cell for
+    /// every uncovered one, so the bound is checked while cells are placed, before the grid
+    /// exists.
+    pub max_table_slots: usize,
 }
 
 /// Default limits: the input bound matches the HWPX XML part bound
@@ -107,6 +116,7 @@ pub const HML_LIMITS: HmlLimits = HmlLimits {
     max_table_depth: 32,
     max_lowered_bytes: 256 * 1024 * 1024,
     max_pictures: 4_096,
+    max_table_slots: 262_144,
 };
 
 fn limit_err(message: String) -> HwpxError {
@@ -175,6 +185,80 @@ struct Lower {
     limits: HmlLimits,
     table_depth: usize,
     pictures: usize,
+    /// Projected grid slots of every table finished so far.
+    table_slots: usize,
+}
+
+/// Mirrors the first-free-slot placement of `hwp_convert::from_html`'s table builder so the
+/// projected grid (`rows x cols`) is known, and bounded, before that builder allocates it.
+#[derive(Default)]
+struct GridSim {
+    /// Rows still covered by a rowspan from an earlier row, per column (current row included).
+    carry: Vec<u32>,
+    /// Occupancy of the current row.
+    row: Vec<bool>,
+    rows: usize,
+    cols: usize,
+}
+
+impl GridSim {
+    fn start_row(&mut self) {
+        self.row = self.carry.iter().map(|&c| c > 0).collect();
+    }
+
+    fn end_row(&mut self) {
+        self.rows += 1;
+        self.cols = self.cols.max(self.row.len());
+        for c in &mut self.carry {
+            *c = c.saturating_sub(1);
+        }
+    }
+
+    /// Places one cell; `budget` is the slot count still available to this table. The check
+    /// runs on the widened column count before either vector grows.
+    fn place(
+        &mut self,
+        col_span: u16,
+        row_span: u16,
+        budget: usize,
+    ) -> std::result::Result<(), ()> {
+        let ci = self.row.iter().position(|&b| !b).unwrap_or(self.row.len());
+        let need = ci + col_span as usize;
+        let cols = self.cols.max(need);
+        // At least this row and every row a rowspan already reaches.
+        let rows = (self.rows + 1).max(self.rows + row_span as usize);
+        if rows.saturating_mul(cols) > budget {
+            return Err(());
+        }
+        if self.row.len() < need {
+            self.row.resize(need, false);
+        }
+        if self.carry.len() < need {
+            self.carry.resize(need, 0);
+        }
+        for c in ci..need {
+            self.row[c] = true;
+            self.carry[c] = self.carry[c].max(u32::from(row_span));
+        }
+        Ok(())
+    }
+
+    fn slots(&self) -> usize {
+        self.rows.saturating_mul(self.cols)
+    }
+}
+
+/// Exact length of [`html_escape`]'s output, so the bound is checked before the append.
+fn escaped_len(s: &str) -> usize {
+    s.chars()
+        .map(|c| match c {
+            '&' => 5,
+            '<' | '>' => 4,
+            '"' => 6,
+            c if (c as u32) < 0x20 && c != '\t' && c != '\n' => 0,
+            c => c.len_utf8(),
+        })
+        .sum()
 }
 
 impl Default for HmlLimits {
@@ -349,15 +433,19 @@ impl Lower {
         }
     }
 
+    /// With a `BINITEM` table the mapping is authoritative: a missing or refused mapped binary
+    /// yields `None` rather than a `BINDATA` that happens to share the reference's number.
     fn image_bytes(&self, bin_item: &str) -> Option<&Vec<u8>> {
-        let via_item = bin_item
+        if self.bin_items.is_empty() {
+            return self.bin_data.get(bin_item);
+        }
+        bin_item
             .parse::<usize>()
             .ok()
             .and_then(|n| n.checked_sub(1))
             .and_then(|i| self.bin_items.get(i))
             .and_then(|id| id.as_ref())
-            .and_then(|id| self.bin_data.get(id));
-        via_item.or_else(|| self.bin_data.get(bin_item))
+            .and_then(|id| self.bin_data.get(id))
     }
 
     fn run(&mut self, text: &str) -> Result<()> {
@@ -430,7 +518,7 @@ impl Lower {
                 }
                 Ok(Event::Empty(e)) => {
                     if e.local_name().into_inner() == "P" {
-                        self.html.push_str("<p></p>");
+                        self.push_html("<p></p>")?;
                         emitted = true;
                     }
                 }
@@ -476,25 +564,22 @@ impl Lower {
                     }
                 }
                 Ok(Event::Empty(e)) => match e.local_name().into_inner() {
-                    "TAB" => buf.push('\t'),
-                    "LINEBREAK" => buf.push_str("<br/>"),
-                    "NBSPACE" | "FWSPACE" => buf.push('\u{a0}'),
-                    "HYPEN" | "HYPHEN" => buf.push('-'),
+                    "TAB" => self.push_buf(&mut buf, "\t")?,
+                    "LINEBREAK" => self.push_buf(&mut buf, "<br/>")?,
+                    "NBSPACE" | "FWSPACE" => self.push_buf(&mut buf, "\u{a0}")?,
+                    "HYPEN" | "HYPHEN" => self.push_buf(&mut buf, "-")?,
                     _ => {}
                 },
                 Ok(Event::Text(t)) if in_char > 0 => {
-                    let s = t.xml10_content();
-                    // Escaping grows text at most 6x (`"` -> `&quot;`).
-                    self.reserve(buf.len() + s.len() * 6)?;
-                    html_escape(&mut buf, &s);
+                    self.push_escaped(&mut buf, &t.xml10_content())?;
                 }
                 Ok(Event::GeneralRef(g)) if in_char > 0 => {
                     if let Some(c) = resolve_entity(&g) {
-                        html_escape(&mut buf, &c.to_string());
+                        self.push_escaped(&mut buf, c.encode_utf8(&mut [0u8; 4]))?;
                     }
                 }
                 Ok(Event::CData(c)) if in_char > 0 => {
-                    html_escape(&mut buf, &c.into_inner());
+                    self.push_escaped(&mut buf, &c.into_inner())?;
                 }
                 Ok(Event::End(e)) => match e.local_name().into_inner() {
                     "CHAR" => in_char = in_char.saturating_sub(1),
@@ -511,6 +596,27 @@ impl Lower {
                 _ => {}
             }
         }
+    }
+
+    /// Appends raw markup to the lowering after checking the bound.
+    fn push_html(&mut self, s: &str) -> Result<()> {
+        self.reserve(s.len())?;
+        self.html.push_str(s);
+        Ok(())
+    }
+
+    /// Appends raw markup to an unflushed paragraph buffer after checking the bound.
+    fn push_buf(&self, buf: &mut String, s: &str) -> Result<()> {
+        self.reserve(buf.len().saturating_add(s.len()))?;
+        buf.push_str(s);
+        Ok(())
+    }
+
+    /// Appends escaped text to a paragraph buffer, checking its exact escaped size first.
+    fn push_escaped(&self, buf: &mut String, s: &str) -> Result<()> {
+        self.reserve(buf.len().saturating_add(escaped_len(s)))?;
+        html_escape(buf, s);
+        Ok(())
     }
 
     fn flush_p(&mut self, buf: &mut String) -> Result<()> {
@@ -578,8 +684,6 @@ impl Lower {
             ));
             return Ok(());
         };
-        // base64 grows 4/3; check the paragraph buffer plus this image before encoding it.
-        self.reserve(buf.len() + data.len().div_ceil(3) * 4 + 64)?;
         let (ext, _) = hwp_convert::image::image_kind(data);
         if ext == "bin" {
             self.warnings.push(format!(
@@ -587,6 +691,13 @@ impl Lower {
             ));
             return Ok(());
         }
+        // Exact size of the data-URI tag; checked before the base64 text is allocated.
+        let tag = "<img src=\"data:image/".len() + ext.len() + ";base64,".len() + "\"/>".len();
+        self.reserve(
+            buf.len()
+                .saturating_add(data.len().div_ceil(3) * 4)
+                .saturating_add(tag),
+        )?;
         buf.push_str("<img src=\"data:image/");
         buf.push_str(ext);
         buf.push_str(";base64,");
@@ -609,28 +720,36 @@ impl Lower {
     }
 
     fn table_body(&mut self, r: &mut Reader<&[u8]>) -> Result<()> {
-        self.html.push_str("<table>");
+        self.push_html("<table>")?;
+        let mut grid = GridSim::default();
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => match e.local_name().into_inner() {
-                    "ROW" => self.html.push_str("<tr>"),
+                    "ROW" => {
+                        grid.start_row();
+                        self.push_html("<tr>")?;
+                    }
                     "CELL" => {
                         let span = |n: &str| {
                             attr(&e, n)
                                 .and_then(|v| v.parse::<u16>().ok())
                                 .filter(|&v| v > 1)
                         };
-                        self.html.push_str("<td");
-                        if let Some(c) = span("ColSpan") {
-                            self.html.push_str(&format!(" colspan=\"{c}\""));
+                        let (cs, rs) = (span("ColSpan"), span("RowSpan"));
+                        let budget = self.limits.max_table_slots.saturating_sub(self.table_slots);
+                        grid.place(cs.unwrap_or(1), rs.unwrap_or(1), budget)
+                            .map_err(|()| self.slot_err())?;
+                        let mut open = String::from("<td");
+                        if let Some(c) = cs {
+                            open.push_str(&format!(" colspan=\"{c}\""));
                         }
-                        if let Some(rs) = span("RowSpan") {
-                            self.html.push_str(&format!(" rowspan=\"{rs}\""));
+                        if let Some(rs) = rs {
+                            open.push_str(&format!(" rowspan=\"{rs}\""));
                         }
-                        self.html.push('>');
-                        self.reserve(0)?;
+                        open.push('>');
+                        self.push_html(&open)?;
                         self.blocks(r, "CELL")?;
-                        self.html.push_str("</td>");
+                        self.push_html("</td>")?;
                     }
                     _ => {
                         let name = name_of(&e);
@@ -641,9 +760,16 @@ impl Lower {
                     }
                 },
                 Ok(Event::End(e)) => match e.local_name().into_inner() {
-                    "ROW" => self.html.push_str("</tr>"),
+                    "ROW" => {
+                        grid.end_row();
+                        if grid.slots() > self.limits.max_table_slots - self.table_slots {
+                            return Err(self.slot_err());
+                        }
+                        self.push_html("</tr>")?;
+                    }
                     "TABLE" => {
-                        self.html.push_str("</table>");
+                        self.table_slots += grid.slots();
+                        self.push_html("</table>")?;
                         return Ok(());
                     }
                     _ => {}
@@ -653,6 +779,15 @@ impl Lower {
                 _ => {}
             }
         }
+    }
+}
+
+impl Lower {
+    fn slot_err(&self) -> HwpxError {
+        limit_err(format!(
+            "표 칸 수(행 x 열)가 상한 {}을 넘습니다",
+            self.limits.max_table_slots
+        ))
     }
 }
 
@@ -826,5 +961,164 @@ mod tests {
         let plain =
             read_hml(doc(&pictures(1), &bindata(" Compress=\"false\"", GIF)).as_bytes()).unwrap();
         assert_eq!(plain.document.bin_streams.len(), 1);
+    }
+
+    /// Size of the lowering for `text` under no effective bound.
+    fn lowered_len(text: &str) -> usize {
+        let limits = HML_LIMITS;
+        let mut lower = Lower {
+            limits,
+            ..Lower::default()
+        };
+        lower.collect_tail(text).unwrap();
+        lower.run(text).unwrap();
+        lower.html.len()
+    }
+
+    /// The lowering bound is exact: `n` bytes passes when the lowering is `n` bytes and fails
+    /// at `n - 1`, for every append path (empty paragraphs, inline controls, CDATA, character
+    /// references, row and cell markup).
+    #[test]
+    fn every_append_path_is_bounded_exactly() {
+        let bodies = [
+            "<P/><P/><P/>".to_string(),
+            "<P><TEXT><CHAR>a</CHAR><TAB/><LINEBREAK/><NBSPACE/><HYPHEN/></TEXT></P>".into(),
+            "<P><TEXT><CHAR><![CDATA[<&\"\"]]></CHAR></TEXT></P>".into(),
+            "<P><TEXT><CHAR>&amp;&lt;&#x20AC;&quot;</CHAR></TEXT></P>".into(),
+            "<P><TEXT><TABLE><ROW><CELL ColSpan=\"2\"><PARALIST><P/></PARALIST></CELL></ROW>\
+             <ROW><CELL><PARALIST><P/></PARALIST></CELL><CELL><PARALIST><P/></PARALIST></CELL></ROW>\
+             </TABLE></TEXT></P>"
+                .into(),
+        ];
+        for body in bodies {
+            let text = doc(&body, "");
+            let n = lowered_len(&text);
+            let at = HmlLimits {
+                max_lowered_bytes: n,
+                ..HML_LIMITS
+            };
+            assert!(read_hml_with_limits(text.as_bytes(), &at).is_ok(), "{body}");
+            let under = HmlLimits {
+                max_lowered_bytes: n - 1,
+                ..HML_LIMITS
+            };
+            let m = limit_message(read_hml_with_limits(text.as_bytes(), &under));
+            assert!(m.contains("중간 결과"), "{body}: {m}");
+        }
+    }
+
+    /// A long unflushed paragraph buffer fails before it is flushed, even when the text arrives
+    /// as CDATA or character references.
+    #[test]
+    fn pending_paragraph_buffer_is_bounded() {
+        let limits = HmlLimits {
+            max_lowered_bytes: 100,
+            ..HML_LIMITS
+        };
+        for chunk in [
+            "<![CDATA[aaaaaaaaaa]]>",
+            "&#x41;&#x41;&#x41;&#x41;&#x41;",
+            "",
+        ] {
+            let char_body = if chunk.is_empty() {
+                "<TAB/>".repeat(200)
+            } else {
+                format!("<CHAR>{}</CHAR>", chunk.repeat(40))
+            };
+            let body = format!("<P><TEXT>{char_body}</TEXT></P>");
+            let m = limit_message(read_hml_with_limits(doc(&body, "").as_bytes(), &limits));
+            assert!(m.contains("중간 결과"), "{chunk}: {m}");
+        }
+    }
+
+    fn one_cell_table(row: &str, rows: usize) -> String {
+        format!("<P><TEXT><TABLE>{}</TABLE></TEXT></P>", row.repeat(rows))
+    }
+
+    /// Projected grid slots are bounded exactly, including the empty cells the IR builder
+    /// synthesizes to complete a ragged grid, and across several tables.
+    #[test]
+    fn table_grid_slots_are_bounded_before_allocation() {
+        let cell = "<CELL><PARALIST><P/></PARALIST></CELL>";
+        // One wide row then narrow rows: 10 columns x 5 rows = 50 projected slots, 14 cells.
+        let wide = format!("<ROW><CELL ColSpan=\"10\"><PARALIST><P/></PARALIST></CELL></ROW>");
+        let narrow = format!("<ROW>{cell}</ROW>");
+        let body = format!(
+            "<P><TEXT><TABLE>{wide}{}</TABLE></TEXT></P>",
+            narrow.repeat(4)
+        );
+        let at = HmlLimits {
+            max_table_slots: 50,
+            ..HML_LIMITS
+        };
+        let ok = read_hml_with_limits(doc(&body, "").as_bytes(), &at).unwrap();
+        let table_cells: usize = ok
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match c {
+                hwp_model::Control::Table(t) => Some(t.cells.len()),
+                _ => None,
+            })
+            .sum();
+        // 1 wide + 4 narrow + 4x9 synthesized gap cells.
+        assert_eq!(table_cells, 41);
+        let under = HmlLimits {
+            max_table_slots: 49,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(doc(&body, "").as_bytes(), &under));
+        assert!(m.contains("표 칸 수"), "{m}");
+
+        // A huge span is refused at placement, before any grid vector grows.
+        let huge = "<P><TEXT><TABLE><ROW><CELL ColSpan=\"65535\" RowSpan=\"65535\">\
+                    <PARALIST><P/></PARALIST></CELL></ROW></TABLE></TEXT></P>";
+        let m = limit_message(read_hml(doc(huge, "").as_bytes()));
+        assert!(m.contains("표 칸 수"), "{m}");
+
+        // The budget is shared by every table in the document.
+        let two = one_cell_table(&narrow, 30).repeat(2);
+        let limits = HmlLimits {
+            max_table_slots: 59,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(doc(&two, "").as_bytes(), &limits));
+        assert!(m.contains("표 칸 수"), "{m}");
+        let limits = HmlLimits {
+            max_table_slots: 60,
+            ..HML_LIMITS
+        };
+        assert!(read_hml_with_limits(doc(&two, "").as_bytes(), &limits).is_ok());
+    }
+
+    /// With a BINITEM table, a refused mapped binary is never replaced by the BINDATA whose Id
+    /// equals the reference number.
+    #[test]
+    fn binitem_table_is_authoritative_for_image_lookup() {
+        let gif = hwp_convert::base64::encode(GIF);
+        let text = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD><MAPPINGTABLE>\
+             <BINDATALIST><BINITEM BinData=\"7\"/></BINDATALIST></MAPPINGTABLE></HEAD>\
+             <BODY><SECTION>{}</SECTION></BODY><TAIL><BINDATASTORAGE>\
+             <BINDATA Id=\"7\" Encoding=\"Base64\" Compress=\"true\">{gif}</BINDATA>\
+             <BINDATA Id=\"1\" Encoding=\"Base64\">{gif}</BINDATA>\
+             </BINDATASTORAGE></TAIL></HWPML>",
+            pictures(1)
+        );
+        let result = read_hml(text.as_bytes()).unwrap();
+        assert!(
+            result.document.bin_streams.is_empty(),
+            "BINDATA 1 substituted for refused BINDATA 7"
+        );
+        assert!(
+            result.warnings.iter().any(|w| w.contains("BinItem 1")),
+            "{:?}",
+            result.warnings
+        );
+        // Without a BINITEM table the direct Id match still applies.
+        let direct = read_hml(doc(&pictures(1), &bindata("", GIF)).as_bytes()).unwrap();
+        assert_eq!(direct.document.bin_streams.len(), 1);
     }
 }

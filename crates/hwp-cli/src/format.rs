@@ -32,10 +32,10 @@ pub fn detect(path: &Path) -> anyhow::Result<FileFormat> {
     } else {
         match detect_legacy(path)? {
             Some(legacy) => anyhow::bail!(
-                "{}: {}은(는) 읽기 전용 입력입니다. cat·convert·render 등 읽기 명령으로 열거나 \
-                 convert --to hwp|hwpx로 변환한 뒤 편집하세요",
+                "{}: {}은(는) 읽기 전용 입력이라 제자리에서 편집할 수 없습니다. {}",
                 path.display(),
-                legacy.label()
+                legacy.label(),
+                legacy.edit_hint()
             ),
             None => anyhow::bail!(
                 "{}: HWP(CFB)도 HWPX(ZIP)도 아닙니다 (시그니처 불일치)",
@@ -62,13 +62,34 @@ impl LegacyFormat {
             Self::Hwp3 => "HWP 3.x",
         }
     }
+
+    /// Recovery for an in-place edit. HWPML converts in this build; HWP 3.x reading is not
+    /// wired until #114, so `convert` cannot help yet and Hancom re-saving is the path.
+    pub fn edit_hint(self) -> String {
+        match self {
+            Self::Hml => {
+                "먼저 `ahwp convert <입력> -o <출력>.hwpx`(또는 .hwp)로 변환한 뒤 그 파일을 편집하세요"
+                    .to_string()
+            }
+            Self::Hwp3 => format!("이 빌드는 HWP 3.x를 아직 읽지 못합니다. {LEGACY_RESAVE_HINT}"),
+        }
+    }
 }
 
 /// Signature prefix shared by HWP 1.x-3.x files; the version digits follow it.
 const HWP_LEGACY_PREFIX: &[u8] = b"HWP Document File V";
 
+/// The complete 30-byte HWP 3.00 signature (한글문서파일형식 3.0 §3.1). The same constant
+/// is `hwp5::hwp3::SIGNATURE` in the reader (#113).
+const HWP3_SIGNATURE: &[u8; 30] = b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05";
+
+/// Recovery for legacy inputs this build cannot read: Hancom itself re-saves them.
+const LEGACY_RESAVE_HINT: &str =
+    "한글(한컴오피스)에서 열어 HWP 5.0(.hwp) 또는 HWPX로 다시 저장한 뒤 사용하세요";
+
 /// Detects a read-only legacy format by content. `Ok(None)` means "not legacy" (the caller
-/// keeps its CFB/ZIP path). Recognized-but-unsupported variants (HWP 1.x/2.x) are typed errors.
+/// keeps its CFB/ZIP path). Recognized-but-unsupported variants (HWP 1.x/2.x, other 3.x
+/// revisions, a cut-off signature) are typed errors, each distinct from a valid input.
 pub fn detect_legacy(path: &Path) -> anyhow::Result<Option<LegacyFormat>> {
     let mut head = vec![0u8; 4096];
     let n = File::open(path)
@@ -80,15 +101,28 @@ pub fn detect_legacy(path: &Path) -> anyhow::Result<Option<LegacyFormat>> {
 
 /// Byte-level form of [`detect_legacy`] over the first bytes of a file.
 pub fn detect_legacy_bytes(head: &[u8]) -> anyhow::Result<Option<LegacyFormat>> {
-    if let Some(rest) = head.strip_prefix(HWP_LEGACY_PREFIX) {
-        return match rest.first() {
-            Some(b'3') => Ok(Some(LegacyFormat::Hwp3)),
-            Some(v) => anyhow::bail!(
-                "HWP {}.x 문서는 지원하지 않습니다 (HWP 3.x 이상만 읽을 수 있습니다)",
-                char::from(*v)
-            ),
-            None => anyhow::bail!("HWP 레거시 시그니처가 잘려 있습니다"),
-        };
+    if head.starts_with(HWP_LEGACY_PREFIX) {
+        if head.starts_with(HWP3_SIGNATURE) {
+            return Ok(Some(LegacyFormat::Hwp3));
+        }
+        if head.len() < HWP3_SIGNATURE.len() {
+            anyhow::bail!(
+                "HWP 레거시 시그니처가 잘려 있습니다 ({}/{}바이트). 파일이 완전히 복사됐는지 확인하세요",
+                head.len(),
+                HWP3_SIGNATURE.len()
+            );
+        }
+        // The version field is `D.DD` right after the prefix.
+        let version = String::from_utf8_lossy(&head[HWP_LEGACY_PREFIX.len()..][..4]).into_owned();
+        if version == "3.00" {
+            anyhow::bail!(
+                "HWP 3.00 시그니처의 끝 6바이트가 다릅니다 (손상됐거나 다른 프로그램이 만든 파일). \
+                 원본을 다시 받거나 {LEGACY_RESAVE_HINT}"
+            );
+        }
+        anyhow::bail!(
+            "HWP {version} 문서는 지원하지 않습니다 (HWP 3.00 시그니처만 읽습니다). {LEGACY_RESAVE_HINT}"
+        );
     }
     if hwpx::looks_like_hml(head) {
         return Ok(Some(LegacyFormat::Hml));
