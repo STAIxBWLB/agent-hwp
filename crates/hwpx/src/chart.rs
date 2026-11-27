@@ -220,6 +220,7 @@ pub(crate) fn parse(xml: &[u8]) -> Option<ChartData> {
         Some("l") => ChartLegend::Left,
         Some("r" | "tr") => ChartLegend::Right,
         Some(_) => ChartLegend::Bottom,
+        None if chart.get("legend").is_some() => ChartLegend::Right,
         None => ChartLegend::None,
     };
     let mut axes = plot
@@ -336,13 +337,36 @@ pub(crate) fn write(data: &ChartData) -> Vec<u8> {
                 );
             }
         }
-        let values = series.values.iter().map(f64::to_string).collect::<Vec<_>>();
+        if matches!(data.kind, Pie | Doughnut) {
+            // Match the preview's slice colors instead of applying one fill to all wedges.
+            for i in 0..series.values.len() {
+                let c = data.display_color(i);
+                let _ = write!(
+                    out,
+                    r#"<c:dPt><c:idx val="{i}"/><c:spPr><a:solidFill><a:srgbClr val="{:02X}{:02X}{:02X}"/></a:solidFill></c:spPr></c:dPt>"#,
+                    c & 255,
+                    (c >> 8) & 255,
+                    (c >> 16) & 255
+                );
+            }
+        }
+        let values = series
+            .values
+            .iter()
+            .map(|value| format!("{value:e}"))
+            .collect::<Vec<_>>();
         if data.kind == Scatter {
-            let xs = series
-                .x_values
-                .iter()
-                .map(f64::to_string)
-                .collect::<Vec<_>>();
+            let xs = if series.x_values.is_empty() {
+                (1..=series.values.len())
+                    .map(|value| format!("{:e}", value as f64))
+                    .collect()
+            } else {
+                series
+                    .x_values
+                    .iter()
+                    .map(|value| format!("{value:e}"))
+                    .collect::<Vec<_>>()
+            };
             write_points(&mut out, "xVal", true, &xs);
             write_points(&mut out, "yVal", true, &values);
         } else {
@@ -396,6 +420,42 @@ pub(crate) fn write(data: &ChartData) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_caches_and_excess_depth_are_unrepresentable() {
+        let series = r#"<c:ser><c:val><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser>"#;
+        let make = |serial: &str| {
+            format!(
+                r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:lineChart>{serial}</c:lineChart></c:plotArea></c:chart></c:chartSpace>"#
+            )
+        };
+        assert!(parse(make(series).as_bytes()).is_some());
+        assert!(parse(make(&series.repeat(33)).as_bytes()).is_none());
+        assert!(parse(make(&series.replace("idx=\"0\"", "idx=\"1\"")).as_bytes()).is_none());
+        assert!(
+            parse(
+                make(&series.replace(
+                    "</c:numLit>",
+                    r#"<c:pt idx="0"><c:v>2</c:v></c:pt></c:numLit>"#
+                ))
+                .as_bytes()
+            )
+            .is_none()
+        );
+        assert!(parse(make(&series.replace(">1<", ">NaN<")).as_bytes()).is_none());
+        let extension = |depth: usize| {
+            make(series).replace(
+                "</c:chartSpace>",
+                &format!(
+                    "<c:extLst>{}{}</c:extLst></c:chartSpace>",
+                    "<e>".repeat(depth),
+                    "</e>".repeat(depth)
+                ),
+            )
+        };
+        assert!(parse(extension(2).as_bytes()).is_some());
+        assert!(parse(extension(48).as_bytes()).is_none());
+    }
 
     #[test]
     fn all_supported_parts_reparse() {

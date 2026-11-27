@@ -390,7 +390,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 
 | 개체/요소 | 현재 처리 | 근거 |
 |---|---|---|
-| `hp:chart` | `chartIDRef`로 `Contents/content.hpf`의 `Chart/chartN.xml` 해석. 원본 XML과 차트 파트 보존 | KS X 6101 문단 개체, ECMA-376 Part 1 §21.2. 한컴오피스 확인 대기 |
+| `hp:chart` | `chartIDRef`로 `Contents/content.hpf`의 `Chart/chartN.xml` 해석. 원본 XML과 차트 파트 보존 | ECMA-376 Part 1 §21.2. OWPML 래퍼와 매니페스트는 잠정값이며 한컴오피스 확인 대기 |
 | OLE 개체(`hp:ole` 등) | read fallback→write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video`/미디어 | read fallback→write DROP | 동일 |
 | `hp:container`(그룹 개체) | read fallback(subList 텍스트만)→write DROP | :191 → :364 |
@@ -405,7 +405,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 아니라** `collect_sub_lists`로 자식 `subList` 문단을 `GenericControl.paragraph_lists`에 담는다 —
 즉 *텍스트는 IR에 남는다*. 그러나 write에서 이 Generic은 gso_shapes도 없고 알려진 ctrl_id도
 아니므로 최종 `Control::Generic(g) => warnings.push("DROP…")`(`write/section.rs:364`)로 드롭되며,
-담아둔 텍스트까지 함께 사라진다. `chart`/`ole`/`video`는 텍스트조차 없어 완전 소실이다.
+담아둔 텍스트까지 함께 사라진다. `ole`/`video`는 텍스트조차 없어 완전 소실이다.
 
 ---
 
@@ -472,7 +472,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 
 ### 12번 갭 문서 입력 요약
 
-**미구현(양쪽 없음):** chart, ole, video, container, textart, formObject, compose/dutmal, 바탕쪽
+**미구현(양쪽 없음):** ole, video, container, textart, formObject, compose/dutmal, 바탕쪽
 (hm master-page), 편집 이력(hhs). — container/textart/formObject/compose는 read가 텍스트만 fallback
 보존하나 write DROP으로 소실.
 

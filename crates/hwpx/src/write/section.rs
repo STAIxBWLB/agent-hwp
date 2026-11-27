@@ -1160,21 +1160,7 @@ fn margin_attr(value: u16) -> u32 {
     }
 }
 
-/// 수식 → `<hp:equation>`(run 직속). 자식 순서는 개체 공통 규약(sz → pos → outMargin,
-/// 그 뒤 개체 전용)을 따른다 — 한컴 공식 모델 `AbstractShapeObjectType`과 동일.
-///
-/// 소스별 충실도 3단:
-/// 1. hwpx 출신 — 시작 태그 속성(`raw_attrs`)과 공통 자식(`raw_props`)을 원문 그대로
-///    되쓴다. 글자색·baseUnit·수식 글꼴·zOrder·배치기준이 왕복에서 살아남는다.
-/// 2. hwp5 출신 — 공통 자식은 gso 공통 헤더(`g.data`)로 재구성한다. 배치기준(PAGE/PARA)·
-///    정렬·z-order가 헤더에 있으므로 `gso_pos_xml`을 그대로 쓴다(그림·표와 같은 경로).
-/// 3. 합성(md/JSON 출신) — 아래 표준값. `lineMode`는 한컴 모델 열거값 LINE|CHAR 중
-///    기본값 CHAR다(`enumdef.h` g_EquationLineList).
-///
-/// ⚠ 3의 수식 전용 상수(version·baseLine·baseUnit·font)는 **정답지 미확보 상태의 표준
-/// 추정값**이다. 실기에서 수식이 깨져 보이면 정품 저장본 속성으로 교체할 것
-/// (12-feature-gaps.md GE-14).
-/// Serializes the KS X 6101 common shape placement and chart-part reference.
+/// Recognizes exactly the wrapper and chart payload emitted by our writer.
 pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> Option<&'a str> {
     let chart = control.chart.as_deref()?;
     let part = chart.part_id.as_deref()?;
@@ -1209,6 +1195,8 @@ pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> 
     }
 }
 
+/// The common shape wrapper and the Chart/ spelling are provisional until
+/// a Hancom-saved chart or an AC4 open receipt is available. See GB-1.
 fn chart_wrapper(chart: &hwp_model::Chart, part_id: &str, id: u32) -> String {
     let placement = &chart.placement;
     let (treat, flow) = (

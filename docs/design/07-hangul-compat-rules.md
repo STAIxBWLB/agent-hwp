@@ -462,3 +462,9 @@ Base attr1 is `0x180`; every paragraph header keeps `pageBreak="0"`. Each enable
 5. **Hancom judges a rule, and a wrong rule gets reverted.** B3 (always SET bit31) looked right
    statically but caused black bars in Hancom and was rolled back (e41b440). Genuine Hancom rendering
    is the only final arbiter.
+
+## HWPX chart manifest (verification pending)
+
+GB-1 uses the provisional `Chart/chartN.xml` path and the DrawingML chart media type. Compose and
+full rewrite use the same OPF item shape. The path and wrapper attributes await a saved-file
+comparison or an AC4 receipt.

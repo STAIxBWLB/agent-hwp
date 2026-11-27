@@ -1685,8 +1685,7 @@ fn collect_shape(
     Ok(())
 }
 
-/// hp:equation: collects the script attribute or hp:script child, hp:sz size and hp:pos position. The
-/// renderer approximates it with a box and text.
+/// Captures placement and the exact wrapper bytes for an HWPX chart.
 fn parse_chart_control(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,

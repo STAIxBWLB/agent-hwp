@@ -9,9 +9,6 @@ use crate::{
     shape::shape_plain,
 };
 
-const PALETTE: [u32; 8] = [
-    0xb67128, 0x3984db, 0x759047, 0xa45c87, 0x7a8e16, 0xa66e45, 0x5a7cc5, 0x98744d,
-];
 const INK: u32 = 0x302b28;
 const GRID: u32 = 0xdfd9d4;
 
@@ -80,16 +77,6 @@ impl Canvas<'_> {
             crate::layout::push_run(self.page, x, y, run, &[], self.issues);
         }
     }
-}
-
-fn color(data: &ChartData, index: usize) -> u32 {
-    data.series
-        .get(index)
-        .and_then(|series| series.color.as_deref())
-        .and_then(|value| u32::from_str_radix(value.strip_prefix('#')?, 16).ok())
-        .map_or(PALETTE[index % PALETTE.len()], |rgb| {
-            ((rgb & 0xff) << 16) | (rgb & 0xff00) | (rgb >> 16)
-        })
 }
 
 pub(crate) fn draw(
@@ -190,7 +177,7 @@ fn legend(canvas: &mut Canvas<'_>, data: &ChartData, frame: Box2, plot: &mut Box
                 w: 6.0,
                 h: 6.0,
             },
-            color(data, i),
+            data.display_color(i),
         );
         canvas.text(
             label,
@@ -239,7 +226,7 @@ fn slices(canvas: &mut Canvas<'_>, data: &ChartData, plot: Box2) {
         } else {
             points.extend(angles.iter().rev().map(|&a| point(a, hole)));
         }
-        canvas.path(&points, color(data, i), true);
+        canvas.path(&points, data.display_color(i), true);
         angle += sweep;
     }
 }
@@ -332,7 +319,7 @@ fn axes(canvas: &mut Canvas<'_>, data: &ChartData, plot: Box2) {
         plot.w,
     );
     for (sidx, series) in data.series.iter().enumerate() {
-        let tint = color(data, sidx);
+        let tint = data.display_color(sidx);
         let mut stroke = Vec::new();
         for (i, &v) in series.values.iter().enumerate() {
             let val = value_fraction(v);
@@ -399,6 +386,72 @@ fn axes(canvas: &mut Canvas<'_>, data: &ChartData, plot: Box2) {
             stroke.push((last.0, baseline));
             stroke.insert(0, (first.0, baseline));
             canvas.path(&stroke, tint, true);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn additional_chart_kinds_emit_geometry_without_font_dependencies() {
+        let document = Document::default();
+        let mut fonts = FontStore::new_isolated();
+        for kind in [
+            ChartKind::Bar,
+            ChartKind::Doughnut,
+            ChartKind::Area,
+            ChartKind::Scatter,
+        ] {
+            let mut data = ChartData {
+                kind,
+                title: String::new(),
+                categories: Vec::new(),
+                series: vec![hwp_model::ChartSeries {
+                    name: String::new(),
+                    values: vec![2.0, 6.0],
+                    x_values: if kind == ChartKind::Scatter {
+                        vec![0.0, 1.0]
+                    } else {
+                        Vec::new()
+                    },
+                    color: Some("#173F73".into()),
+                }],
+                legend: ChartLegend::None,
+                x_label: String::new(),
+                y_label: String::new(),
+            };
+            assert!(data.validate().is_ok());
+            let mut page = PageList {
+                width_pt: 400.0,
+                height_pt: 220.0,
+                items: Vec::new(),
+            };
+            draw(
+                &document,
+                &mut fonts,
+                &mut page,
+                &mut RenderIssueAccumulator::new(),
+                &data,
+                [0.0, 0.0, 370.0, 200.0],
+            );
+            let color = data.display_color(0);
+            assert!(
+                page.items.iter().any(|item| match item {
+                    Item::Rect { fill, .. }
+                    | Item::Path {
+                        fill: Some(Fill::Solid(fill)),
+                        ..
+                    } => *fill == color,
+                    _ => false,
+                }),
+                "{kind:?}"
+            );
+            if kind == ChartKind::Doughnut {
+                data.series[0].values.fill(0.0);
+                assert!(data.validate().is_err());
+            }
         }
     }
 }

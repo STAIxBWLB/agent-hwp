@@ -12,8 +12,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
-- Compose, read, and render seven native DrawingML chart kinds in HWPX. Preserve source chart
-  parts and wrappers during HWPX edits ([#618](https://github.com/STAIxBWLB/agent-hwp/issues/618)).
+- Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
+  render those charts and preserve source chart
+  parts and wrappers during HWPX edits. Report `chart_control_unrepresentable` on HWP5 conversion
+  ([#618](https://github.com/STAIxBWLB/agent-hwp/issues/618)).
 
 ## [2.1.1]
 

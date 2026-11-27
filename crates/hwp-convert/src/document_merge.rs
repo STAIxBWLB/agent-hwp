@@ -726,6 +726,10 @@ fn remap_paragraph(
                 }
             }
             Control::Generic(g) => {
+                if g.chart.is_some() && g.hwpx_raw_xml.is_some() {
+                    return Err("두 번째 이후 입력의 원본 차트 파트를 병합할 수 없습니다. 차트 문서를 첫 번째 입력으로 지정하세요".into());
+                }
+
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
@@ -960,6 +964,10 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Res
                 }
             }
             Control::Generic(g) => {
+                if g.chart.is_some() && g.hwpx_raw_xml.is_some() {
+                    return Err("두 번째 이후 입력의 원본 차트 파트를 병합할 수 없습니다. 차트 문서를 첫 번째 입력으로 지정하세요".into());
+                }
+
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         unresolvable += remap_paragraph_general(p, offsets)?;

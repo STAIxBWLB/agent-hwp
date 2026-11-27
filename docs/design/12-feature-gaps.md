@@ -375,6 +375,11 @@ lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip sinc
 | GB-14 | **NUMBERING start numbers and extended levels are unparsed**: paragraph head information (tables 39 and 40) is read and discarded (`_attr`, `_width`, `_dist`), and the global and per-level start numbers are hardcoded to `start: 1` at every level. Levels 8 to 10 extension fields do not even exist as a concept in the IR (fixed at 7 levels) | `hwp5/src/doc_info.rs:452-479` (`read_level`, `start: 1`) | §4.2.8 | approximated (start fixed at 1) | read (dump/json), synthesis | M (the record's trailing layout must be compared against genuine files) |
 | GB-15 | **Image and check bullets are unparsed**: only one bullet character is extracted from BULLET, while the image-bullet flag and id, image information (contrast, brightness, effects) and check characters are preserved only as raw | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5 raw-preserved / dropped in synthesis and render | synthesis, render | S to M (rare in practice, lowest priority) |
 
+The synthesized `Chart/` path, `hp:chart` object attributes, and OPF item are provisional. They
+follow the public OWPML model and ECMA-376 Part 1 §21.2 and await a Hancom-saved chart comparison.
+The DocumentSpec block lives in the existing CLI compiler, `hwp-cli/src/document_spec.rs`.
+
+
 **GB lesson:** looking only at hwp5 → hwp5 round-trips, the entire GB series appears "lossless" and
 the gap is invisible (exactly the trap in §0.3). The defects appear only in **hwpx round-trips,
 cross-format synthesis and rendering**. GB-6 (grouping) is especially subtle: hwp5 even renders it,

@@ -193,7 +193,12 @@ fn read_document_impl(
         .map(parse_opf_extra_items)
         .unwrap_or_default();
 
-    resolve_charts(&mut sections, &hwpx_opf_extra_items, &mut pkg);
+    resolve_charts(
+        &mut sections,
+        &hwpx_opf_extra_items,
+        load_binary_data.then_some(hwpx_extra_entries.as_slice()),
+        &mut pkg,
+    );
 
     // Raw passthrough slots preserve whole settings.xml (application settings/caret) and version.xml
     // (version metadata). Missing values are None and use writer defaults. Never discard unknown data.
@@ -238,6 +243,7 @@ fn read_document_impl(
 fn resolve_charts(
     sections: &mut [hwp_model::Section],
     items: &[(String, String, String)],
+    retained_parts: Option<&[(String, Vec<u8>)]>,
     package: &mut HwpxPackage,
 ) {
     use hwp_model::{ChartData, Control, Paragraph};
@@ -273,26 +279,46 @@ fn resolve_charts(
         }
     }
 
+    let mut hrefs = std::collections::BTreeMap::new();
+    for (id, href, _) in items {
+        hrefs.entry(id.as_str()).or_insert(href.as_str());
+    }
+    let retained_parts = retained_parts.map(|entries| {
+        entries
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    });
     let mut cache = std::collections::BTreeMap::new();
     for section in sections {
         visit(&mut section.paragraphs, &mut |id| {
+            let href = match hrefs.get(id) {
+                Some(&href) => std::borrow::Cow::Borrowed(href),
+                None if !id.is_empty()
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
+                {
+                    std::borrow::Cow::Owned(format!("Chart/{id}.xml"))
+                }
+                None => return None,
+            };
+            if !href
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("chart/"))
+            {
+                return None;
+            }
             cache
-                .entry(id.to_owned())
-                .or_insert_with(|| {
-                    let href = items
-                        .iter()
-                        .find(|(item, _, _)| item == id)
-                        .map(|(_, href, _)| href.clone())
-                        .or_else(|| {
-                            (!id.is_empty()
-                                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
-                            .then(|| format!("Chart/{id}.xml"))
-                        })?;
-                    if !href.to_ascii_lowercase().starts_with("chart/") {
-                        return None;
+                .entry(href.into_owned())
+                .or_insert_with_key(|href| {
+                    match &retained_parts {
+                        Some(parts) => crate::chart::parse(parts.get(href.as_str())?),
+                        None => crate::chart::parse(
+                            &package
+                                .read_entry_bounded(href, crate::chart::MAX_PART as u64)
+                                .ok()?,
+                        ),
                     }
-                    let bytes = package.read_entry(&href).ok()?;
-                    crate::chart::parse(&bytes).map(std::sync::Arc::new)
+                    .map(std::sync::Arc::new)
                 })
                 .clone()
         });

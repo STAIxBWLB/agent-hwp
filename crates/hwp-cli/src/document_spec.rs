@@ -1228,7 +1228,7 @@ impl Validator<'_> {
                             "chart exceeds the available width",
                         );
                     }
-                    if let Err(message) = data.validate() {
+                    if let Err(message) = hwpx::validate_chart_part(data) {
                         self.issue("invalid_value", format!("{block_path}.data"), message);
                     }
                 }

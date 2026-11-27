@@ -131,6 +131,14 @@ fn compose_render_and_edit_native_hwpx_charts() {
     };
     let rewritten = dir.join("rewritten.hwpx");
     hwpx::write_document(&reread, &rewritten).unwrap();
+    let rewritten_manifest = String::from_utf8(entry(&rewritten, "Contents/content.hpf")).unwrap();
+    let chart_items = |xml: &str| -> Vec<String> {
+        xml.split("<opf:item ")
+            .filter(|item| item.starts_with("id=\"chart"))
+            .map(|item| item.split("/>").next().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(chart_items(&manifest), chart_items(&rewritten_manifest));
     let rewritten_section = String::from_utf8(entry(&rewritten, "Contents/section0.xml")).unwrap();
     assert_eq!(wrapper(&rewritten_section), wrapper(&section));
     let edited_section = String::from_utf8(entry(&edited, "Contents/section0.xml")).unwrap();
@@ -159,5 +167,212 @@ fn compose_render_and_edit_native_hwpx_charts() {
         std::fs::read_to_string(loss)
             .unwrap()
             .contains("chart_control_unrepresentable")
+    );
+}
+
+fn repackage(input: &Path, output: &Path, replacements: &[(&str, &[u8])]) {
+    use std::io::Write as _;
+    let mut source = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(output).unwrap());
+    for i in 0..source.len() {
+        let file = source.by_index(i).unwrap();
+        if !replacements
+            .iter()
+            .any(|(name, _)| *name == file.name().unwrap())
+        {
+            out.raw_copy_file(file).unwrap();
+        }
+    }
+    for (name, bytes) in replacements {
+        out.start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        out.write_all(bytes).unwrap();
+    }
+    out.finish().unwrap();
+}
+
+#[test]
+fn foreign_chart_in_cell_and_href_alias_survive_both_rewrite_paths() {
+    use hwp_model::Control;
+
+    let dir = temp_path::TempPath::new("ahwp-native-charts", "foreign-cell");
+    std::fs::create_dir_all(&*dir).unwrap();
+    let spec = dir.join("spec.json");
+    let authored = dir.join("authored.hwpx");
+    let chart = serde_json::json!({
+        "type":"chart", "width_mm":60, "height_mm":45,
+        "data":{"kind":"column", "categories":["Q1", "Q2"], "series":[{"name":"S","values":[1,2]}]}
+    });
+    std::fs::write(
+        &spec,
+        serde_json::json!({
+            "version":"2.0", "document":{"version":"1.0","sections":[{"blocks":[
+                {"type":"paragraph","runs":[{"type":"text","text":"Before charts"}]},
+                {"type":"table","width_mm":90,"columns":[{"width_mm":90}],
+                 "rows":[{"cells":[{"blocks":[chart.clone()]}]}]},
+                chart
+            ]}]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    success(
+        cli()
+            .arg("compose")
+            .arg(&spec)
+            .arg("-o")
+            .arg(&authored)
+            .output()
+            .unwrap(),
+    );
+
+    let part_name = "Chart/chart1.xml";
+    let rel_name = "Chart/_rels/chart1.xml.rels";
+    let part = String::from_utf8(entry(&authored, part_name))
+        .unwrap()
+        .replace(
+            "<c:numLit>",
+            "<c:numRef><c:f>Sheet1!$B$1:$B$2</c:f><c:numCache>",
+        )
+        .replace("</c:numLit>", "</c:numCache></c:numRef>")
+        .replace(
+            "</c:chartSpace>",
+            "<c:extLst><c:ext uri=\"foreign\"/></c:extLst></c:chartSpace>",
+        );
+    let rels =
+        br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
+    let manifest = String::from_utf8(entry(&authored, "Contents/content.hpf"))
+        .unwrap()
+        .replace(
+            r#"id="chart2" href="Chart/chart2.xml""#,
+            r#"id="chart2" href="Chart/chart1.xml""#,
+        );
+    let section = String::from_utf8(entry(&authored, "Contents/section0.xml"))
+        .unwrap()
+        .replace("<hp:chart ", "<hp:chart  ");
+    let foreign = dir.join("foreign.hwpx");
+    repackage(
+        &authored,
+        &foreign,
+        &[
+            (part_name, part.as_bytes()),
+            (rel_name, rels),
+            ("Contents/content.hpf", manifest.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+        ],
+    );
+    let read = hwpx::read_document(&foreign).unwrap().document;
+    fn chart_data(paragraphs: &[hwp_model::Paragraph]) -> &std::sync::Arc<hwp_model::ChartData> {
+        paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|ctrl| match ctrl {
+                Control::Generic(g) => g.chart.as_deref()?.data.as_ref(),
+                _ => None,
+            })
+            .unwrap()
+    }
+    let body = &read.sections[0].paragraphs;
+    let table = body
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|ctrl| match ctrl {
+            Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .unwrap();
+    let cell_chart = chart_data(&table.cells[0].paragraphs);
+    assert_eq!(cell_chart.series[0].values, [1.0, 2.0]);
+    assert!(std::sync::Arc::ptr_eq(cell_chart, chart_data(body)));
+    let structure = hwpx::read_structure(&foreign).unwrap().document;
+    let structure_body = &structure.sections[0].paragraphs;
+    let structure_cell = structure_body
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|ctrl| match ctrl {
+            Control::Table(table) => Some(&table.cells[0].paragraphs),
+            _ => None,
+        })
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        chart_data(structure_body),
+        chart_data(structure_cell)
+    ));
+    let svg = dir.join("foreign.svg");
+    success(
+        cli()
+            .arg("render")
+            .arg(&foreign)
+            .args(["--pages", "1", "-o"])
+            .arg(&svg)
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        std::fs::read_to_string(&svg)
+            .unwrap()
+            .matches("#2871b6")
+            .count()
+            >= 4
+    );
+
+    let complete = dir.join("full.hwpx");
+    hwpx::write_document(&read, &complete).unwrap();
+    let edited = dir.join("edited.hwpx");
+    success(
+        cli()
+            .arg("edit")
+            .arg(&foreign)
+            .args(["--replace", "Before charts=>After charts", "--verify", "-o"])
+            .arg(&edited)
+            .output()
+            .unwrap(),
+    );
+    for output in [&complete, &edited] {
+        assert_eq!(entry(output, part_name), part.as_bytes());
+        assert_eq!(entry(output, rel_name), rels);
+        let output_section = String::from_utf8(entry(output, "Contents/section0.xml")).unwrap();
+        let wrappers = |xml: &str| -> Vec<String> {
+            xml.split("<hp:chart  ")
+                .skip(1)
+                .map(|s| s.split("</hp:chart>").next().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(wrappers(&section).len(), 2);
+        assert_eq!(wrappers(&output_section), wrappers(&section));
+    }
+
+    let broken = dir.join("malformed.hwpx");
+    repackage(&foreign, &broken, &[(part_name, b"<c:chartSpace><broken")]);
+    let broken_doc = hwpx::read_document(&broken).unwrap().document;
+    let opaque = broken_doc.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|ctrl| match ctrl {
+            Control::Generic(g) => g.chart.as_deref(),
+            _ => None,
+        })
+        .unwrap();
+    assert!(opaque.data.is_none());
+    let rewritten = dir.join("opaque.hwpx");
+    hwpx::write_document(&broken_doc, &rewritten).unwrap();
+    assert_eq!(entry(&rewritten, part_name), b"<c:chartSpace><broken");
+    let report = dir.join("broken-render.json");
+    success(
+        cli()
+            .arg("render")
+            .arg(&broken)
+            .arg("--report")
+            .arg(&report)
+            .arg("-o")
+            .arg(dir.join("broken.svg"))
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        std::fs::read_to_string(report)
+            .unwrap()
+            .contains("unsupported_control_omitted")
     );
 }

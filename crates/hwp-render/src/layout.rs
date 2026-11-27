@@ -3353,7 +3353,7 @@ fn layout_para_objects(
                     object_y = flow_end;
                 }
             }
-            // Equations (hp:equation): lay out the script as mathematics (equation.rs).
+            // Native HWPX chart placement.
             Control::Generic(g) if g.chart.is_some() => {
                 let chart = g.chart.as_deref().expect("checked chart");
                 if let Some(data) = &chart.data

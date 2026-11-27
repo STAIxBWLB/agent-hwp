@@ -54,9 +54,16 @@ pub fn content_hpf(
         r##"<opf:item id="settings" href="settings.xml" media-type="application/xml"/>"##
     );
     for (id, href, mime) in bin_items {
+        // Chart manifest spelling is provisional pending a Hancom-saved fixture.
+        // Use the same item shape when the part is later preserved as an extension.
+        let embedded = if mime == crate::chart::MIME {
+            ""
+        } else {
+            r#" isEmbeded="1""#
+        };
         let _ = write!(
             manifest,
-            r##"<opf:item id="{id}" href="{href}" media-type="{mime}" isEmbeded="1"/>"##
+            r#"<opf:item id="{id}" href="{href}" media-type="{mime}"{embedded}/>"#
         );
     }
     // 확장 파트 원본 항목 — 값은 원문 속성(이스케이프 상태) 그대로라 esc 없이 방출한다.

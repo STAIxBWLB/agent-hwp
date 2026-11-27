@@ -124,7 +124,7 @@ The package family (auxiliary files only, `templates.rs`):
 **Audit point:** `FULL_XMLNS` declares fifteen namespaces but only `hp`, `hs`, `hc`, `hh`, `dc` and
 `opf` (plus `ha` and `config` in settings) actually emit elements. `hp10`, `hhs`, `hm`, `hpf`,
 `ooxmlchart`, `hwpunitchar` and `epub` are **declared but emit nothing**, meaning we generate no 2016
-extensions, history, master pages or charts (see §5, unimplemented).
+extensions, history, or master pages (see §5). Native charts use a DrawingML part.
 
 ---
 
@@ -303,7 +303,7 @@ pic, shape and equation contexts.
 - **fallback preserved**: the `_ =>` arm of `parse_paragraph` (`section.rs:191`) and the `other` arm
   of `parse_ctrl` (`:597`) wrap an unsupported element in a `GenericControl` (using the first four
   bytes of the original local name as the ctrl_id) and recursively collect its `subList` paragraphs.
-  **The text survives**, but object-specific properties (chart data, OLE and so on) are discarded. On
+  **The text survives**, but object-specific properties (OLE and other unsupported object data) are discarded. On
   write, with neither gso_shapes nor paragraph_lists, it is dropped (§4, §5).
 - **skip (information loss)**: uninteresting elements are discarded with `_ => {}` (ignoring the
   event) or `skip_subtree` (consuming the whole subtree). Every row marked **skip** in tables G and H
@@ -404,7 +404,7 @@ approximation, so it is **lost in an hwpx → hwpx round-trip**.
 
 | Object/element | Current handling | Evidence |
 |---|---|---|
-| `hp:chart` | `chartIDRef` resolves through `Contents/content.hpf` to `Chart/chartN.xml`. Original wrapper and part bytes are retained | KS X 6101 paragraph objects, ECMA-376 Part 1 §21.2. Hancom open check pending |
+| `hp:chart` | `chartIDRef` resolves through `Contents/content.hpf` to `Chart/chartN.xml`. Original wrapper and part bytes are retained | ECMA-376 Part 1 §21.2. Provisional OWPML wrapper and manifest, Hancom open check pending |
 | OLE objects (`hp:ole` and so on) | read fallback → write DROP | `collect_sub_lists` :933 → DROP `write/section.rs:364` |
 | `hp:video` and media | read fallback → write DROP | likewise |
 | `hp:container` (grouped objects) | read fallback (subList text only) → write DROP | :191 → :364 |
@@ -420,7 +420,7 @@ ignored** by read; `collect_sub_lists` places their child `subList` paragraphs i
 `GenericControl.paragraph_lists`, so *the text does reach the IR*. On write, however, that Generic has
 no gso_shapes and no known ctrl_id, so it ends at
 `Control::Generic(g) => warnings.push("DROP...")` (`write/section.rs:364`) and the collected text
-disappears with it. `chart`, `ole` and `video` have no text at all and are lost completely.
+disappears with it. `ole` and `video` have no text at all and are lost completely.
 
 ---
 
@@ -491,7 +491,7 @@ was compared one to one against the tables in §3.
 
 ### Summary of the input to gap document 12
 
-**Unimplemented (missing on both sides):** chart, ole, video, container, textart, formObject,
+**Unimplemented (missing on both sides):** ole, video, container, textart, formObject,
 compose/dutmal, master pages (hm master-page) and edit history (hhs). For container, textart,
 formObject and compose, read preserves only the text as a fallback, which write then drops.
 

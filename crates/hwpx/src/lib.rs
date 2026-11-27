@@ -33,3 +33,15 @@ pub use write::{
     write_document_with, write_document_with_limits, write_document_with_report,
     write_document_with_report_with, write_document_with_report_with_limits,
 };
+
+/// Validate a chart's data and emitted DrawingML size before document compilation.
+pub fn validate_chart_part(data: &hwp_model::ChartData) -> std::result::Result<(), String> {
+    data.validate()?;
+    if chart::write(data).len() > chart::MAX_PART {
+        return Err(format!(
+            "chart DrawingML exceeds the {}-byte part limit",
+            chart::MAX_PART
+        ));
+    }
+    Ok(())
+}

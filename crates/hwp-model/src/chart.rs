@@ -71,40 +71,86 @@ impl ChartData {
     pub const MAX_POINTS: usize = 512;
     pub const MAX_LABEL_CHARS: usize = 256;
 
-    pub fn validate(&self) -> Result<(), &'static str> {
+    /// Resolve an authored series or slice color to HWP COLORREF.
+    pub fn display_color(&self, index: usize) -> u32 {
+        const PALETTE: [u32; 8] = [
+            0xb67128, 0x3984db, 0x759047, 0xa45c87, 0x7a8e16, 0xa66e45, 0x5a7cc5, 0x98744d,
+        ];
+        self.series
+            .get(index)
+            .and_then(|series| series.color.as_deref())
+            .and_then(|value| u32::from_str_radix(value.strip_prefix('#')?, 16).ok())
+            .map_or(PALETTE[index % PALETTE.len()], |rgb| {
+                ((rgb & 0xff) << 16) | (rgb & 0xff00) | (rgb >> 16)
+            })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
         if self.series.is_empty() || self.series.len() > Self::MAX_SERIES {
-            return Err("chart requires 1 to 32 series");
+            return Err("chart requires 1 to 32 series".into());
         }
         if self.kind == ChartKind::Scatter && !self.categories.is_empty() {
-            return Err("scatter charts use numeric x_values instead of category labels");
+            return Err("scatter charts use numeric x_values instead of category labels".into());
         }
         let circular = matches!(self.kind, ChartKind::Pie | ChartKind::Doughnut);
         if circular && (!self.x_label.is_empty() || !self.y_label.is_empty()) {
-            return Err("pie and doughnut charts have no axes");
+            return Err("pie and doughnut charts have no axes".into());
         }
         if circular && self.series.len() != 1 {
-            return Err("pie and doughnut charts require exactly one series");
+            return Err("pie and doughnut charts require exactly one series".into());
         }
-        if self.categories.len() > Self::MAX_POINTS
-            || [&self.title, &self.x_label, &self.y_label]
-                .into_iter()
-                .chain(&self.categories)
-                .any(|label| label.chars().count() > Self::MAX_LABEL_CHARS)
-        {
-            return Err("chart category or label limit exceeded");
+        if self.categories.len() > Self::MAX_POINTS {
+            return Err(format!(
+                "categories exceeds the {}-label limit",
+                Self::MAX_POINTS
+            ));
         }
-        for series in &self.series {
-            if series.name.chars().count() > Self::MAX_LABEL_CHARS
-                || series.values.is_empty()
-                || series.values.len() > Self::MAX_POINTS
-                || (!self.categories.is_empty() && series.values.len() != self.categories.len())
-            {
-                return Err("chart points must match the categories and respect the size limits");
+        for (field, value) in [
+            ("title", &self.title),
+            ("x_label", &self.x_label),
+            ("y_label", &self.y_label),
+        ] {
+            if value.chars().count() > Self::MAX_LABEL_CHARS {
+                return Err(format!(
+                    "{field} exceeds the {}-character limit",
+                    Self::MAX_LABEL_CHARS
+                ));
+            }
+        }
+        for (index, label) in self.categories.iter().enumerate() {
+            if label.chars().count() > Self::MAX_LABEL_CHARS {
+                return Err(format!(
+                    "categories[{index}] exceeds the {}-character limit",
+                    Self::MAX_LABEL_CHARS
+                ));
+            }
+        }
+        for (index, series) in self.series.iter().enumerate() {
+            if series.name.chars().count() > Self::MAX_LABEL_CHARS {
+                return Err(format!(
+                    "series[{index}].name exceeds the {}-character limit",
+                    Self::MAX_LABEL_CHARS
+                ));
+            }
+            if series.values.is_empty() || series.values.len() > Self::MAX_POINTS {
+                return Err(format!(
+                    "series[{index}].values requires 1 to {} points",
+                    Self::MAX_POINTS
+                ));
+            }
+            if !self.categories.is_empty() && series.values.len() != self.categories.len() {
+                return Err(format!(
+                    "series[{index}].values has {} points but categories has {} labels",
+                    series.values.len(),
+                    self.categories.len()
+                ));
             }
             if !series.x_values.is_empty()
                 && (self.kind != ChartKind::Scatter || series.x_values.len() != series.values.len())
             {
-                return Err("x_values must match the values of a scatter series");
+                return Err(format!(
+                    "series[{index}].x_values must match the values of a scatter series"
+                ));
             }
             if series
                 .values
@@ -112,24 +158,59 @@ impl ChartData {
                 .chain(&series.x_values)
                 .any(|v| !v.is_finite() || v.abs() > 1e100)
             {
-                return Err("chart values must be finite and within ±1e100");
+                return Err(format!(
+                    "series[{index}] values must be finite and within ±1e100"
+                ));
             }
             if circular
                 && (series.values.iter().any(|v| *v < 0.0)
                     || !series.values.iter().any(|v| *v > 0.0))
             {
-                return Err(
-                    "pie and doughnut charts require nonnegative values and a positive total",
-                );
+                return Err(format!(
+                    "series[{index}] requires nonnegative values and a positive total"
+                ));
             }
             if series.color.as_ref().is_some_and(|color| {
                 !color.strip_prefix('#').is_some_and(|digits| {
                     digits.len() == 6 && digits.bytes().all(|ch| ch.is_ascii_hexdigit())
                 })
             }) {
-                return Err("chart colors use #RRGGBB");
+                return Err(format!("series[{index}].color must use #RRGGBB"));
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_values_identify_the_series_and_constraint() {
+        let mut data = ChartData {
+            kind: ChartKind::Column,
+            title: String::new(),
+            categories: vec!["A".into(), "B".into()],
+            series: vec![ChartSeries {
+                name: "Series".into(),
+                values: vec![1.0, 2.0],
+                x_values: Vec::new(),
+                color: None,
+            }],
+            legend: ChartLegend::None,
+            x_label: String::new(),
+            y_label: String::new(),
+        };
+        for (size, expected) in [
+            (513, "series[0].values requires 1 to 512 points"),
+            (
+                1,
+                "series[0].values has 1 points but categories has 2 labels",
+            ),
+        ] {
+            data.series[0].values = vec![1.0; size];
+            assert_eq!(data.validate().unwrap_err(), expected);
+        }
     }
 }
