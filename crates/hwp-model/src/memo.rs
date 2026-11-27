@@ -85,6 +85,61 @@ pub fn parse_memo_command(command: &str) -> Option<MemoCommand> {
     })
 }
 
+/// Shape id every measured memo command carries (`MEMO/65535/...`).
+pub const MEMO_SHAPE_ID: u16 = 65535;
+
+/// Everything after the author in a measured memo command (`\;;` in all four fixtures).
+pub const MEMO_COMMAND_TAIL: &str = "\\;;";
+
+/// Builds the field command for a memo, the inverse of [`parse_memo_command`].
+///
+/// Measured shape (07 L3): `MEMO/65535/<number>/<FILETIME low>/<FILETIME high>/<author>/...`.
+/// The FILETIME half is UTC. A missing creation time is written as zero ticks, which parses back as
+/// `Some(0)` (1601-01-01), not as an absent time.
+pub fn build_memo_command(number: u32, filetime: Option<u64>, author: &str) -> String {
+    let ft = filetime.unwrap_or(0);
+    format!(
+        "MEMO/{MEMO_SHAPE_ID}/{number}/{}/{}/{author}/{MEMO_COMMAND_TAIL}",
+        ft as u32,
+        (ft >> 32) as u32
+    )
+}
+
+/// The current time as a Windows FILETIME (100 ns ticks since 1601-01-01 UTC).
+pub fn filetime_now() -> u64 {
+    /// Seconds between 1601-01-01 and 1970-01-01.
+    const EPOCH_DIFF_SECS: u64 = 11_644_473_600;
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (elapsed.as_secs() + EPOCH_DIFF_SECS) * 10_000_000 + u64::from(elapsed.subsec_nanos()) / 100
+}
+
+/// HWP5 char-block payload for a memo field begin.
+///
+/// Measured on every memo in the four fixtures: the reversed `%%me` control id followed by zeroed
+/// info bytes. The block itself is `[code][this payload][code]` (07 L1).
+pub fn hwp5_field_begin_payload() -> [u8; 12] {
+    let mut payload = [0u8; 12];
+    payload[..4].copy_from_slice(b"em%%");
+    payload
+}
+
+/// HWP5 char-block payload for a memo field end (07 L4).
+///
+/// `em%` + NUL, a flag byte (`0x05` on the last memo of the paragraph, `0x01` on earlier ones),
+/// `ff ff 00`, then the memo number. The flag is independent of the anchor's span length.
+pub fn hwp5_field_end_payload(number: u32, last: bool) -> [u8; 12] {
+    let mut payload = [0u8; 12];
+    payload[..4].copy_from_slice(b"em%\0");
+    payload[4] = if last { 0x05 } else { 0x01 };
+    payload[5] = 0xff;
+    payload[6] = 0xff;
+    payload[7] = 0x00;
+    payload[8..12].copy_from_slice(&number.to_le_bytes());
+    payload
+}
+
 /// Converts a FILETIME to RFC 3339 UTC with second precision.
 pub fn filetime_to_rfc3339(filetime: u64) -> String {
     // Seconds between 1601-01-01 and 1970-01-01.
@@ -418,5 +473,58 @@ mod tests {
             filetime_to_rfc3339(116_444_736_000_000_000),
             "1970-01-01T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn build_memo_command_round_trips_through_parse() {
+        // The first memo of fixtures/hwp5/memo3.hwp, byte for byte.
+        let command = build_memo_command(
+            1,
+            Some(31_292_991u64 << 32 | 2_485_147_664u64),
+            "yj.lee",
+        );
+        assert_eq!(command, "MEMO/65535/1/2485147664/31292991/yj.lee/\\;;");
+        let parsed = parse_memo_command(&command).unwrap();
+        assert_eq!(parsed.number, 1);
+        assert_eq!(parsed.author, "yj.lee");
+        assert_eq!(parsed.filetime, Some(31_292_991u64 << 32 | 2_485_147_664u64));
+    }
+
+    #[test]
+    fn build_memo_command_writes_zero_time_as_absent() {
+        let command = build_memo_command(3, None, "someone");
+        assert_eq!(command, "MEMO/65535/3/0/0/someone/\\;;");
+        assert_eq!(parse_memo_command(&command).unwrap().filetime, Some(0));
+    }
+
+    #[test]
+    fn hwp5_field_begin_payload_matches_the_measured_block() {
+        // fixtures/hwp5/memo3.hwp, both memos: `em%%` then eight zero bytes.
+        assert_eq!(
+            hwp5_field_begin_payload(),
+            [0x65, 0x6d, 0x25, 0x25, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn hwp5_field_end_payload_flags_the_last_memo() {
+        // fixtures/hwp5/memo3.hwp holds two memos: the first ends 01, the second 05.
+        assert_eq!(
+            hwp5_field_end_payload(1, false),
+            [0x65, 0x6d, 0x25, 0x00, 0x01, 0xff, 0xff, 0x00, 1, 0, 0, 0]
+        );
+        assert_eq!(
+            hwp5_field_end_payload(2, true),
+            [0x65, 0x6d, 0x25, 0x00, 0x05, 0xff, 0xff, 0x00, 2, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn filetime_now_reads_back_as_a_utc_instant() {
+        let now = filetime_now();
+        // Only the stable half is pinned: the value is past 1970 and formats as a 21st-century
+        // instant, so the epoch arithmetic cannot silently drift to the wrong era.
+        assert!(now > 116_444_736_000_000_000, "after 1970");
+        assert!(filetime_to_rfc3339(now).starts_with("20"));
     }
 }
