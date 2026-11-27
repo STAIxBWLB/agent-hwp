@@ -17,8 +17,8 @@ use std::process::{Child, Command, Stdio};
 #[path = "common/nested_tables.rs"]
 mod nested_tables;
 
-/// The 23 tools the MCP surface publishes; must agree with `cli_surface.rs`.
-const EXPECTED_TOOLS: [&str; 23] = [
+/// The 24 tools the MCP surface publishes; must agree with `cli_surface.rs`.
+const EXPECTED_TOOLS: [&str; 24] = [
     "hwp_certify",
     "hwp_compare",
     "hwp_compose",
@@ -36,6 +36,7 @@ const EXPECTED_TOOLS: [&str; 23] = [
     "hwp_new",
     "hwp_put_file",
     "hwp_read",
+    "hwp_redact",
     "hwp_render",
     "hwp_slots",
     "hwp_split",

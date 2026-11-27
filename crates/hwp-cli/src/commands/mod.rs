@@ -18,6 +18,7 @@ pub mod merge;
 pub mod new;
 pub(crate) mod output;
 pub(crate) mod preservation;
+pub mod redact;
 pub mod render;
 pub mod skill;
 pub mod slots;

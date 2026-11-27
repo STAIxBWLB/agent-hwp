@@ -372,6 +372,34 @@ fn real_main() -> anyhow::Result<()> {
             forms,
         ),
         Cmd::Validate { file, json } => commands::validate::run(&file, json),
+        Cmd::Redact {
+            input,
+            output,
+            only,
+            exclude,
+            mask_char,
+            strict_accounts,
+            report,
+            dry_run,
+            verify,
+        } => {
+            let options = hwp_convert::redact::RedactOptions {
+                detectors: hwp_convert::redact::DetectorSet::from_lists(&only, &exclude)
+                    .map_err(anyhow::Error::msg)?,
+                mask_char: hwp_convert::redact::validate_mask_char(&mask_char)
+                    .map_err(anyhow::Error::msg)?,
+                strict_accounts,
+            };
+            commands::redact::run(&commands::redact::RedactRequest {
+                input: &input,
+                output: &output,
+                options,
+                report: report.as_deref(),
+                dry_run,
+                verify,
+                print_dry_run_report: true,
+            })
+        }
         Cmd::Lint {
             file,
             profile,

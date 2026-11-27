@@ -30,6 +30,7 @@
 | `styles <file>` | 이름 있는 스타일 목록 (해석된 속성, `used_by` 문단 세그먼트 id; `--format json`은 `hwp-styles-v1`) |
 | `fill <input> -o <output>` | 충실도 보존 템플릿 채우기(hwpx 패키지 보존) |
 | `validate <file>` | 구조 검증(mimetype·필수 엔트리·XML 파싱) |
+| `redact <input> -o <output>` | 개인정보(rrn·phone·email·card·account·passport·driver)를 글자 수 보존 마스킹, 검출 값 없는 `hwp-redact-report-v1` 보고서; 재검사 0건과 모든 스트림·항목 바이트 검사를 통과할 때만 게시, 검출이 없으면 검증된 사본 게시 |
 | `lint <file>` | 공문서 표기법·구조 규칙 10개를 검사. 기본은 권고이며, `--strict`는 오류 등급이 있을 때 1로 종료하고 `--json`은 `hwp-lint-report-v1`을 출력 |
 | `certify <input> --policy <file> --report <dir>` | 인증 리포트를 원자적으로 게시. [Certification v1](../design/16-certification-v1.ko.md) |
 | `corpus --manifest <file> --report <dir>` | 고정 구조 코퍼스 게이트. [코퍼스 계약](../design/17-structured-corpus-v1.ko.md) |
