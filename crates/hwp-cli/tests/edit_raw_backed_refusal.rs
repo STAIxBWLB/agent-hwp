@@ -156,10 +156,25 @@ fn native_footnote_edit_preserves_untouched_notes() {
 }
 
 #[test]
-fn edit_of_note_with_an_opaque_child_refuses_atomically() {
-    let dir = workdir("opaque");
+fn native_footnote_edit_inside_a_table_cell() {
+    let dir = workdir("cell-footnote");
     let input = hwp5_with_raw_backed_notes(&dir);
-    let mut document = hwp5::read_document(&input).unwrap().document;
+    let output = dir.join("out.hwp");
+    let report = dir.join("report.json");
+    let body_notes = notes(&input);
+    let edited = edit(
+        &input,
+        &output,
+        &report,
+        &["--replace", "각주 예시 2=>각주 예시 X"],
+    );
+    assert!(edited.status.success(), "{}", stderr(&edited));
+    assert!(text(&output).contains("각주 예시 X"));
+    assert_eq!(notes(&output), body_notes);
+}
+
+fn with_opaque_note_child(input: &Path, source: &Path) {
+    let mut document = hwp5::read_document(input).unwrap().document;
     let note = document
         .sections
         .iter_mut()
@@ -185,16 +200,23 @@ fn edit_of_note_with_an_opaque_child_refuses_atomically() {
             children: Vec::new(),
         }],
     });
-    let source = dir.join("opaque.hwp");
     hwp5::write_document(
         &document,
-        &source,
+        source,
         &hwp5::WriteOptions {
             preserve_linesegs: true,
             ..Default::default()
         },
     )
     .unwrap();
+}
+
+#[test]
+fn edit_of_note_with_an_opaque_child_refuses_atomically() {
+    let dir = workdir("opaque");
+    let input = hwp5_with_raw_backed_notes(&dir);
+    let source = dir.join("opaque.hwp");
+    with_opaque_note_child(&input, &source);
     let output = dir.join("out.hwp");
     let report = dir.join("report.json");
     let result = edit(
@@ -206,6 +228,54 @@ fn edit_of_note_with_an_opaque_child_refuses_atomically() {
     assert!(!result.status.success(), "{}", stderr(&result));
     assert!(!output.exists());
     assert_raw_backed_refusal(&read_report(&report), "footnote");
+}
+
+#[test]
+fn fill_writes_supported_note_tables_and_refuses_opaque_children() {
+    let dir = workdir("fill-footnote");
+    let input = hwp5_with_raw_backed_notes(&dir);
+    let mut document = hwp5::read_document(&input).unwrap().document;
+    document.sections.truncate(1);
+    document.sections[0].paragraphs.retain(|paragraph| {
+        paragraph.controls.iter().any(|control| {
+            matches!(control, hwp_model::Control::Generic(generic) if generic.ctrl_id == *b"fn  ")
+        })
+    });
+    let (template, _) = add_table_to_native_list(document, *b"fn  ", &dir);
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        r#"{"tables":[{"table":0,"start_row":0,"rows":[["Updated cell"]]}]}"#,
+    )
+    .unwrap();
+    let fill = |source: &Path, output: &Path| {
+        hwp()
+            .arg("fill")
+            .arg(source)
+            .arg("--data")
+            .arg(&data)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap()
+    };
+    let output = dir.join("filled.hwp");
+    let filled = fill(&template, &output);
+    assert!(filled.status.success(), "{}", stderr(&filled));
+    assert!(text(&output).contains("Updated cell"));
+
+    let opaque = dir.join("opaque.hwp");
+    with_opaque_note_child(&template, &opaque);
+    let untouched = std::fs::read(&output).unwrap();
+    let refused = fill(&opaque, &output);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("raw_backed_edit"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(stderr(&refused).contains(".hwpx"), "{}", stderr(&refused));
+    assert_eq!(std::fs::read(&output).unwrap(), untouched);
 }
 
 /// The same edit is written when the output is `.hwpx`, which emits from the edited paragraphs,
@@ -361,17 +431,29 @@ fn native_text_boxes_headers_footers_and_notes_verify() {
     }
 }
 
-#[test]
-fn native_text_box_table_cell_verifies_and_keeps_frame() {
+fn native_list_records(
+    records: &mut Vec<hwp_model::OpaqueRecord>,
+    id: [u8; 4],
+) -> &mut Vec<hwp_model::OpaqueRecord> {
+    if id == *b"gso " {
+        &mut records
+            .iter_mut()
+            .find(|r| r.tag == hwp5::record::tag::SHAPE_COMPONENT)
+            .unwrap()
+            .children
+    } else {
+        records
+    }
+}
+
+fn add_table_to_native_list(
+    mut doc: hwp_model::Document,
+    id: [u8; 4],
+    dir: &Path,
+) -> (PathBuf, Vec<hwp_model::OpaqueRecord>) {
     use hwp_model::Control;
     use hwp5::record::{ScanMode, scan_stream, tag};
 
-    let fixture = repo().join("fixtures/hwp5/624-text-box.hwp");
-    if fixture_skip::fixture_missing(&fixture) {
-        return;
-    }
-    let dir = workdir("box-table");
-    let mut doc = hwp5::read_document(&fixture).unwrap().document;
     let anchor = "Body anchor";
     let anchor_index = doc.sections[0].paragraphs.len();
     doc.sections[0].paragraphs.push(hwp_model::Paragraph {
@@ -382,13 +464,16 @@ fn native_text_box_table_cell_verifies_and_keeps_frame() {
     let paragraphs = &mut doc.sections[0].paragraphs;
     let table_owner = paragraphs
         .iter()
-        .position(|paragraph| {
+        .enumerate()
+        .skip(anchor_index + 1)
+        .find(|(_, paragraph)| {
             paragraph
                 .controls
                 .iter()
                 .any(|control| matches!(control, Control::Table(_)))
         })
-        .unwrap();
+        .unwrap()
+        .0;
     let Control::Table(table) = &mut paragraphs[table_owner].controls[0] else {
         panic!("expected an appended table");
     };
@@ -418,28 +503,24 @@ fn native_text_box_table_cell_verifies_and_keeps_frame() {
     paragraphs.remove(table_owner);
     paragraphs.remove(anchor_index);
     paragraphs.last_mut().unwrap().header.chars_flags |= 0x80;
-    let text_box = paragraphs
+    let generic = paragraphs
         .iter_mut()
         .flat_map(|paragraph| &mut paragraph.controls)
         .find_map(|control| match control {
-            Control::Generic(generic) if generic.ctrl_id == *b"gso " => Some(generic),
+            Control::Generic(generic) if generic.ctrl_id == id => Some(generic),
             _ => None,
         })
         .unwrap();
-    let shape = text_box
-        .raw_children
-        .iter_mut()
-        .find(|r| r.tag == tag::SHAPE_COMPONENT)
-        .unwrap();
-    let header = shape
-        .children
+    let records = native_list_records(&mut generic.raw_children, id);
+    let header = records
         .iter()
         .position(|r| r.tag == tag::LIST_HEADER)
         .unwrap();
-    shape.children[header].data[..4].copy_from_slice(&3_i32.to_le_bytes());
-    shape.children.insert(header + 1, table_record);
-    let before = text_box.raw_children.clone();
-    let source = dir.join("box-table.hwp");
+    let count = i32::from_le_bytes(records[header].data[..4].try_into().unwrap());
+    records[header].data[..4].copy_from_slice(&(count + 1).to_le_bytes());
+    records.insert(header + 1, table_record);
+    let before = generic.raw_children.clone();
+    let source = dir.join("native-table.hwp");
     hwp5::write_document(
         &doc,
         &source,
@@ -450,35 +531,67 @@ fn native_text_box_table_cell_verifies_and_keeps_frame() {
     )
     .unwrap();
 
-    let output = dir.join("out.hwp");
-    let result = edit(
-        &source,
-        &output,
-        &dir.join("report.json"),
-        &["--set-cell", "0:0:0=Updated cell", "--verify"],
-    );
-    assert!(result.status.success(), "{}", stderr(&result));
-    let doc = hwp5::read_document(&output).unwrap().document;
-    let text_box = doc.sections[0]
-        .paragraphs
-        .iter()
-        .flat_map(|paragraph| &paragraph.controls)
-        .find_map(|control| match control {
-            Control::Generic(generic) if generic.ctrl_id == *b"gso " => Some(generic),
-            _ => None,
-        })
-        .unwrap();
-    let mut after = text_box.raw_children.clone();
-    let mut before = before;
-    for records in [&mut before, &mut after] {
-        let shape = records
-            .iter_mut()
-            .find(|r| r.tag == tag::SHAPE_COMPONENT)
+    (source, before)
+}
+
+#[test]
+fn native_table_cell_edits_verify_and_keep_the_enclosing_records() {
+    use hwp_model::Control;
+    use hwp5::record::tag;
+
+    for (fixture, id, kind) in [
+        ("text-box", *b"gso ", "text-box"),
+        ("header-footer", *b"head", "header"),
+        ("header-footer", *b"foot", "footer"),
+        ("footnote-endnote", *b"fn  ", "footnote"),
+        ("footnote-endnote", *b"en  ", "endnote"),
+    ] {
+        let fixture = repo().join(format!("fixtures/hwp5/624-{fixture}.hwp"));
+        if fixture_skip::fixture_missing(&fixture) {
+            continue;
+        }
+        let dir = workdir(&format!("{kind}-table"));
+        let doc = hwp5::read_document(&fixture).unwrap().document;
+        let (source, mut before) = add_table_to_native_list(doc, id, &dir);
+        let output = dir.join("out.hwp");
+        let result = edit(
+            &source,
+            &output,
+            &dir.join("report.json"),
+            &["--set-cell", "0:0:0=Updated cell", "--verify"],
+        );
+        assert!(result.status.success(), "{kind}: {}", stderr(&result));
+        let doc = hwp5::read_document(&output).unwrap().document;
+        let generic = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                Control::Generic(generic) if generic.ctrl_id == id => Some(generic),
+                _ => None,
+            })
             .unwrap();
-        shape.children.retain(|r| r.tag != tag::PARA_HEADER);
+        let table = generic.paragraph_lists[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            table.cells[0].paragraphs[0].own_text().trim(),
+            "Updated cell",
+            "{kind}"
+        );
+        let mut after = generic.raw_children.clone();
+        for records in [&mut before, &mut after] {
+            native_list_records(records, id).retain(|r| r.tag != tag::PARA_HEADER);
+        }
+        assert_eq!(before, after, "{kind}");
+        save_hancom_fixture(&output, &format!("{kind}-table-cell-edited.hwp"));
     }
-    assert_eq!(before, after);
-    save_hancom_fixture(&output, "text-box-table-cell-edited.hwp");
 }
 
 /// Runs `edit --ops` with a typed batch against `input` and returns (output, report).

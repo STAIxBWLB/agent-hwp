@@ -679,7 +679,7 @@ fn refusing_cross_format_events(
 
 /// #577: an edit changed paragraphs the HWP5 writer will not write.
 #[derive(Debug)]
-struct RawBackedEditRefusal {
+pub(crate) struct RawBackedEditRefusal {
     /// `(kind, count)`: how many controls of each kind hold a changed paragraph.
     controls: Vec<(&'static str, usize)>,
 }
@@ -716,7 +716,7 @@ fn raw_backed_kind(ctrl_id: &[u8; 4]) -> &'static str {
 
 /// Refuse unsupported changes to mirrored native lists. Match by the saved
 /// records so structural edits in the same batch can move the containing paragraph.
-fn raw_backed_edit_refusal(
+pub(crate) fn raw_backed_edit_refusal(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
 ) -> Option<RawBackedEditRefusal> {
@@ -8631,7 +8631,8 @@ mod tests {
         let mut edited = original.clone();
         hwp_convert::set_cell(&mut edited, 0, 0, 0, "ZZ").expect("the table is reachable");
         assert_ne!(original, edited, "set_cell changed the mirrored table");
-        let refusal = raw_backed_edit_refusal(&original, &edited).expect("the edit is dropped");
+        let refusal =
+            raw_backed_edit_refusal(&original, &edited).expect("this unsupported list is detected");
         assert_eq!(refusal.controls, vec![("shape_or_text_box", 1)]);
 
         let modeled = document_with_a_table_in_a_text_box(false);

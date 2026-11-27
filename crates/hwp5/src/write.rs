@@ -389,24 +389,24 @@ fn stage_raw_list(
     add_tracking_tail: bool,
     report: &mut WriteReport,
 ) -> Result<()> {
-    let records = match parent {
-        Some(index) => &mut control.raw_children[index].children,
-        None => &mut control.raw_children,
+    let raw: Vec<_> = control.raw_children.iter().map(opaque_to_node).collect();
+    let saved = crate::body_text::parse_generic(
+        control.ctrl_id,
+        control.data.clone(),
+        &raw,
+        &mut Vec::new(),
+    );
+    let [saved_list] = saved.paragraph_lists.as_slice() else {
+        return Ok(());
     };
-    let source: Vec<_> = records[header + 1..end]
-        .iter()
-        .map(opaque_to_node)
-        .collect();
-    let mut parse_warnings = Vec::new();
-    let original: Vec<_> = source
-        .iter()
-        .map(|record| crate::body_text::parse_paragraph(record, &mut parse_warnings))
-        .collect();
+    let original = &saved_list.paragraphs;
     let intended = &intended.paragraph_lists[0].paragraphs;
-    if original == *intended {
+    // The reader can flatten paragraphs from sibling containers into this list.
+    // Keep that raw subtree intact unless the mirror matches the writable slot.
+    if original.len() != end - header - 1 || original == intended {
         return Ok(());
     }
-    if !raw_list_paragraphs_supported(&original) || !raw_list_paragraphs_supported(intended) {
+    if !raw_list_paragraphs_supported(original) || !raw_list_paragraphs_supported(intended) {
         return Err(crate::error::Hwp5Error::SourceRewrite(
             "native list has an unsupported child control".into(),
         ));
@@ -418,7 +418,16 @@ fn stage_raw_list(
         .ok_or_else(|| {
             crate::error::Hwp5Error::SourceRewrite("invalid native list count".into())
         })?;
-    let matches = match_paragraphs(&original, intended);
+    let source = match parent {
+        Some(index) => &raw[index].children,
+        None => &raw,
+    };
+    let source = &source[header + 1..end];
+    let records = match parent {
+        Some(index) => &mut control.raw_children[index].children,
+        None => &mut control.raw_children,
+    };
+    let matches = match_paragraphs(original, intended);
     set_last_para_flag(&mut paragraphs);
     let replacement: Vec<_> = paragraphs
         .iter()
@@ -4741,6 +4750,32 @@ mod tests {
         assert_eq!(&control.raw_children[0].data[4..], &header_data[4..]);
         assert_eq!(control.raw_children[1].data[3] & 0x80, 0);
         assert_eq!(control.raw_children[2].data[3] & 0x80, 0x80);
+    }
+
+    #[test]
+    fn raw_note_with_paragraph_in_sibling_container_keeps_all_records() {
+        let mut report = WriteReport::new();
+        let paragraph = emit_paragraph(&Paragraph::default(), false, true, true, &mut report);
+        let records = [
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: synthesized_note_list_header(1),
+                children: Vec::new(),
+            },
+            paragraph.clone(),
+            RecordNode {
+                tag: tag::CTRL_DATA,
+                data: vec![42],
+                children: vec![paragraph],
+            },
+        ];
+        let mut control =
+            crate::body_text::parse_generic(*b"fn  ", Vec::new(), &records, &mut Vec::new());
+        assert_eq!(control.paragraph_lists[0].paragraphs.len(), 2);
+        let intended = control.clone();
+        let slot = raw_list_slot(&intended).unwrap();
+        stage_raw_list(&mut control, &intended, slot, true, &mut report).unwrap();
+        assert_eq!(control.raw_children, intended.raw_children);
     }
 
     fn paragraph_id_record(id: u32) -> RecordNode {

@@ -796,7 +796,7 @@ fn parse_cell_header(data: &[u8]) -> Result<Cell> {
     })
 }
 
-fn parse_generic(
+pub(crate) fn parse_generic(
     ctrl_id: [u8; 4],
     data: Vec<u8>,
     children: &[RecordNode],

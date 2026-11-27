@@ -52,9 +52,9 @@ The local-only `624-text-box.hwp`, `624-header-footer.hwp` and `624-footnote-end
 come from the Hancom-saved files in [hwp-swift CoreHwp fixtures](https://github.com/sboh1214/hwp-swift/tree/eebe90d160b3d437b97d0bb1ea7a5752f419f225/Tests/CoreHwpTests/Fixtures).
 Copy `text-box/document.hwp`, `header-footer/document.hwp` and
 `footnote-endnote/document.hwp` to the corresponding filenames in `fixtures/hwp5/`.
-The native edit regression also constructs a table inside the saved rectangle at run time.
+The native edit regression also constructs tables inside the saved rectangle, header, footer and notes at run time.
 Set `HWP_NATIVE_EDIT_CHECK_DIR` to a directory outside the tracked tree when running
-`cargo test -p agent-hwp --test edit_raw_backed_refusal native_text_box` to retain the
+`cargo test -p agent-hwp --test edit_raw_backed_refusal native_` to retain the
 verified output files for a Hancom Office open check.
 
 ## hwpx/
