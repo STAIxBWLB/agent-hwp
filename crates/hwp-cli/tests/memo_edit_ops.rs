@@ -65,7 +65,7 @@ fn anchor_paragraph(doc: &hwp_model::Document) -> usize {
         .expect("no paragraph can carry a memo anchor")
 }
 
-fn memo<'a>(memos: &'a [Memo], number: u32) -> &'a Memo {
+fn memo(memos: &[Memo], number: u32) -> &Memo {
     memos
         .iter()
         .find(|m| m.number == number)
