@@ -1110,23 +1110,10 @@ fn margin_attr(value: u16) -> u32 {
     }
 }
 
-/// 수식 → `<hp:equation>`(run 직속). 자식 순서는 개체 공통 규약(sz → pos → outMargin,
-/// 그 뒤 개체 전용)을 따른다 — 한컴 공식 모델 `AbstractShapeObjectType`과 동일.
-///
-/// 소스별 충실도 3단:
-/// 1. hwpx 출신 — 시작 태그 속성(`raw_attrs`)과 공통 자식(`raw_props`)을 원문 그대로
-///    되쓴다. 글자색·baseUnit·수식 글꼴·zOrder·배치기준이 왕복에서 살아남는다.
-/// 2. hwp5 출신 — 공통 자식은 gso 공통 헤더(`g.data`)로 재구성한다. 배치기준(PAGE/PARA)·
-///    정렬·z-order가 헤더에 있으므로 `gso_pos_xml`을 그대로 쓴다(그림·표와 같은 경로).
-/// 3. 합성(md/JSON 출신) — 아래 표준값. `lineMode`는 한컴 모델 열거값 LINE|CHAR 중
-///    기본값 CHAR다(`enumdef.h` g_EquationLineList).
-///
-/// ⚠ 3의 수식 전용 상수(version·baseLine·baseUnit·font)는 **정답지 미확보 상태의 표준
-/// 추정값**이다. 실기에서 수식이 깨져 보이면 정품 저장본 속성으로 교체할 것
-/// (12-feature-gaps.md GE-14).
+/// Reconstruct equation attributes from the IR when there is no original HWPX
+/// start tag. Source EQEDIT values feed the same attributes as native HWPX values.
 fn generated_equation_attrs(g: &GenericControl, eq: &Equation) -> String {
-    // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
-    // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
+    // Keep the existing wrapping choices for inline and floating synthesis.
     let wrap = if eq.inline {
         "SQUARE"
     } else {
