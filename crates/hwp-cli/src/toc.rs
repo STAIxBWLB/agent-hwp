@@ -132,7 +132,7 @@ fn paragraph_pages(
 /// Refuses a TOC that does not fit on its page. The TOC table is placed inline (treat as
 /// character), and an inline table never splits: the renderer clips whatever runs past the page,
 /// so rows would be lost silently. Every cell of the table must lie on the TOC's page inside the
-/// page height.
+/// body box (above the bottom and footer margins).
 fn toc_fits_one_page(
     doc: &Document,
     list: &hwp_render::display::DisplayList,
@@ -181,10 +181,13 @@ fn toc_fits_one_page(
         match placed.next() {
             None => true,
             Some(row) => {
-                let height = list.pages.get(row.page).map_or(0.0, |p| p.height_pt);
+                let bottom = list
+                    .pages
+                    .get(row.page)
+                    .map_or(0.0, |p| body_bottom_pt(doc, p.height_pt));
                 Some(row.page) != page
                     || placed.next().is_some()
-                    || row.bbox.is_some_and(|b| b.y1 > height)
+                    || row.bbox.is_some_and(|b| b.y1 > bottom)
             }
         }
     });
@@ -194,6 +197,22 @@ fn toc_fits_one_page(
         );
     }
     Ok(())
+}
+
+/// The bottom of section 0's body box on a page `page_height_pt` tall: the limit the renderer
+/// applies to an indivisible table (`layout.rs`, `page_h = body_bottom - body_top`). It uses the
+/// same margin sums as `hwp_render::lineseg::body_box` (bottom margin plus footer margin), so a
+/// TOC that ends over the footer or page-number band counts as not fitting. Without a page
+/// definition the paper height is the bound, as before.
+fn body_bottom_pt(doc: &Document, page_height_pt: f32) -> f32 {
+    doc.sections
+        .first()
+        .and_then(|s| s.section_def())
+        .and_then(|d| d.page)
+        .map_or(page_height_pt, |page| {
+            let bottom_hu = page.margin_bottom.0 + page.margin_footer.0;
+            page_height_pt - bottom_hu as f32 / 100.0
+        })
 }
 
 /// Fills `plan`'s TOC in `doc` with each heading's displayed body page. Body pages count from 1
@@ -260,5 +279,52 @@ mod tests {
         let (pages, fallbacks) = paragraph_pages(&doc, &layout, &[0], None).expect("layout");
         assert_eq!(pages, [0]);
         assert!(fallbacks > 0, "fallbacks = {fallbacks}");
+    }
+
+    /// The fit check bounds the TOC by the body box, not the paper: a TOC whose last row ends
+    /// over the footer band (below the body bottom, above the paper bottom) is refused. The
+    /// same layout is checked against two page definitions that differ only in the bottom
+    /// margin, so the result does not depend on fonts.
+    #[test]
+    fn a_toc_ending_over_the_footer_band_does_not_fit() {
+        let mut md = String::new();
+        for i in 1..=8 {
+            md.push_str(&format!("## {i}장\n\n본문.\n\n"));
+        }
+        let mut doc = hwp_convert::from_markdown(&md);
+        let plan = hwp_convert::report_blocks::insert_toc(&mut doc).expect("toc");
+        let mut store = hwp_render::FontStore::new_isolated();
+        let mut warnings = hwp_render::RenderIssueAccumulator::new();
+        let (list, map) =
+            hwp_render::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+        toc_fits_one_page(&doc, &list, &map, plan.table_paragraph, "--toc").expect("fits");
+
+        let toc_bottom = map
+            .rows
+            .iter()
+            .filter(|r| r.page == 0)
+            .filter_map(|r| r.bbox.map(|b| b.y1))
+            .fold(0.0_f32, f32::max);
+        let paper = list.pages[0].height_pt;
+        assert!(toc_bottom + 20.0 < paper, "{toc_bottom} vs {paper}");
+        // Move the body bottom to 10pt above the TOC's last row, keeping the paper.
+        let mut tight = doc.clone();
+        let page = tight.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+            .find_map(|c| match c {
+                hwp_model::Control::SectionDef(sd) => sd.page.as_mut(),
+                _ => None,
+            })
+            .expect("page def");
+        let band_hu = ((paper - toc_bottom + 10.0) * 100.0) as i32;
+        page.margin_bottom = hwp_model::HwpUnit(band_hu - page.margin_footer.0);
+        let err = toc_fits_one_page(&tight, &list, &map, plan.table_paragraph, "--toc")
+            .expect_err("a TOC over the footer band must not fit");
+        assert!(
+            err.to_string().contains("목차 항목이 한 쪽을 넘습니다"),
+            "{err}"
+        );
     }
 }

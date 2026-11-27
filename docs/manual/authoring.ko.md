@@ -98,7 +98,8 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   지정하지 않으면 대체 글꼴 경고가 나오고 한글과 쪽 나눔이 다를 수 있다.
 - DocumentSpec v2에서는 `"report_blocks": {"toc": true, "section_strips": true}`. 제목은 스타일
   이름이 `개요 2` 또는 `개요 3`인 문단이다.
-- 제한: 목차는 한 쪽에 들어가야 한다(글자처럼 취급하는 표는 쪽을 넘겨 나뉘지 않는다). 더 길면
+- 제한: 목차는 첫 쪽 본문 영역(아래 여백과 꼬리말 여백 위)에 들어가야 한다(글자처럼 취급하는 표는
+  쪽을 넘겨 나뉘지 않는다). 더 길면
   해결 방법과 함께 거부한다. 첫 구역의 제목만 목록에 넣는다. DocumentSpec의 `page_number.start`를 1이 아닌 값으로
   주면 목차의 1부터 다시 시작과 충돌하므로 `toc`와 함께 쓸 때는 지정하지 않는다. `.hwp` 출력의
   줄 배치 캐시는 `HWP_FONT_DIR`만으로 합성되며, `--font-dir`는 목차 레이아웃 계산에만 쓰이므로

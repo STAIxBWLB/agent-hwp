@@ -435,7 +435,7 @@ fn a_toc_taller_than_one_page_is_refused() {
 }
 
 /// A numbered heading that is the document's first block (its paragraph carries the section
-/// definitions) still becomes a strip, and with `--toc` the strip that starts the body (and so
+/// definitions, and under `--preset report` the page number) still becomes a strip, and with `--toc` the strip that starts the body (and so
 /// carries the page-number restart) still reads back as its heading.
 #[test]
 fn a_first_block_strip_survives_definitions_and_the_page_restart() {
@@ -444,6 +444,15 @@ fn a_first_block_strip_survives_definitions_and_the_page_restart() {
     for (flags, label) in [
         (&["--section-strips"][..], "strips"),
         (&["--section-strips", "--toc"][..], "strips+toc"),
+        // `--preset report` adds a page number (pgnp) to the first paragraph.
+        (
+            &["--section-strips", "--preset", "report"][..],
+            "strips+report",
+        ),
+        (
+            &["--section-strips", "--toc", "--preset", "report"][..],
+            "strips+toc+report",
+        ),
     ] {
         for ext in ["hwpx", "hwp"] {
             let out = tmp(&format!("first-{}.{ext}", label.replace('+', "-")));

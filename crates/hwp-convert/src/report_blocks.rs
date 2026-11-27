@@ -403,21 +403,18 @@ fn prepend_page_restart(para: &mut Paragraph) {
         .iter()
         .take_while(|c| matches!(c, Control::SectionDef(_)) || c.ctrl_id() == *b"cold")
         .count();
-    let char_at = para
-        .chars
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| matches!(c, HwpChar::ExtCtrl { .. }))
-        .nth(lead)
-        .map_or_else(
-            || {
-                para.chars
-                    .iter()
-                    .position(|c| !matches!(c, HwpChar::ExtCtrl { .. }))
-                    .unwrap_or(para.chars.len())
-            },
-            |(i, _)| i,
-        );
+    // Right after the lead-th definition character, or at the very start when there is none.
+    // Never before a later extended control (a footnote or hyperlink after the text).
+    let char_at = match lead.checked_sub(1) {
+        None => 0,
+        Some(last) => para
+            .chars
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| matches!(c, HwpChar::ExtCtrl { .. }))
+            .nth(last)
+            .map_or(para.chars.len(), |(i, _)| i + 1),
+    };
     let mut payload = vec![0u8; 12];
     payload[..4].copy_from_slice(b"onwn");
     let marker = HwpChar::ExtCtrl {
@@ -618,9 +615,11 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
 }
 
 /// Controls a strip paragraph may hold besides its table without changing what it shows: the
-/// section/column definitions of a first block and the TOC's page-number restart.
+/// section/column definitions of a first block, its page-number position (`--preset report`)
+/// and the TOC's page-number restart.
 pub fn is_strip_neutral_control(control: &Control) -> bool {
-    matches!(control, Control::SectionDef(_)) || matches!(&control.ctrl_id(), b"cold" | b"nwno")
+    matches!(control, Control::SectionDef(_))
+        || matches!(&control.ctrl_id(), b"cold" | b"nwno" | b"pgnp")
 }
 
 /// Whether the layout gives `para` a segment of its own: any text, or any control other than
@@ -706,6 +705,28 @@ mod tests {
         for (i, p) in paras.iter().enumerate().skip(1) {
             assert_eq!(p.header.break_type & 0x03, 0, "paragraph {i}");
         }
+    }
+
+    /// With no leading definitions the restart goes at the very start of the paragraph, never
+    /// next to a later extended control such as a footnote after the text.
+    #[test]
+    fn the_page_restart_never_lands_mid_paragraph() {
+        let d = doc("첫 문단\n\n본문 앞[^1] 뒤\n\n[^1]: 각주\n");
+        let mut para = d.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| {
+                p.controls.iter().all(|c| !is_strip_neutral_control(c)) && !p.controls.is_empty()
+            })
+            .expect("a body paragraph with a footnote")
+            .clone();
+        prepend_page_restart(&mut para);
+        assert!(
+            matches!(para.chars[0], HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == *b"nwno"),
+            "{:?}",
+            &para.chars[..3]
+        );
+        assert_eq!(para.controls[0].ctrl_id(), *b"nwno");
     }
 
     #[test]
