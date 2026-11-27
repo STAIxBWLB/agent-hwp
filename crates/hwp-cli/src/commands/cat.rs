@@ -8,6 +8,7 @@ use std::fmt;
 use std::io::{BufRead as _, Read as _};
 use std::path::Path;
 
+use anyhow::Context as _;
 use hwp_model::Document;
 use zeroize::Zeroizing;
 
@@ -193,6 +194,9 @@ pub fn load_document_with_options(
             .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패 ({}): {e}", path.display()))
             .map_err(Into::into);
     }
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        return load_legacy(path, legacy).map_err(Into::into);
+    }
     match detect(path)? {
         FileFormat::Hwp5 => {
             let result = hwp5::read_document_with_options(
@@ -238,6 +242,27 @@ pub fn load_document_with_options(
             }
             Ok(result.document)
         }
+    }
+}
+
+/// Lowers a read-only legacy input (GJ-2 HWPML, GJ-3 HWP 3.x) into the IR.
+fn load_legacy(path: &Path, legacy: crate::format::LegacyFormat) -> anyhow::Result<Document> {
+    use crate::format::LegacyFormat;
+    match legacy {
+        LegacyFormat::Hml => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("파일을 읽을 수 없습니다: {}", path.display()))?;
+            let result = hwpx::read_hml(&bytes)
+                .map_err(|e| anyhow::anyhow!("{}: HWPML 읽기 실패: {e}", path.display()))?;
+            for w in &result.warnings {
+                eprintln!("경고: {w}");
+            }
+            Ok(result.document)
+        }
+        LegacyFormat::Hwp3 => anyhow::bail!(
+            "{}: HWP 3.x 읽기는 아직 지원하지 않습니다 (GJ-3)",
+            path.display()
+        ),
     }
 }
 

@@ -84,6 +84,10 @@ fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u6
     {
         return Ok(None);
     }
+    if crate::format::detect_legacy(input)?.is_some() {
+        // Legacy inputs carry no password protection this reader accepts.
+        return Ok(None);
+    }
     match crate::format::detect(input)? {
         crate::format::FileFormat::Hwp5 => {
             let container = hwp5::Hwp5Container::open(input)?;
@@ -701,19 +705,24 @@ fn execute_with_preloaded_document(
         return Ok(report);
     }
 
-    let source_format = crate::format::detect(input)?;
+    // `None` = read-only legacy source (HWPML, HWP 3.x): no native container to preserve,
+    // compare against or snapshot, so every container-aware branch below is skipped.
+    let source_format = match crate::format::detect_legacy(input)? {
+        Some(_) => None,
+        None => Some(crate::format::detect(input)?),
+    };
     let same_native_format = matches!(
         (source_format, target),
-        (crate::format::FileFormat::Hwp5, ConvertFormat::Hwp)
-            | (crate::format::FileFormat::Hwpx, ConvertFormat::Hwpx)
+        (Some(crate::format::FileFormat::Hwp5), ConvertFormat::Hwp)
+            | (Some(crate::format::FileFormat::Hwpx), ConvertFormat::Hwpx)
     );
-    let password_unlocked_hwp5 = source_format == crate::format::FileFormat::Hwp5
+    let password_unlocked_hwp5 = source_format == Some(crate::format::FileFormat::Hwp5)
         && matches!(target, ConvertFormat::Hwp)
         && options.password.is_some()
         && hwp5::Hwp5Container::open(input)?
             .file_header()
             .is_encrypted();
-    let password_unlocked_hwpx = source_format == crate::format::FileFormat::Hwpx
+    let password_unlocked_hwpx = source_format == Some(crate::format::FileFormat::Hwpx)
         && matches!(target, ConvertFormat::Hwpx)
         && options.password.is_some()
         && {
@@ -777,7 +786,7 @@ fn execute_with_preloaded_document(
                 },
             )?,
             ConvertFormat::Hwp
-                if source_format == crate::format::FileFormat::Hwp5
+                if source_format == Some(crate::format::FileFormat::Hwp5)
                     && preserve_same_native_container =>
             {
                 write_hwp_preserving_source(source, &doc, &doc, staged, preserve_layout, false)?
@@ -797,13 +806,15 @@ fn execute_with_preloaded_document(
                     ConvertFormat::Hwp => crate::format::FileFormat::Hwp5,
                     _ => crate::format::FileFormat::Hwpx,
                 };
-                report.preservation.extend(
-                    crate::commands::preservation::inspect_cross_format_container(
-                        &doc,
-                        source_format,
-                        target_format,
-                    ),
-                );
+                if let Some(source_format) = source_format {
+                    report.preservation.extend(
+                        crate::commands::preservation::inspect_cross_format_container(
+                            &doc,
+                            source_format,
+                            target_format,
+                        ),
+                    );
+                }
             }
             let output_document = load_document(staged)
                 .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
@@ -831,12 +842,12 @@ fn execute_with_preloaded_document(
         Ok(())
     };
     let snapshot_bound = preloaded_source_sha256.is_some()
-        || (source_format == crate::format::FileFormat::Hwp5
+        || (source_format == Some(crate::format::FileFormat::Hwp5)
             && matches!(target, ConvertFormat::Hwp));
     let write_report = if snapshot_bound {
         let snapshot_limit = match source_format {
-            crate::format::FileFormat::Hwp5 => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
-            crate::format::FileFormat::Hwpx => {
+            Some(crate::format::FileFormat::Hwp5) => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+            Some(crate::format::FileFormat::Hwpx) | None => {
                 hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes
             }
         };

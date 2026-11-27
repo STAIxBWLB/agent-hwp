@@ -4,6 +4,7 @@
 //! character (8 WCHAR) plus `Control`, sharing position arithmetic and extraction code between the two
 //! formats.
 pub mod header;
+pub mod hml;
 pub(crate) mod password;
 pub mod section;
 mod xml;

@@ -23,6 +23,7 @@ pub use package::{
     NATIVE_PACKAGE_LIMITS_PROFILE_NAME, NATIVE_PACKAGE_LIMITS_RATIONALE, PackageLimits,
     PackageLimitsProfile,
 };
+pub use read::hml::{HmlReadResult, looks_like_hml, read_hml};
 pub use read::{
     ReadOptions, ReadResult, parse_content_meta, read_document, read_document_with_options,
     read_structure,
