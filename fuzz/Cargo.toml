@@ -1,0 +1,48 @@
+[package]
+name = "agent-hwp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hwp5 = { path = "../crates/hwp5" }
+hwpx = { path = "../crates/hwpx" }
+hwp-model = { path = "../crates/hwp-model" }
+hwp-convert = { path = "../crates/hwp-convert" }
+hwp-render = { path = "../crates/hwp-render" }
+
+[workspace]
+members = ["."]
+resolver = "3"
+
+[[bin]]
+name = "fuzz_hwp5_read"
+path = "fuzz_targets/fuzz_hwp5_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hwpx_read"
+path = "fuzz_targets/fuzz_hwpx_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_wmf_dib"
+path = "fuzz_targets/fuzz_wmf_dib.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_equation_markdown"
+path = "fuzz_targets/fuzz_equation_markdown.rs"
+test = false
+doc = false
+bench = false
