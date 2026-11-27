@@ -387,6 +387,7 @@ G4 (Hancom 12.30.0 build 6544, #540):
 | L2 | 메모 본문 위치 | HWP5: `MEMO_LIST`(0x5D, u32 메모 번호) + LIST_HEADER + 본문 문단은 앵커 옆이 아니라 항상 구역 **마지막** 문단의 레코드에 있다. HWPX: 본문은 `fieldBegin type="MEMO"` 안의 `subList` | HWP5 라이터는 HWP5에서 읽은 메모를 그대로 유지하고 `MEMO_LIST` 없는 `%%me`는 절대 내보내지 않는다(원본이 아닌 메모 앵커는 FIELD_END와 함께 `control_removed` 유형 손실로 제거). HWPX 라이터는 읽은 메모 `fieldBegin`을 원본 그대로 다시 쓰고 원래 id로 닫는다. 형식 간 메모는 한글에서 합성을 검증하기 전까지 유형 손실 | 같은 4개 문서 |
 | L3 | 메모 작성 시각 | 필드 명령은 두 컨테이너 모두 `MEMO/65535/<번호>/<FILETIME 하위>/<FILETIME 상위>/<작성자>/...`이고 FILETIME은 UTC. HWPX `CreateDateTime` 파라미터는 `Z`가 붙은 현지 시각 | FILETIME만 쓴다(`Memo::created_utc`) | 같은 4개 문서, 저장 시각과 대조 |
 | L4 | HWP5 메모 FIELD_END 페이로드 | `em%\0`, 플래그 1바이트(마지막 메모 05, 앞 메모 01, 구간 길이와 무관), `ff ff 00`, u32 메모 번호 | 불투명하게 유지하고 그대로 복사하며 합성하지 않는다 | 같은 4개 문서 |
+| L5 | 메모 앵커의 인스턴스 id(HWP5 `CTRL_HEADER`, HWPX `fieldBegin id`) | HWP5 `CTRL_HEADER`는 `[u32 id][u32 메모 번호]`로 끝나고, 그 id는 HWPX `fieldBegin id`와 같은 계열의 문서 고유 필드 인스턴스 id다. memo1/memo2에서 `0x4B006638`, `0x4B006639`, `0x4B00663A` 대 `0x4B006635`, `0x4B006636`, `0x4B006637`, memo3에서 `0x4B017F00`, `0x4B017F01` 대 `0x4B017F02`, `0x4B017F03`, memo4에서 `0x4B017BCE` 대 `0x4B017BCF`. 한 파일 안에서 메모마다 증가하고, 값의 차이는 두 컨테이너를 각각 따로 저장한 결과다 | 합성 앵커는 문서에서 가장 큰 필드 인스턴스 id에 1을 더해 쓰고 다른 id와 겹치지 않는지 확인한다. 문서에 필드 id가 하나도 없으면 `field_instance_id`(명령의 FNV-1a, 0이면 1)로 대체한다. E2에서 id가 0인 필드는 무시되는 것을 확인했다. 0은 절대 쓰지 않는다. 메모 전용 할당은 한글 열기 확인 대기 | 같은 4개 문서의 메모들, `ahwp dump`에서 각 페이로드를 레코드 자체 크기로 잘라 읽음 |
 
 ---
 
