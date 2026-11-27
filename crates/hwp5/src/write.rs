@@ -5092,7 +5092,11 @@ mod tests {
             line_segs: vec![seg(0), seg(20)],
             ..Paragraph::default()
         };
-        strip_unwritable_pictures(&mut para, &mut WriteReport::new());
+        strip_unwritable_pictures(
+            &mut para,
+            &std::collections::BTreeSet::new(),
+            &mut WriteReport::new(),
+        );
         assert_eq!(
             para.chars,
             "abcdef".chars().map(HwpChar::Text).collect::<Vec<_>>()
