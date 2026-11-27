@@ -4,7 +4,7 @@
 
 `ahwp` ships two integration surfaces for AI clients:
 
-- an **MCP stdio server** (`ahwp mcp`, 23 tools) for clients that speak the Model Context
+- an **MCP stdio server** (`ahwp mcp`, 24 tools) for clients that speak the Model Context
   Protocol, and
 - an **agent skill** (the `skills/hwp/` tree in this repo) that teaches an agent the CLI and
   MCP usage. It is embedded in the binary, and `ahwp skill export` materializes it as a
@@ -155,8 +155,8 @@ location the tools may legitimately access. Do not omit all roots unless unrestr
 access is intentional.
 
 Select **Test connection**, review Quick's command-execution confirmation, and approve **Add
-server**. The test should report **Connected** and **23 tools available**. Select **Add MCP**, approve
-the confirmation again, refresh connections, and verify that `Hwp` is enabled and shows **23 tools,
+server**. The test should report **Connected** and **24 tools available**. Select **Add MCP**, approve
+the confirmation again, refresh connections, and verify that `Hwp` is enabled and shows **24 tools,
 Connected**.
 
 Equivalent import JSON:
@@ -220,7 +220,7 @@ without broad ACL changes. Move or copy inputs into that dedicated root, keep MC
 outputs under it, and copy validated artifacts to the approved destination afterward.
 
 After changing an auto-disabled connector, explicitly enable it again. A successful recovery
-reports **Connected** and **23 tools available** and remains enabled after refresh.
+reports **Connected** and **24 tools available** and remains enabled after refresh.
 
 ### 3. Install the publish-safe HWP skill
 
@@ -275,8 +275,8 @@ contain no angle-bracket markup that Quick can misclassify as HTML.
 ### Desktop acceptance checklist
 
 - `ahwp --version` reports the intended current binary.
-- Connector test reports **Connected** and **23 tools available**.
-- After refresh, the connector remains enabled and reports **23 tools, Connected**.
+- Connector test reports **Connected** and **24 tools available**.
+- After refresh, the connector remains enabled and reports **24 tools, Connected**.
 - `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document (under
   the configured LocalLow root, e.g. `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`, on Windows).
 - `hwp_merge`, `hwp_split` and `hwp_compare` succeed on two copies of that document under the same

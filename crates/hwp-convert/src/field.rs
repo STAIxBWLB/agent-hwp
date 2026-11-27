@@ -687,7 +687,7 @@ pub fn make_field_command_data(ctrl_id: &[u8; 4], command: &str) -> Vec<u8> {
 }
 
 /// Derive a deterministic nonzero field instance ID with 32-bit FNV-1a, replacing zero with one.
-fn field_instance_id(command: &str) -> u32 {
+pub(crate) fn field_instance_id(command: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for b in command.bytes() {
         h ^= u32::from(b);

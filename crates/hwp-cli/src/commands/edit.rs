@@ -6631,7 +6631,10 @@ fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSign
 }
 
 /// Self-verify by rereading after writing and checking the request's key semantic invariants.
-fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyhow::Result<()> {
+pub(crate) fn verify_output(
+    output: &Path,
+    expected: Option<&hwp_model::Document>,
+) -> anyhow::Result<()> {
     verify_output_with_success_log(output, expected, true)
 }
 

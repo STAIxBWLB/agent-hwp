@@ -793,6 +793,49 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     ("validate", "file", "대상 HWP/HWPX 파일"),
     ("validate", "json", "JSON으로 출력"),
+    // redact
+    (
+        "redact",
+        "",
+        "개인정보(주민등록번호·전화·이메일·카드·계좌·여권·운전면허번호)를 글자 수와 구분자를 그대로 둔 채 마스킹 — 레이아웃이 움직이지 않음. 출력은 입력과 같은 형식이며 보고서와 stderr에는 검출 값이 절대 들어가지 않음. 마스킹할 값이 없으면 검증된 사본을 게시",
+    ),
+    ("redact", "input", "입력 .hwp/.hwpx 파일"),
+    ("redact", "output", "출력 경로 (입력과 같은 형식)"),
+    (
+        "redact",
+        "only",
+        "이 범주만 검출 (쉼표 구분 또는 반복): rrn, phone, email, card, account, passport, driver",
+    ),
+    (
+        "redact",
+        "exclude",
+        "이 범주는 건너뜀 (쉼표 구분 또는 반복)",
+    ),
+    (
+        "redact",
+        "mask_char",
+        "마스킹 문자: 영문자·숫자·공백·구분자가 아닌 BMP 문자 하나",
+    ),
+    (
+        "redact",
+        "strict_accounts",
+        "계좌번호는 같은 문단·표 행·열 머리글에 은행/계좌 표지가 있어야 검출 — false면 계좌 모양 숫자를 모두 마스킹",
+    ),
+    (
+        "redact",
+        "report",
+        "검출 값이 없는 hwp-redact-report-v1 JSON을 이 경로에 기록",
+    ),
+    (
+        "redact",
+        "dry_run",
+        "검출·기록·검증까지 한 임시 출력을 게시하지 않음 — --report가 없으면 보고서를 stdout으로 출력",
+    ),
+    (
+        "redact",
+        "verify",
+        "출력을 다시 읽어 마스킹된 문서와 비교까지 수행",
+    ),
     // lint
     (
         "lint",

@@ -37,7 +37,7 @@ The full feature list, implementation status, known limitations and roadmap, for
   input), split one into per-section or per-page-range fragments, or cut out one typed range such as
   a single form with the binaries it uses (`ahwp split`), and report the paragraph and structural
   differences between two documents (`ahwp compare`).
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 23 tools to
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 24 tools to
   desktop clients, including Amazon Quick Desktop.
 
 ## Check the implementation status
@@ -52,7 +52,7 @@ The full feature list, implementation status, known limitations and roadmap, for
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
 | Document-level workflows (`merge`, `split`, `compare`) | Implemented; spot-checked in Hancom on 2026-08-29 (see [12-feature-gaps](../design/12-feature-gaps.md) GM-3/GM-4/GM-8) |
 | Official-document authoring (profiles, templates, frames, lint, table styling) | Implemented |
-| MCP server (23 tools) | Implemented |
+| MCP server (24 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
