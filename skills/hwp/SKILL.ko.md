@@ -134,10 +134,12 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   않을 때만 사용합니다. 문서 내용이 아니라 포맷 내부 구조를 출력합니다.
 - `ahwp redact {in.hwp|in.hwpx} -o {out} [--only rrn,phone,...] [--exclude email] [--mask-char '*'] [--strict-accounts true|false] [--report r.json] [--dry-run] [--verify]` —
   개인정보(rrn·phone·email·card·account·passport·driver)를 글자 수와 구분자를 그대로 둔 채
-  마스킹합니다(`900101-1******`, `010-****-5678`). 본문·표 셀·캡션·머리말/꼬리말·각주·글상자와
-  PrvText 미리보기까지 처리하고, 임시 출력을 다시 읽어 남은 검출이 0건일 때만 게시합니다.
-  `hwp-redact-report-v1` 보고서와 stderr에는 검출 값이 절대 들어가지 않습니다. 그림과 문서
-  정보(작성자 등)는 검사하지 않습니다.
+  마스킹합니다(`900101-1******`, `010-****-5678`). 본문·표 셀·캡션·머리말/꼬리말·각주·글상자·
+  하이퍼링크/필드 명령·개체 설명과 PrvText 미리보기까지 처리하고, 임시 출력을 다시 읽어 재검사하고
+  바이트 단위로 훑어(모든 스트림·항목, HWP5 빈 섹터 포함) 원래 값이 남지 않을 때만 게시합니다.
+  검출이 없으면 검증된 사본을 게시합니다. 거부되면 위치는 `--report`로, 대처는
+  `--exclude`/`--strict-accounts`로 안내합니다. `hwp-redact-report-v1` 보고서와 stderr에는 검출
+  값이 절대 들어가지 않습니다. 그림과 문서 정보(작성자 등)는 검사하지 않습니다.
 - `ahwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` —
   공문서 표기·구조 규칙 열 가지를 검사합니다 (`-`는 표준 입력을 markdown으로 읽습니다).
   기본은 조언용이라 항상 종료 코드 0이며, `--strict`가 error 등급 지적을 찾았을 때만

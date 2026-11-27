@@ -528,7 +528,7 @@ pub enum Cmd {
     /// Mask personal information (resident registration, phone, email, card, account,
     /// passport and driver's license numbers) in place, keeping every character count and
     /// separator so layout does not move. The output keeps the input format; the report and
-    /// stderr never contain a matched value
+    /// stderr never contain a matched value. A run with nothing to mask publishes a verified copy
     Redact {
         /// Input .hwp/.hwpx file
         input: PathBuf,

@@ -5,10 +5,13 @@
 //! 1. load the input and mask it in the IR ([`hwp_convert::redact::redact_document`]);
 //! 2. write a staged output through the same source-preserving writers `ahwp edit` uses
 //!    (HWP5 rewrite from the source container, HWPX package surgery), then regenerate the
-//!    preview text and image from the masked document so neither keeps a masked value;
-//! 3. re-read the staged output, rescan its body and its `PrvText` with the same detectors and
-//!    check that no masked original value occurs in either. Any remaining hit refuses the run
-//!    and nothing is published.
+//!    preview text and image from the masked document so neither keeps a masked value. An HWP5
+//!    output is then compacted into a fresh container, so no freed sector keeps old bytes. A run
+//!    with nothing to mask stages a plain copy of the input instead, so `-o` is always published;
+//! 3. re-read the staged output, rescan its body and its `PrvText` with the same detectors, and
+//!    sweep the whole file, every HWP5 stream (stored and inflated) and every HWPX entry for each
+//!    masked original value in UTF-8 and UTF-16LE. Any remaining hit refuses the run, nothing is
+//!    published, and the error names `--report`, `--exclude` and `--strict-accounts`.
 //!
 //! Privacy: stderr, the report and every error message carry counts, categories and addresses
 //! only. No matched value, no prefix of one and no document text is ever printed.
@@ -55,14 +58,14 @@ pub fn execute(request: &RedactRequest<'_>) -> anyhow::Result<Value> {
     let mut doc = original.clone();
     let outcome = redact_document(&mut doc, &request.options);
 
-    let verification = std::cell::Cell::new(Verification::default());
-    if outcome.counts().is_empty() && outcome.raw_counts.is_empty() {
-        // Nothing to mask: publish nothing, and say so without failing.
-        let report = report_json(request, input_format, &outcome, &verification.get());
-        emit(request, &report)?;
-        eprintln!("redact: 검출된 개인정보가 없어 출력을 게시하지 않습니다");
-        return Ok(report);
+    if let Some(report) = request.report {
+        crate::commands::output::reject_output_aliases(report, &[request.input, request.output])
+            .context("redact --report 경로가 입력 또는 출력과 같습니다")?;
     }
+    let verification = std::cell::Cell::new(Verification::default());
+    // Nothing to mask: the output is still published (a verified copy of the input), so a
+    // pipeline that uploads `-o` never picks up a stale or missing file.
+    let clean = outcome.counts().is_empty() && outcome.raw_counts.is_empty();
 
     let opts = &request.options;
     let verify_staged = |staged: &Path, _: &()| -> anyhow::Result<()> {
@@ -72,15 +75,10 @@ pub fn execute(request: &RedactRequest<'_>) -> anyhow::Result<Value> {
         let preview_hits: usize = hwp_convert::redact::scan_text(&preview, opts)
             .values()
             .sum();
-        let text = format!(
-            "{}\n{}",
-            reread.plain_text_with(&hwp_model::TextOptions {
-                include_header_footer: true,
-                include_hidden: true,
-            }),
-            preview
-        );
-        let leaked = outcome.originals_present_in(&text);
+        // Every stream (inflated as well as stored) or package entry, and the file bytes
+        // themselves, in UTF-16LE and UTF-8: no masked value may survive anywhere, including
+        // streams the model does not read (master pages, document history, raw records).
+        let leaked = originals_in_file(staged, input_format, &outcome)?;
         verification.set(Verification {
             body: Some(body),
             preview: Some(preview_hits),
@@ -88,16 +86,29 @@ pub fn execute(request: &RedactRequest<'_>) -> anyhow::Result<Value> {
         });
         if body > 0 || preview_hits > 0 || leaked > 0 {
             anyhow::bail!(
-                "redact 검증 실패: 출력에 남은 검출 본문 {body}건, 미리보기 {preview_hits}건, 원래 값 {leaked}건 — 출력을 게시하지 않습니다"
+                "redact 검증 실패: 출력에 남은 검출 본문 {body}건, 미리보기 {preview_hits}건, 원래 값 {leaked}건 — 출력을 게시하지 않습니다. \
+                 위치는 --report <경로>의 hits로 확인하고, 마스킹할 수 없는 범주는 --exclude <범주>로 빼거나 \
+                 계좌 오검출이면 --strict-accounts true로 다시 실행하세요"
             );
         }
-        if request.verify {
+        if request.verify && !clean {
             crate::commands::edit::verify_output(staged, Some(&doc))?;
         }
         Ok(())
     };
     let write_staged = |source: &Path, staged: &Path| -> anyhow::Result<()> {
-        write_masked(source, &original, &doc, staged, input_format)
+        if clean {
+            std::fs::copy(source, staged).context("redact 출력 복사 실패")?;
+        } else {
+            write_masked(source, &original, &doc, staged, input_format)?;
+        }
+        if input_format == FileFormat::Hwp5 {
+            // The in-place stream rewrite frees old sectors without clearing them; a compacted
+            // copy drops every free sector, so no unmasked section or preview stays in the file.
+            hwp5::container::compact_in_place(staged)
+                .context("redact 출력 압축(compaction) 실패")?;
+        }
+        Ok(())
     };
 
     let result = match input_format {
@@ -137,7 +148,12 @@ pub fn execute(request: &RedactRequest<'_>) -> anyhow::Result<Value> {
     }
     emit(request, &report)?;
     let total: usize = outcome.counts().values().sum();
-    if request.dry_run {
+    if clean && !request.dry_run {
+        eprintln!(
+            "redact 완료: 검출된 개인정보가 없어 검증된 사본을 게시했습니다 → {}",
+            request.output.display()
+        );
+    } else if request.dry_run {
         eprintln!("redact dry-run: {total}건 검출 (출력 파일은 게시하지 않음)");
     } else {
         eprintln!(
@@ -259,6 +275,35 @@ fn reject_stale_hwp_preview_image(source: &Path, staged: &Path) -> anyhow::Resul
         );
     }
     Ok(())
+}
+
+/// Largest single stream or entry the final sweep inflates.
+const MAX_SWEEP_BYTES: u64 = hwp_cli::certification::MAX_INPUT_BYTES;
+
+/// How many masked original values survive anywhere in a staged output: every HWP5 stream (as
+/// stored and inflated), every HWPX package entry (inflated by the zip reader) and the raw file
+/// bytes, which for HWP5 include any unallocated sector. UTF-8 and UTF-16LE are both searched.
+fn originals_in_file(
+    staged: &Path,
+    format: FileFormat,
+    outcome: &RedactOutcome,
+) -> anyhow::Result<usize> {
+    let mut blobs: Vec<Vec<u8>> = vec![std::fs::read(staged)?];
+    match format {
+        FileFormat::Hwp5 => {
+            for (_, bytes) in hwp5::container::all_stream_bytes(staged, MAX_SWEEP_BYTES)? {
+                blobs.push(bytes);
+            }
+        }
+        FileFormat::Hwpx => {
+            let mut package = hwpx::HwpxPackage::open(staged)?;
+            for entry in package.entries()? {
+                blobs.push(package.read_entry_bounded(&entry.name, MAX_SWEEP_BYTES)?);
+            }
+        }
+    }
+    let views: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    Ok(outcome.originals_present_in_bytes(&views))
 }
 
 fn decode_utf16le(raw: &[u8]) -> String {

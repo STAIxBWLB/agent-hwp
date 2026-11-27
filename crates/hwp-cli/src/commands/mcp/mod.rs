@@ -3153,7 +3153,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_redact",
-            "description": "개인정보(rrn 주민·외국인등록번호, phone, email, card, account 계좌, passport, driver 운전면허)를 글자 수와 구분자를 그대로 둔 채 마스킹하고 입력과 같은 형식(.hwp/.hwpx)으로 원자적으로 게시한다. 본문·표 셀·캡션·머리말/꼬리말·각주·글상자와 PrvText 미리보기까지 처리하고, 출력을 다시 읽어 남은 검출이 0건일 때만 게시한다. 응답은 검출 값이 전혀 없는 hwp-redact-report-v1(범주별 건수, 문단 주소, UTF-16 범위)이다. 그림 픽셀과 문서 정보(작성자 등)는 검사하지 않는다.",
+            "description": "개인정보(rrn 주민·외국인등록번호, phone, email, card, account 계좌, passport, driver 운전면허)를 글자 수와 구분자를 그대로 둔 채 마스킹하고 입력과 같은 형식(.hwp/.hwpx)으로 원자적으로 게시한다. 본문·표 셀·캡션·머리말/꼬리말·각주·글상자·하이퍼링크/필드 명령·개체 설명과 PrvText 미리보기까지 처리하고, 출력을 다시 읽어 재검사하고 모든 스트림·항목을 바이트 단위로 훑어 원래 값이 남지 않을 때만 게시한다(검출이 없으면 검증된 사본 게시). 응답은 검출 값이 전혀 없는 hwp-redact-report-v1(범주별 건수, 문단 주소, UTF-16 범위)이다. 그림 픽셀과 문서 정보(작성자 등)는 검사하지 않는다.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

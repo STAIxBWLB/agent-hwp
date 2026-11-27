@@ -143,10 +143,13 @@ syntax (used by `fill`, `slots` and the template tools).
 - `ahwp redact {in.hwp|in.hwpx} -o {out} [--only rrn,phone,...] [--exclude email] [--mask-char '*'] [--strict-accounts true|false] [--report r.json] [--dry-run] [--verify]` —
   masks personal information (rrn, phone, email, card, account, passport, driver) in place,
   keeping every character count and separator (`900101-1******`, `010-****-5678`). Body, cells,
-  captions, headers/footers, notes, text boxes and the PrvText preview are all covered; the
-  staged output is re-read and rescanned and published only with zero remaining hits. The
-  `hwp-redact-report-v1` report and stderr never contain a matched value. Images and document
-  properties (author etc.) are not inspected.
+  captions, headers/footers, notes, text boxes, hyperlink/field commands, object descriptions and
+  the PrvText preview are all covered; the staged output is re-read, rescanned and swept byte for
+  byte (every stream and entry, HWP5 free sectors included) and published only when no masked
+  value remains. A run with no hit still publishes a verified copy. A refusal points to
+  `--report` for locations and `--exclude`/`--strict-accounts`. The `hwp-redact-report-v1`
+  report and stderr never contain a matched value. Images and document properties (author etc.)
+  are not inspected.
 - `ahwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
   official-document notation and structure rules (`-` reads stdin as markdown). Advisory: it
   always exits 0 unless `--strict` finds an error-severity finding. `--json` prints the

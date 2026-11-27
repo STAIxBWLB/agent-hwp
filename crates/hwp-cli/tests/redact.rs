@@ -430,7 +430,16 @@ fn committed_sample_has_no_false_positive_on_real_layout() {
     );
     let value: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
     assert!(report_validator().is_valid(&value));
-    let _ = run;
+    // The sample holds budget figures, dates and document numbers but no PII: nothing is masked,
+    // and the run still publishes a verified copy (#617 review I5).
+    assert_eq!(value["total"], 0, "false positive on the committed sample");
+    assert_eq!(value["verification"]["originals_absent"], true);
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        std::fs::read(&sample).unwrap(),
+        "a clean run publishes the input unchanged"
+    );
+    assert!(String::from_utf8_lossy(&run.stderr).contains("검증된 사본"));
 }
 
 #[test]

@@ -16,9 +16,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   PII categories (`rrn`, `phone`, `email`, `card`, `account`, `passport`, `driver`, selectable with
   `--only`/`--exclude`) in `.hwp` and `.hwpx`. Character counts, separators, character-shape runs
   and control anchors stay in place. HWP5 raw-backed headers, footers, notes and text boxes are
-  masked in their source records too, and both preview streams are regenerated. The staged output
-  is re-read and rescanned before publication. The `hwp-redact-report-v1` report
-  (`schemas/redact-report-v1.schema.json`) and stderr never carry a matched value.
+  masked in their source records too (a table inside one uses the same header context as the
+  model), field commands such as a hyperlink's `mailto:` URL and object descriptions are masked,
+  and both preview streams are regenerated. Phone numbers with a parenthesized area code
+  (`(02)2100-1234`) are detected. The staged output is re-read and rescanned, and a final sweep
+  searches the whole file, every HWP5 stream (stored and inflated) and every HWPX entry for every
+  masked value in UTF-8 and UTF-16LE before publication. HWP5 output is a compacted container,
+  so no freed sector keeps an old section or preview. A run that finds nothing still publishes a
+  verified copy to `-o`. A refused run names `--report`, `--exclude` and `--strict-accounts` as
+  next steps. The `hwp-redact-report-v1` report (`schemas/redact-report-v1.schema.json`) and
+  stderr never carry a matched value, and `--report` may not alias the input or the output.
+  Hancom has not yet opened a redacted file: GM-10 stays open until it does.
 
 ## [2.1.1]
 

@@ -258,6 +258,67 @@ pub fn is_record_stream(path: &str) -> bool {
         || path.starts_with("/Scripts/")
 }
 
+/// Rewrites the compound file at `path` as a compacted copy: the same storages, streams, CLSIDs,
+/// state bits and timestamps, with no free sector left over. An in-place stream rewrite frees the
+/// old sectors of a shrunk or replaced stream without clearing them, so bytes the new content no
+/// longer holds (an unmasked section, an old preview) stay readable in the file. `ahwp redact`
+/// compacts its output so none of them survive.
+pub fn compact_in_place(path: &Path) -> Result<()> {
+    let compacted = path.with_extension("compact.tmp");
+    let result = (|| -> Result<()> {
+        let mut source = cfb::CompoundFile::open(File::open(path)?)?;
+        let target = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&compacted)?;
+        let copy = source.copy_to(target)?;
+        copy.into_inner().sync_all()?;
+        drop(source);
+        std::fs::rename(&compacted, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&compacted);
+    }
+    result
+}
+
+/// Every stream of the container as `(path, bytes)`: the stored bytes and, when they inflate as
+/// raw deflate, the inflated bytes too (record streams, compressed BinData). For a final
+/// content sweep; each stream is bounded by `limit` before and after inflation.
+pub fn all_stream_bytes(path: &Path, limit: u64) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut container = cfb::CompoundFile::open(File::open(path)?)?;
+    let streams: Vec<(String, u64)> = container
+        .walk()
+        .filter(|entry| entry.is_stream())
+        .map(|entry| {
+            (
+                entry.path().to_string_lossy().replace('\\', "/"),
+                entry.len(),
+            )
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (name, size) in streams {
+        if size > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{name} stored stream"),
+                limit,
+            });
+        }
+        let mut raw = Vec::new();
+        container.open_stream(&name)?.read_to_end(&mut raw)?;
+        if let Ok(inflated) = codec::decompress_bounded(&raw, &name, limit)
+            && !inflated.is_empty()
+        {
+            out.push((name.clone(), inflated));
+        }
+        out.push((name, raw));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;

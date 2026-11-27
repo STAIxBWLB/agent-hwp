@@ -44,7 +44,7 @@
     "total": { "type": "integer", "minimum": 0 },
     "hits": { "type": "array", "items": { "$ref": "#/$defs/hit" } },
     "raw_record_hits": {
-      "description": "Masks applied inside HWP5 raw-backed control records (text boxes, headers, footers, notes) that have no modeled address. Included in counts and total.",
+      "description": "Masks applied inside HWP5 raw-backed control records (text boxes, headers, footers, notes, fields nested in them). The same values are mirrored in the control's modeled paragraphs and already appear in hits, counts and total, so this number is not added to them: it records that the bytes the writer emits were masked too.",
       "type": "integer",
       "minimum": 0
     },
@@ -54,17 +54,17 @@
       "required": ["body_rescan", "preview_rescan", "originals_absent"],
       "properties": {
         "body_rescan": {
-          "description": "Remaining hits found by re-reading the staged output; null on --dry-run.",
+          "description": "Remaining hits found by re-reading the staged output. --dry-run stages and verifies the output too, so this is null only when the run was refused before verification.",
           "type": ["integer", "null"],
           "minimum": 0
         },
         "preview_rescan": {
-          "description": "Remaining hits in PrvText (HWP5 /PrvText or HWPX Preview/PrvText.txt) of the staged output; null on --dry-run.",
+          "description": "Remaining hits in PrvText (HWP5 /PrvText or HWPX Preview/PrvText.txt) of the staged output; null only when the run was refused before verification.",
           "type": ["integer", "null"],
           "minimum": 0
         },
         "originals_absent": {
-          "description": "True when no masked original value occurs in the re-read output text or preview; null on --dry-run.",
+          "description": "True when no masked original value occurs, UTF-8 or UTF-16LE encoded, anywhere in the staged output: the file bytes (HWP5 free sectors included), every HWP5 stream as stored and inflated, and every HWPX package entry. Null only when the run was refused before verification.",
           "type": ["boolean", "null"]
         }
       }
@@ -82,9 +82,12 @@
       "required": ["category", "kind", "path", "paragraph_id", "start", "end"],
       "properties": {
         "category": { "$ref": "#/$defs/category" },
-        "kind": { "enum": ["body", "cell", "caption", "header_footer", "note", "object"] },
+        "kind": {
+          "description": "field_command: the command of a field control (a hyperlink URL); path addresses the control and offsets are UTF-16 units of the command. object_description: an object's accessible description; path addresses the control, offsets are UTF-16 units of the description and paragraph_id is empty.",
+          "enum": ["body", "cell", "caption", "header_footer", "note", "object", "field_command", "object_description"]
+        },
         "path": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)+$" },
-        "paragraph_id": { "type": "string", "pattern": "^[0-9a-f]{16}(\\.[0-9]+)+$" },
+        "paragraph_id": { "type": "string", "pattern": "^([0-9a-f]{16}(\\.[0-9]+)+)?$" },
         "table_index": { "type": "integer", "minimum": 0 },
         "row": { "type": "integer", "minimum": 0 },
         "col": { "type": "integer", "minimum": 0 },
