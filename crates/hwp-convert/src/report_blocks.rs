@@ -537,9 +537,7 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
 
     let insert_at = 0;
     let section = &mut doc.sections[0];
-    section
-        .paragraphs
-        .splice(insert_at..insert_at, front.into_iter());
+    section.paragraphs.splice(insert_at..insert_at, front);
     let body_start = insert_at + front_paragraphs;
     if let Some(body) = section.paragraphs.get_mut(body_start) {
         // Page break before the body (0x04), then restart page numbering at 1 there.

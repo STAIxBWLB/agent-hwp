@@ -1680,7 +1680,7 @@ mod tests {
             ),
             (
                 include_bytes!("../../../schemas/document-spec-v2.schema.json").as_slice(),
-                "a13570e390860a76ef9770f52c68955407e68dfe05b27d91af913f1aaca35403",
+                "f7a7b5f9915656d98df99b2d5827b55feed0fb7fac8858cff3ae0a87ee4f4b09",
             ),
             (
                 include_bytes!("../../../schemas/document-report-v2.schema.json").as_slice(),
