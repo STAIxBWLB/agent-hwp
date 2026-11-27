@@ -5096,7 +5096,7 @@ mod tests {
         assert_eq!(mask, 1 << hwp_model::ctrl_char::TAB);
         assert_eq!(
             &record.children[0].data[..2],
-            &u16::from(hwp_model::ctrl_char::TAB).to_le_bytes()
+            &hwp_model::ctrl_char::TAB.to_le_bytes()
         );
     }
 
