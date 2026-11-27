@@ -527,6 +527,15 @@ pub(crate) struct MoveToSpec {
     position: String,
 }
 
+/// `memo_add.anchor`: a 0-based body paragraph index and the anchored WCHAR span inside it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoAnchorSpec {
+    para: usize,
+    start: u32,
+    end: u32,
+}
+
 /// Raw schema-entry representation: units/colors/alignment/switches arrive as strings
 /// and OpsEntry::into_typed interprets them. Unknown keys are refused.
 #[derive(Debug, Deserialize)]
@@ -782,6 +791,29 @@ pub(crate) enum OpsEntry {
     },
     DeleteBookmark {
         name: String,
+    },
+    /// #619 memo add: the schema's `memoAnchor` plus the author, body lines and optional UTC
+    /// FILETIME.
+    #[serde(rename = "memo_add")]
+    AddMemo {
+        section: usize,
+        anchor: MemoAnchorSpec,
+        author: String,
+        created_filetime: Option<u64>,
+        body: Vec<String>,
+    },
+    /// #619 memo body replacement; the anchor and creation time stay untouched.
+    #[serde(rename = "memo_set_text")]
+    SetMemoText {
+        section: usize,
+        number: u32,
+        body: Vec<String>,
+    },
+    /// #619 memo removal, anchor field and body together.
+    #[serde(rename = "memo_remove")]
+    RemoveMemo {
+        section: usize,
+        number: u32,
     },
     StyleTables {
         preset: String,
@@ -1322,6 +1354,54 @@ impl OpsEntry {
             },
             OpsEntry::DeleteField { name } => Ok(TypedEditOperation::DeleteField { name }),
             OpsEntry::DeleteBookmark { name } => Ok(TypedEditOperation::DeleteBookmark { name }),
+            OpsEntry::AddMemo {
+                section,
+                anchor,
+                author,
+                created_filetime,
+                body,
+            } => {
+                if author.trim().is_empty() {
+                    return Err("memo_add 항목에 author가 필요합니다".to_string());
+                }
+                if body.is_empty() {
+                    return Err("memo_add 항목에 body가 필요합니다".to_string());
+                }
+                if anchor.start > anchor.end {
+                    return Err(format!(
+                        "memo_add의 anchor 범위가 뒤집혔습니다: start={} end={}",
+                        anchor.start, anchor.end
+                    ));
+                }
+                Ok(TypedEditOperation::AddMemo {
+                    section,
+                    anchor: hwp_convert::edit::MemoAnchor {
+                        para: anchor.para,
+                        start: anchor.start,
+                        end: anchor.end,
+                    },
+                    author,
+                    created_filetime,
+                    body,
+                })
+            }
+            OpsEntry::SetMemoText {
+                section,
+                number,
+                body,
+            } => {
+                if body.is_empty() {
+                    return Err("memo_set_text 항목에 body가 필요합니다".to_string());
+                }
+                Ok(TypedEditOperation::SetMemoText {
+                    section,
+                    number,
+                    body,
+                })
+            }
+            OpsEntry::RemoveMemo { section, number } => {
+                Ok(TypedEditOperation::RemoveMemo { section, number })
+            }
             OpsEntry::StyleTables { preset } => Ok(TypedEditOperation::StyleTables {
                 preset: hwp_convert::OfficialPreset::parse(&preset)?,
             }),

@@ -1012,6 +1012,12 @@ fn materialize_document(
     let synth_gso = doc.meta.source_format != "hwp5" || has_synthesizable_gso(doc);
     let synthesize = synth_pictures || synth_gso || opts.edited;
     let normalized;
+    // PARA_HEADER tail gate: versions 5.0.3.2+ require a UINT16 merged-track-change-paragraph field
+    // (specification table 58, total 24 bytes). Pad only synthesized paragraphs with empty tails to
+    // 24 bytes. Writing 22 causes a version/layout mismatch and Hangul corruption/tampering
+    // warnings, verified with sample_m6 5.1.0.1 and halla 5.1.1.0. Pre-5.0.3.2 (work_report
+    // 5.0.2.4) correctly uses 22 bytes, so disable this gate there.
+    let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
     let doc = if needs_normalize(doc) || synthesize {
         let mut d = doc.clone();
         // First synthesize HWP5 shape records (SHAPE_COMPONENT plus picture) for HWPX/Markdown
@@ -1023,9 +1029,13 @@ fn materialize_document(
             // A new caption picture may belong to a wrapper that must be degraded.
             degrade_hwpx_gso(&mut d, &mut report);
         }
+        // Memo bodies this writer synthesizes must exist as MEMO_LIST records before the strip
+        // pass decides whether an anchor still has a body to point at.
+        synthesize_memo_bodies(&mut d, add_tracking_tail, &mut report);
         for section in &mut d.sections {
+            let memo_bodies = hwp5_memo_numbers(section);
             for para in &mut section.paragraphs {
-                strip_unwritable_pictures(para, &mut report);
+                strip_unwritable_pictures(para, &memo_bodies, &mut report);
             }
         }
         // Synthesize PARA_LINE_SEG for generated 5.1.x documents. Without this cache, Hangul draws
@@ -1071,12 +1081,6 @@ fn materialize_document(
     // Construct record streams.
     let doc_info_nodes = emit_doc_info(doc, &mut report);
     let doc_info = RecordNode::serialize_forest(&doc_info_nodes);
-    // PARA_HEADER tail gate: versions 5.0.3.2+ require a UINT16 merged-track-change-paragraph field
-    // (specification table 58, total 24 bytes). Pad only synthesized paragraphs with empty tails to
-    // 24 bytes. Writing 22 causes a version/layout mismatch and Hangul corruption/tampering
-    // warnings, verified with sample_m6 5.1.0.1 and halla 5.1.1.0. Pre-5.0.3.2 (work_report
-    // 5.0.2.4) correctly uses 22 bytes, so disable this gate there.
-    let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
     // Paragraph instance id counter: a synthesized paragraph (instance_id 0) gets a non-zero id.
     // Hancom judges instance_id 0 abnormal ("corrupt/tampered", A8; every sample is non-zero).
     // An hwp5 round trip keeps the source ids (0 included) for byte identity, so it is skipped.
@@ -1543,7 +1547,29 @@ fn assign_instance_ids(
     seen: &mut BTreeSet<u32>,
     deduplicate: bool,
 ) -> Result<()> {
+    let mut expect_memo_list_header = false;
+    let mut remaining_memo_paragraphs = 0;
     for node in roots {
+        // Genuine memo body paragraphs retain instance ID 0. Only skip the adjacent
+        // list header and its counted paragraphs, as later siblings use ordinary IDs.
+        if node.tag == tag::MEMO_LIST {
+            expect_memo_list_header = true;
+            remaining_memo_paragraphs = 0;
+            continue;
+        }
+        if std::mem::take(&mut expect_memo_list_header) && node.tag == tag::LIST_HEADER {
+            remaining_memo_paragraphs = node
+                .data
+                .first_chunk::<2>()
+                .copied()
+                .map_or(0, u16::from_le_bytes);
+            continue;
+        }
+        if remaining_memo_paragraphs > 0 && node.tag == tag::PARA_HEADER {
+            remaining_memo_paragraphs -= 1;
+            continue;
+        }
+        remaining_memo_paragraphs = 0;
         if let Some(id) = para_header_instance_id(node) {
             let duplicate = !seen.insert(id);
             if id == 0 || (deduplicate && duplicate) {
@@ -2946,7 +2972,14 @@ fn append_gso_description(
 
 /// Removes picture controls lacking HWP5 records together with their extended characters and
 /// readjusts remaining ExtCtrl ctrl_index values recursively.
-fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
+///
+/// `memo_bodies` holds the memo numbers whose HWP5 body group already sits on this section's
+/// last paragraph (07 L2), so an anchor outside that set has no body to point at.
+fn strip_unwritable_pictures(
+    para: &mut Paragraph,
+    memo_bodies: &std::collections::BTreeSet<u32>,
+    warnings: &mut WriteReport,
+) {
     let mut removed: Vec<u32> = Vec::new();
     let mut removed_memo = false;
     let mut kept = Vec::with_capacity(para.controls.len());
@@ -2967,15 +3000,18 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
                 continue;
             }
             Control::Generic(g)
-                if g.raw_children.is_empty() && hwp_model::memo::is_memo_anchor(g) =>
+                if g.raw_children.is_empty()
+                    && hwp_model::memo::is_memo_anchor(g)
+                    && !hwp_model::memo::memo_number(g)
+                        .is_some_and(|number| memo_bodies.contains(&number)) =>
             {
-                // A memo anchor that is not an HWP5 original (read from HWPX, or synthesized):
-                // HWP5 keeps memo bodies as MEMO_LIST lists on the section's last paragraph,
-                // which this writer does not synthesize yet, and a `%%me` field without its
-                // body must never be written. Drop the field with its FIELD_END, keep the
-                // anchor text. The loss is not recorded here: the conversion's semantic check
-                // already reports the missing control as `control_removed`, as it does for the
-                // HWPX writer's memo drop, so recording it here too would count it twice.
+                // A memo anchor with no HWP5 body on the section's last paragraph: read from
+                // HWPX, or an op-created memo written to the other container. A `%%me` field
+                // without its MEMO_LIST body must never be written, so drop the field with its
+                // FIELD_END and keep the anchor text. The loss is not recorded here: the
+                // conversion's semantic check already reports the missing control as
+                // `control_removed`, as it does for the HWPX writer's memo drop, so recording it
+                // here too would count it twice.
                 removed.push(i as u32);
                 removed_memo = true;
                 continue;
@@ -3001,14 +3037,14 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for cp in &mut cell.paragraphs {
-                        strip_unwritable_pictures(cp, warnings);
+                        strip_unwritable_pictures(cp, memo_bodies, warnings);
                     }
                 }
             }
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for lp in &mut list.paragraphs {
-                        strip_unwritable_pictures(lp, warnings);
+                        strip_unwritable_pictures(lp, memo_bodies, warnings);
                     }
                 }
             }
@@ -3016,7 +3052,7 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
         }
         if let Some(caption) = semantic_caption_mut(&mut control) {
             for paragraph in &mut caption.paragraphs {
-                strip_unwritable_pictures(paragraph, warnings);
+                strip_unwritable_pictures(paragraph, memo_bodies, warnings);
             }
         }
         kept.push(control);
@@ -3049,6 +3085,173 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
             let shift = removed.iter().filter(|r| **r < *i).count() as u32;
             *i -= shift;
         }
+    }
+}
+
+/// Memo numbers whose body group already sits on the section's last paragraph (07 L2).
+fn hwp5_memo_numbers(section: &hwp_model::Section) -> std::collections::BTreeSet<u32> {
+    section
+        .paragraphs
+        .last()
+        .map(|last| {
+            last.extras
+                .iter()
+                .filter(|extra| {
+                    extra.tag == hwp_model::memo::MEMO_LIST_TAG && extra.data.len() >= 4
+                })
+                .map(|extra| {
+                    u32::from_le_bytes([extra.data[0], extra.data[1], extra.data[2], extra.data[3]])
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Writes every pure-IR memo body as the measured `MEMO_LIST` + `LIST_HEADER` + paragraph records
+/// among the section's last-paragraph extras, then clears the anchor's paragraph lists so the
+/// CTRL_HEADER emitter cannot write a second copy (07 L2).
+///
+/// Only an HWP5 source is synthesized: a memo read from HWPX keeps PR1's cross-format drop. An
+/// HWP5-read anchor's body is already on the last paragraph, so its paragraph lists are empty and
+/// it is left untouched.
+fn synthesize_memo_bodies(
+    doc: &mut hwp_model::Document,
+    add_tracking_tail: bool,
+    warnings: &mut WriteReport,
+) {
+    if doc.meta.source_format != "hwp5" {
+        return;
+    }
+    for section in &mut doc.sections {
+        let mut pending: Vec<(u32, Vec<Paragraph>)> = Vec::new();
+        collect_pure_ir_memos(&mut section.paragraphs, &mut pending);
+        if pending.is_empty() {
+            continue;
+        }
+        let Some(last) = section.paragraphs.last_mut() else {
+            continue;
+        };
+        for (number, paragraphs) in pending {
+            let count = paragraphs.len().max(1) as u16;
+            let mut list_header = vec![0u8; 16];
+            list_header[0..2].copy_from_slice(&count.to_le_bytes());
+            last.extras.push(hwp_model::OpaqueRecord {
+                tag: hwp_model::memo::MEMO_LIST_TAG,
+                data: number.to_le_bytes().to_vec(),
+                children: Vec::new(),
+            });
+            last.extras.push(hwp_model::OpaqueRecord {
+                tag: hwp_model::memo::LIST_HEADER_TAG,
+                data: list_header,
+                children: Vec::new(),
+            });
+            for (index, paragraph) in paragraphs.iter().enumerate() {
+                last.extras.push(memo_body_record(
+                    paragraph,
+                    index + 1 == paragraphs.len(),
+                    add_tracking_tail,
+                ));
+            }
+            if paragraphs.is_empty() {
+                warnings.warning(format!("메모 {number} 본문이 비어 있음"));
+            }
+        }
+    }
+}
+
+/// Takes the paragraphs of every op-created memo anchor in this section, leaving its lists empty.
+///
+/// The walk reaches the same containers as [`hwp_model::memo::nested_paragraph_lists_mut`] (cells,
+/// captions, nested lists) so a memo cannot be collected in one container kind and dropped in
+/// another; a memo anchor's own lists are its body and are drained here instead of walked.
+fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragraph>)>) {
+    for para in paras {
+        for control in &mut para.controls {
+            if let Control::Generic(g) = control
+                && g.raw_children.is_empty()
+                && g.hwpx_raw_xml.is_none()
+                && hwp_model::memo::is_memo_anchor(g)
+                && !g.paragraph_lists.is_empty()
+            {
+                if let Some(number) = hwp_model::memo::memo_number(g) {
+                    let paragraphs = g
+                        .paragraph_lists
+                        .drain(..)
+                        .flat_map(|list| list.paragraphs)
+                        .collect();
+                    out.push((number, paragraphs));
+                }
+                continue;
+            }
+            for list in hwp_model::memo::nested_paragraph_lists_mut(control) {
+                collect_pure_ir_memos(list, out);
+            }
+        }
+    }
+}
+
+/// One memo body paragraph as the measured `PARA_HEADER` record: the paragraph-end character, the
+/// list-final bit (`0x8000_0000`), the template's shape ids, and `PARA_TEXT`/`PARA_CHAR_SHAPE`
+/// children (07 L2).
+///
+/// `last` follows 07 B4: bit31 marks the last paragraph of a list, so it is set on the final body
+/// line and cleared on the others. The four fixtures only ever hold single-line memo bodies, so
+/// every body paragraph they show carries it; inheriting the anchor template's own flag would put
+/// it on every line and make Hangul treat each line as the end of the list.
+fn memo_body_record(
+    para: &Paragraph,
+    last: bool,
+    add_tracking_tail: bool,
+) -> hwp_model::OpaqueRecord {
+    let mut chars = para.chars.clone();
+    if chars.last() != Some(&HwpChar::CharCtrl(13)) {
+        chars.push(HwpChar::CharCtrl(13));
+    }
+    let char_count = chars.iter().map(HwpChar::wchar_width).sum::<u32>();
+    let mut chars_flags = para.header.chars_flags;
+    if last {
+        chars_flags |= 0x80;
+    } else {
+        chars_flags &= !0x80;
+    }
+    let nchars = char_count | (u32::from(chars_flags) << 24);
+    let mut data = Vec::with_capacity(24);
+    data.extend_from_slice(&nchars.to_le_bytes());
+    data.extend_from_slice(&paragraph_control_mask(&chars).to_le_bytes());
+    data.extend_from_slice(&para.para_shape.0.to_le_bytes());
+    data.push(para.style.0 as u8);
+    data.push(para.header.break_type);
+    data.extend_from_slice(&(para.char_shape_runs.len() as u16).to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes()); // range tags
+    data.extend_from_slice(&0u16.to_le_bytes()); // line segments, as in the fixtures
+    data.extend_from_slice(&0u32.to_le_bytes()); // instance id
+    if add_tracking_tail {
+        data.extend_from_slice(&0u16.to_le_bytes()); // merged-track-change tail
+    }
+    let mut children = Vec::new();
+    if char_count > 1 {
+        children.push(hwp_model::OpaqueRecord {
+            tag: crate::record::tag::PARA_TEXT,
+            data: emit_para_text(&chars),
+            children: Vec::new(),
+        });
+    }
+    if !para.char_shape_runs.is_empty() {
+        let mut cw = ByteWriter::new();
+        for (pos, id) in &para.char_shape_runs {
+            cw.write_u32(*pos);
+            cw.write_u32(u32::from(id.0));
+        }
+        children.push(hwp_model::OpaqueRecord {
+            tag: crate::record::tag::PARA_CHAR_SHAPE,
+            data: cw.into_bytes(),
+            children: Vec::new(),
+        });
+    }
+    hwp_model::OpaqueRecord {
+        tag: crate::record::tag::PARA_HEADER,
+        data,
+        children,
     }
 }
 
@@ -4036,6 +4239,14 @@ fn emit_section(
     roots
 }
 
+/// Marks inline and extended WCHAR controls carried by PARA_TEXT.
+fn paragraph_control_mask(chars: &[HwpChar]) -> u32 {
+    chars.iter().fold(0, |mask, ch| match ch {
+        HwpChar::InlineCtrl { code, .. } | HwpChar::ExtCtrl { code, .. } => mask | (1u32 << code),
+        _ => mask,
+    })
+}
+
 fn emit_paragraph(
     para: &Paragraph,
     synthesize: bool,
@@ -4088,15 +4299,7 @@ fn emit_paragraph(
     let ctrl_mask = if para.header.ctrl_mask != 0 {
         para.header.ctrl_mask
     } else {
-        para.chars
-            .iter()
-            .filter_map(|c| match c {
-                HwpChar::InlineCtrl { code, .. } | HwpChar::ExtCtrl { code, .. } => {
-                    Some(1u32 << code)
-                }
-                _ => None,
-            })
-            .fold(0, |a, b| a | b)
+        paragraph_control_mask(&para.chars)
     };
     w.write_u32(ctrl_mask);
     w.write_u16(para.para_shape.0);
@@ -4181,12 +4384,24 @@ fn emit_paragraph(
             children: Vec::new(),
         });
     }
+    // Hancom writes the memo body groups after all paragraph controls (07 L7). On an edit,
+    // new controls can outnumber the saved Control slots. Defer the memo suffix so those
+    // controls cannot fall after it. Identity writes still replay the saved child order.
+    let memo_start = if synthesize {
+        para.extras
+            .iter()
+            .position(|record| record.tag == tag::MEMO_LIST)
+            .unwrap_or(para.extras.len())
+    } else {
+        para.extras.len()
+    };
+    let (extras, memo_bodies) = para.extras.split_at(memo_start);
     let mut next_extra = 0;
     let mut next_control = 0;
     for kind in &para.header.hwp5_child_order {
         match kind {
             hwp_model::Hwp5ParagraphChild::Extra => {
-                if let Some(extra) = para.extras.get(next_extra) {
+                if let Some(extra) = extras.get(next_extra) {
                     children.push(opaque_to_node(extra));
                     next_extra += 1;
                 }
@@ -4205,7 +4420,7 @@ fn emit_paragraph(
             }
         }
     }
-    children.extend(para.extras[next_extra..].iter().map(opaque_to_node));
+    children.extend(extras[next_extra..].iter().map(opaque_to_node));
     for control in &para.controls[next_control..] {
         children.push(emit_control(
             control,
@@ -4215,6 +4430,7 @@ fn emit_paragraph(
             warnings,
         ));
     }
+    children.extend(memo_bodies.iter().map(opaque_to_node));
 
     RecordNode {
         tag: tag::PARA_HEADER,
@@ -4845,6 +5061,62 @@ fn emit_picture(
 mod tests {
     use super::*;
 
+    #[test]
+    fn memo_body_header_matches_the_source_version() {
+        let mut doc = hwp_convert::from_markdown("Anchor");
+        doc.meta.source_format = "hwp5".into();
+        let number = hwp_convert::edit::add_memo(
+            &mut doc,
+            0,
+            &hwp_convert::edit::MemoAnchor {
+                para: 0,
+                start: 16,
+                end: 16,
+            },
+            "Author",
+            Some(1),
+            &["Memo".into()],
+        )
+        .unwrap();
+        let opts = WriteOptions {
+            edited: true,
+            ..WriteOptions::default()
+        };
+        for (version, expected) in [("5.0.2.4", 22), ("5.0.3.2", 24)] {
+            doc.meta.source_version = version.into();
+            let result = materialize_document(&doc, &opts, false, false).unwrap();
+            let roots = scan_stream(&result.streams["/BodyText/Section0"], ScanMode::Strict)
+                .unwrap()
+                .roots;
+            let body = roots
+                .iter()
+                .flat_map(|root| &root.children)
+                .skip_while(|node| node.tag != tag::MEMO_LIST || node.data != number.to_le_bytes())
+                .skip(1)
+                .find(|node| node.tag == tag::PARA_HEADER)
+                .expect("synthesized memo body header");
+            assert_eq!(body.data.len(), expected, "source version {version}");
+        }
+    }
+
+    #[test]
+    fn memo_body_header_declares_the_tab_control() {
+        let para = Paragraph {
+            chars: vec![HwpChar::InlineCtrl {
+                code: hwp_model::ctrl_char::TAB,
+                payload: vec![0; 12],
+            }],
+            ..Paragraph::default()
+        };
+        let record = memo_body_record(&para, true, true);
+        let mask = u32::from_le_bytes(record.data[4..8].try_into().unwrap());
+        assert_eq!(mask, 1 << hwp_model::ctrl_char::TAB);
+        assert_eq!(
+            &record.children[0].data[..2],
+            &hwp_model::ctrl_char::TAB.to_le_bytes()
+        );
+    }
+
     /// Dropping a non-original memo field removes its FIELD_START and FIELD_END (8 WCHARs
     /// each), so every char-shape run and line start after them moves back by those widths.
     /// Paragraph: "ab" [memo start] "cd" [memo end] "ef", with a bold run on "cd" and "ef".
@@ -4906,7 +5178,11 @@ mod tests {
             line_segs: vec![seg(0), seg(20)],
             ..Paragraph::default()
         };
-        strip_unwritable_pictures(&mut para, &mut WriteReport::new());
+        strip_unwritable_pictures(
+            &mut para,
+            &std::collections::BTreeSet::new(),
+            &mut WriteReport::new(),
+        );
         assert_eq!(
             para.chars,
             "abcdef".chars().map(HwpChar::Text).collect::<Vec<_>>()
@@ -5140,6 +5416,42 @@ mod tests {
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn memo_instance_id_skip_stops_at_the_declared_body_count() {
+        let mut later = paragraph_id_record(0);
+        later.children.push(paragraph_id_record(0));
+        let mut roots = vec![
+            RecordNode {
+                tag: tag::MEMO_LIST,
+                data: 1u32.to_le_bytes().to_vec(),
+                children: vec![],
+            },
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: 1u16.to_le_bytes().to_vec(),
+                children: vec![],
+            },
+            paragraph_id_record(0),
+            later,
+        ];
+        assign_instance_ids(
+            &mut roots,
+            &mut 0x1000_0000,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            [
+                para_header_instance_id(&roots[2]),
+                para_header_instance_id(&roots[3]),
+                para_header_instance_id(&roots[3].children[0])
+            ],
+            [Some(0), Some(0x1000_0001), Some(0x1000_0002)]
+        );
     }
 
     #[test]
@@ -7101,7 +7413,11 @@ mod tests {
         let original = document.clone();
         let mut report = WriteReport::new();
         synthesize_pictures(&mut document, &mut report);
-        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        strip_unwritable_pictures(
+            &mut document.sections[0].paragraphs[0],
+            &std::collections::BTreeSet::new(),
+            &mut report,
+        );
         assert_eq!(
             document, original,
             "raw-backed controls must keep their semantic mirrors untouched"
@@ -7148,7 +7464,11 @@ mod tests {
         });
         let mut report = WriteReport::new();
         synthesize_pictures(&mut document, &mut report);
-        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        strip_unwritable_pictures(
+            &mut document.sections[0].paragraphs[0],
+            &std::collections::BTreeSet::new(),
+            &mut report,
+        );
         let Control::Table(table) = &document.sections[0].paragraphs[0].controls[0] else {
             unreachable!()
         };

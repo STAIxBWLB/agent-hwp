@@ -39,9 +39,9 @@ pub struct FieldInfo {
 /// Unknown control IDs are otherwise dropped by the HWPX writer catch-all, so recognized
 /// kinds preserve fieldBegin/End and their text even when their kind label is unknown.
 /// The OWPML type then uses the UNKNOWN fallback in [`owpml_field_type`] (GF-1 loss level).
-/// Memo fields must pair with memo lists (GB-7), whose bodies are not yet emitted.
-/// A dangling memo field could corrupt the document in Hangul, so this kind remains
-/// intentionally excluded until genuine-file evidence establishes safe emission.
+/// Memo fields must pair with memo lists (GB-7), so a bare `fieldBegin` is never the right
+/// emission for one; both writers handle that kind in their own arms instead, which is why it
+/// stays out of this list rather than being recognized here.
 pub fn is_field_ctrl_id(ctrl_id: &[u8; 4]) -> bool {
     matches!(
         ctrl_id,
@@ -725,6 +725,85 @@ pub fn make_field_command_data(ctrl_id: &[u8; 4], command: &str) -> Vec<u8> {
     data
 }
 
+/// The memo number a memo anchor's Command string carries (07 L3).
+pub fn memo_number(g: &GenericControl) -> Option<u32> {
+    hwp_model::memo::memo_number(g)
+}
+
+/// CTRL_HEADER attributes measured on every memo anchor (`01 80 00 00`).
+const MEMO_CTRL_ATTR: u32 = 0x0000_8001;
+
+/// CTRL_HEADER payload for a memo anchor (07 L5).
+///
+/// Same layout as [`make_field_command_data`], with the two trailing words a memo carries instead
+/// of one id and a zero: the field instance id, then the memo number (measured on every memo of
+/// the four fixtures).
+pub fn make_memo_command_data(command: &str, field_id: u32, number: u32) -> Vec<u8> {
+    let mut data = MEMO_CTRL_ATTR.to_le_bytes().to_vec();
+    data.push(0); // extra
+    let units: Vec<u16> = command.encode_utf16().collect();
+    data.extend((units.len() as u16).to_le_bytes());
+    for u in units {
+        data.extend(u.to_le_bytes());
+    }
+    data.extend(field_id.to_le_bytes());
+    data.extend(number.to_le_bytes());
+    data
+}
+
+/// The field instance id a new memo anchor takes: one past the highest id any field in the
+/// document carries.
+///
+/// Measured (07 L5): inside one file the id counts up memo by memo, so `max + 1` reproduces the
+/// value the next memo gets. A document carrying no field id at all has nothing to continue, so
+/// the deterministic [`field_instance_id`] stands in. Zero is never returned: Hangul does not treat
+/// an id=0 field as a field (07 E2).
+pub(crate) fn next_memo_field_id(doc: &Document, command: &str) -> Option<u32> {
+    let mut max = None;
+    for section in &doc.sections {
+        max_field_id_in_paras(&section.paragraphs, &mut max);
+    }
+    match max {
+        Some(id) => id.checked_add(1),
+        None => Some(field_instance_id(command)),
+    }
+}
+
+/// The field instance id inside a field control's CTRL_HEADER payload, if it carries one.
+fn command_field_id(data: &[u8]) -> Option<u32> {
+    let len = usize::from(u16::from_le_bytes([*data.get(5)?, *data.get(6)?]));
+    let start = 7 + len * 2;
+    let bytes = data.get(start..start + 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn max_field_id_in_paras(paras: &[Paragraph], max: &mut Option<u32>) {
+    for para in paras {
+        for control in &para.controls {
+            if let Control::Generic(g) = control
+                && is_field_ctrl_id(&g.ctrl_id)
+                && let Some(id) = command_field_id(&g.data)
+            {
+                *max = Some(max.map_or(id, |m: u32| m.max(id)));
+            }
+            // Every container kind through the shared walk, so a field inside a table caption or
+            // a picture caption cannot have its id handed out again.
+            for list in hwp_model::memo::nested_paragraph_lists(control) {
+                max_field_id_in_paras(list, max);
+            }
+            // That walk leaves a memo anchor's own lists out, because they are the memo's body
+            // rather than document content, but a field inside a body still carries an id.
+            if let Control::Generic(g) = control
+                && hwp_model::memo::is_memo_anchor(g)
+            {
+                for list in &g.paragraph_lists {
+                    max_field_id_in_paras(&list.paragraphs, max);
+                }
+            }
+        }
+    }
+}
+
 /// Derive a deterministic nonzero field instance ID with 32-bit FNV-1a, replacing zero with one.
 pub(crate) fn field_instance_id(command: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
@@ -1393,5 +1472,106 @@ mod tests {
         let before = doc.header.char_shapes.len();
         assert!(create_field(&mut doc, "수신:", "수신처", "").unwrap());
         assert_eq!(doc.header.char_shapes.len(), before, "글자모양 추가 없음");
+    }
+
+    /// A field inside a caption still carries a field instance id, so handing that id out again
+    /// would put two fields on one id (07 L5). Both captions count, not only table cells.
+    #[test]
+    fn memo_field_id_refuses_exhaustion_instead_of_using_a_colliding_hash() {
+        let command = "MEMO/65535/1/1/0/author/";
+        let mut doc = crate::from_markdown::from_markdown("text");
+        let controls = &mut doc.sections[0].paragraphs[0].controls;
+        for id in [field_instance_id(command), u32::MAX] {
+            controls.push(Control::Generic(GenericControl {
+                ctrl_id: *b"%unk",
+                data: make_memo_command_data(command, id, 1),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                chart: None,
+                container_box: None,
+            }));
+        }
+        assert_eq!(next_memo_field_id(&doc, command), None);
+    }
+
+    #[test]
+    fn next_memo_field_id_sees_caption_fields() {
+        let mut doc = crate::from_markdown::from_markdown("본문\n");
+        // The generated id is a hash of the command, so each caption field takes the id this
+        // fixture gives it, in the slot `command_field_id` reads.
+        let field_paragraph = |text: &str, id: u32| {
+            let control = make_field_control(*b"%hlk", None, Some(&hlk_command("https://x.io")));
+            let Control::Generic(mut g) = control else {
+                unreachable!("a hyperlink field is a Generic control")
+            };
+            let len = usize::from(u16::from_le_bytes([g.data[5], g.data[6]]));
+            g.data[7 + len * 2..11 + len * 2].copy_from_slice(&id.to_le_bytes());
+            Paragraph {
+                chars: make_field_chars(*b"%hlk", text),
+                controls: vec![Control::Generic(g)],
+                ..Paragraph::default()
+            }
+        };
+        let caption = |paragraphs: Vec<Paragraph>| hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs,
+        };
+
+        crate::edit::add_table(&mut doc, "본문", &[vec!["칸".to_string()]]).unwrap();
+        let table = doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|para| para.controls.iter_mut())
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("the table just added");
+        table.caption = Some(caption(vec![field_paragraph("표 캡션", 41)]));
+        assert_eq!(
+            next_memo_field_id(&doc, "cmd"),
+            Some(42),
+            "a table caption's field id must be continued, not handed out again"
+        );
+
+        let mut picture = hwp_model::Picture {
+            common_data: Vec::new(),
+            width: hwp_model::HwpUnit(100),
+            height: hwp_model::HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: None,
+            bin_ref: hwp_model::BinRef::ItemRef("bmp".into()),
+            extras: Vec::new(),
+        };
+        picture.caption = Some(caption(vec![field_paragraph("그림 캡션", 57)]));
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Picture(picture));
+        assert_eq!(
+            next_memo_field_id(&doc, "cmd"),
+            Some(58),
+            "a picture caption's field id must be continued too"
+        );
     }
 }

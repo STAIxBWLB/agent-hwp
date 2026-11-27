@@ -210,6 +210,55 @@ fn reserve_memo_ids(paragraphs: &[Paragraph], reserved: &mut std::collections::B
     }
 }
 
+/// The `fieldid` every Hancom-saved memo fieldBegin carries: `0x25256d65`, the little-endian
+/// bytes of `em%%`, identical in all four fixtures.
+const MEMO_FIELD_ID: &str = "623209829";
+
+/// Emits one op-created memo as `<hp:ctrl><hp:fieldBegin type="MEMO">` with the seven parameters
+/// a Hancom-saved memo carries and an inline `hp:subList` body (07 L2). The caller has already
+/// pushed the matching [`OpenField::Memo`] so the FIELD_END echoes these ids.
+#[allow(clippy::too_many_arguments)]
+fn write_synthesized_memo(
+    out: &mut String,
+    doc: &Document,
+    generic: &hwp_model::GenericControl,
+    id: u32,
+    ids: &mut IdSeq,
+    bins: &mut BinCollector,
+    preserve_linesegs: bool,
+    report: &mut WriteReport,
+) {
+    let Some((memo, command)) = hwp_model::memo::memo_anchor_command(generic) else {
+        return;
+    };
+    let created = memo.filetime.unwrap_or_else(hwp_model::memo::filetime_now);
+    let _ = write!(
+        out,
+        r##"<hp:ctrl><hp:fieldBegin id="{id}" type="MEMO" name="" editable="1" dirty="1" zorder="{}" fieldid="{MEMO_FIELD_ID}" metaTag=""><hp:parameters cnt="7" name=""><hp:integerParam name="Prop">0</hp:integerParam><hp:stringParam name="Command">{}</hp:stringParam><hp:stringParam name="ID">memo{}</hp:stringParam><hp:integerParam name="Number">{}</hp:integerParam><hp:stringParam name="Author">{}</hp:stringParam><hp:stringParam name="MemoShapeIDRef">65535</hp:stringParam><hp:stringParam name="CreateDateTime">{}</hp:stringParam></hp:parameters><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"##,
+        memo.number,
+        esc(&command),
+        memo.number,
+        memo.number,
+        esc(&memo.author),
+        hwp_model::memo::filetime_to_rfc3339(created),
+    );
+    for list in &generic.paragraph_lists {
+        for paragraph in &list.paragraphs {
+            write_paragraph(
+                out,
+                doc,
+                paragraph,
+                ids,
+                bins,
+                false,
+                preserve_linesegs,
+                report,
+            );
+        }
+    }
+    out.push_str("</hp:subList></hp:fieldBegin></hp:ctrl>");
+}
+
 /// 한 run에 방출할 수 있는 그리기 도형의 최대 수. 한글은 run당 앞쪽 ~21개 도형만
 /// 렌더하고 나머지를 버리므로(실기 확정), 여유를 두고 이 수를 넘으면 run을 분할한다.
 const SHAPE_RUN_LIMIT: usize = 12;
@@ -428,11 +477,38 @@ fn write_paragraph(
                             g.hwpx_raw_xml.as_deref().expect("memo_raw_ids guard")
                         );
                     }
+                    Control::Generic(g)
+                        if doc.meta.source_format == "hwpx"
+                            && g.raw_children.is_empty()
+                            && g.hwpx_raw_xml.is_none()
+                            && hwp_convert::field::is_memo_anchor(g)
+                            && !g.paragraph_lists.is_empty() =>
+                    {
+                        // An op-created memo on an HWPX source: emit the measured fieldBegin with
+                        // its seven parameters and an inline subList body, the same shape a
+                        // Hancom-saved memo carries (07 L2). The FIELD_END echoes these ids.
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        let fid = ids.next();
+                        open_fields
+                            .push(OpenField::Memo(fid.to_string(), MEMO_FIELD_ID.to_string()));
+                        write_synthesized_memo(
+                            out,
+                            doc,
+                            g,
+                            fid,
+                            ids,
+                            bins,
+                            preserve_linesegs,
+                            report,
+                        );
+                    }
                     Control::Generic(g) if hwp_convert::field::is_memo_anchor(g) => {
-                        // A memo whose body is not an HWPX capture (HWP5 source, or synthesized)
-                        // has no verified OWPML emission yet: keep the anchor text and drop the
-                        // field, its body and its FIELD_END. The conversion's semantic check
-                        // reports the dropped control as control_removed.
+                        // A memo whose body is not an HWPX capture (HWP5 source, or a memo written
+                        // to the other container) has no same-format OWPML emission: keep the
+                        // anchor text and drop the field, its body and its FIELD_END. The
+                        // conversion's semantic check reports the dropped control as
+                        // control_removed.
                         open_fields.push(OpenField::Dropped);
                     }
                     Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {

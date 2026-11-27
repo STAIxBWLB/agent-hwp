@@ -294,6 +294,27 @@ pub(crate) enum TypedEditOperation {
         placement: hwp_convert::TablePlacement,
         table: Option<usize>,
     },
+    /// #619: add a memo anchored to a WCHAR span of one body paragraph. The body travels as IR
+    /// paragraphs on the anchor and each writer synthesizes its own container from it.
+    AddMemo {
+        section: usize,
+        anchor: hwp_convert::edit::MemoAnchor,
+        author: String,
+        /// UTC FILETIME from the Command string; None means the current time.
+        created_filetime: Option<u64>,
+        body: Vec<String>,
+    },
+    /// #619: replace an existing memo's body, keeping its anchor, command and creation time.
+    SetMemoText {
+        section: usize,
+        number: u32,
+        body: Vec<String>,
+    },
+    /// #619: remove a memo together with its anchor field and body.
+    RemoveMemo {
+        section: usize,
+        number: u32,
+    },
 }
 
 impl TypedEditOperation {
@@ -320,6 +341,10 @@ impl TypedEditOperation {
                 | Self::DeleteTable { .. }
                 | Self::DeleteField { .. }
                 | Self::DeleteBookmark { .. }
+                // Memo ops change chars, controls and opaque records, so they force synthesis.
+                | Self::AddMemo { .. }
+                | Self::SetMemoText { .. }
+                | Self::RemoveMemo { .. }
                 // Placement changes layout, so force the synthesis write path.
                 | Self::SetTablePlacement { .. }
         )
@@ -541,6 +566,9 @@ fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
         TypedEditOperation::DeleteBookmark { .. } => "delete_bookmark",
         TypedEditOperation::StyleTables { .. } => "style_tables",
         TypedEditOperation::SetTablePlacement { .. } => "set_table_placement",
+        TypedEditOperation::AddMemo { .. } => "memo_add",
+        TypedEditOperation::SetMemoText { .. } => "memo_set_text",
+        TypedEditOperation::RemoveMemo { .. } => "memo_remove",
     }
 }
 
@@ -3673,7 +3701,10 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::MergeCells { .. }
         | Op::SplitCell { .. }
         | Op::AddTable { .. }
-        | Op::CloneTable { .. } => "not applied",
+        | Op::CloneTable { .. }
+        | Op::AddMemo { .. }
+        | Op::SetMemoText { .. }
+        | Op::RemoveMemo { .. } => "not applied",
     };
     format!("{}: {cause}", typed_op_kind(operation))
 }
@@ -4628,6 +4659,34 @@ fn apply_typed_operation(
                 eprintln!("책갈피 삭제: {name:?} ({count}건)");
                 *edits += count;
             }
+        }
+        TypedEditOperation::AddMemo {
+            section,
+            anchor,
+            author,
+            created_filetime,
+            body,
+        } => {
+            let number =
+                hwp_convert::edit::add_memo(doc, *section, anchor, author, *created_filetime, body)
+                    .map_err(anyhow::Error::msg)?;
+            eprintln!("메모 추가: {number}");
+            *edits += 1;
+        }
+        TypedEditOperation::SetMemoText {
+            section,
+            number,
+            body,
+        } => {
+            hwp_convert::edit::set_memo_text(doc, *section, *number, body)
+                .map_err(anyhow::Error::msg)?;
+            eprintln!("메모 본문 수정: {number}");
+            *edits += 1;
+        }
+        TypedEditOperation::RemoveMemo { section, number } => {
+            hwp_convert::edit::remove_memo(doc, *section, *number).map_err(anyhow::Error::msg)?;
+            eprintln!("메모 삭제: {number}");
+            *edits += 1;
         }
         TypedEditOperation::StyleTables { preset: _ } => {
             // See the CLI arm: an already-styled document is a no-op, not an unapplied request.

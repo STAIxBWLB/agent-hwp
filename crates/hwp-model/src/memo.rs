@@ -85,6 +85,61 @@ pub fn parse_memo_command(command: &str) -> Option<MemoCommand> {
     })
 }
 
+/// Shape id every measured memo command carries (`MEMO/65535/...`).
+pub const MEMO_SHAPE_ID: u16 = 65535;
+
+/// Everything after the author in a measured memo command (`\;;` in all four fixtures).
+pub const MEMO_COMMAND_TAIL: &str = "\\;;";
+
+/// Builds the field command for a memo, the inverse of [`parse_memo_command`].
+///
+/// Measured shape (07 L3): `MEMO/65535/<number>/<FILETIME low>/<FILETIME high>/<author>/...`.
+/// The FILETIME half is UTC. A missing creation time is written as zero ticks, which parses back as
+/// `Some(0)` (1601-01-01), not as an absent time.
+pub fn build_memo_command(number: u32, filetime: Option<u64>, author: &str) -> String {
+    let ft = filetime.unwrap_or(0);
+    format!(
+        "MEMO/{MEMO_SHAPE_ID}/{number}/{}/{}/{author}/{MEMO_COMMAND_TAIL}",
+        ft as u32,
+        (ft >> 32) as u32
+    )
+}
+
+/// The current time as a Windows FILETIME (100 ns ticks since 1601-01-01 UTC).
+pub fn filetime_now() -> u64 {
+    /// Seconds between 1601-01-01 and 1970-01-01.
+    const EPOCH_DIFF_SECS: u64 = 11_644_473_600;
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (elapsed.as_secs() + EPOCH_DIFF_SECS) * 10_000_000 + u64::from(elapsed.subsec_nanos()) / 100
+}
+
+/// HWP5 char-block payload for a memo field begin.
+///
+/// Measured on every memo in the four fixtures: the reversed `%%me` control id followed by zeroed
+/// info bytes. The block itself is `[code][this payload][code]` (07 L1).
+pub fn hwp5_field_begin_payload() -> [u8; 12] {
+    let mut payload = [0u8; 12];
+    payload[..4].copy_from_slice(b"em%%");
+    payload
+}
+
+/// HWP5 char-block payload for a memo field end (07 L4).
+///
+/// `em%` + NUL, a flag byte (`0x05` on the last memo of the paragraph, `0x01` on earlier ones),
+/// `ff ff 00`, then the memo number. The flag is independent of the anchor's span length.
+pub fn hwp5_field_end_payload(number: u32, last: bool) -> [u8; 12] {
+    let mut payload = [0u8; 12];
+    payload[..4].copy_from_slice(b"em%\0");
+    payload[4] = if last { 0x05 } else { 0x01 };
+    payload[5] = 0xff;
+    payload[6] = 0xff;
+    payload[7] = 0x00;
+    payload[8..12].copy_from_slice(&number.to_le_bytes());
+    payload
+}
+
 /// Converts a FILETIME to RFC 3339 UTC with second precision.
 pub fn filetime_to_rfc3339(filetime: u64) -> String {
     // Seconds between 1601-01-01 and 1970-01-01.
@@ -130,6 +185,21 @@ fn field_command(data: &[u8]) -> Option<String> {
 pub fn is_memo_anchor(g: &crate::control::GenericControl) -> bool {
     matches!(&g.ctrl_id, b"%unk" | b"%%me")
         && field_command(&g.data).is_some_and(|c| c.starts_with("MEMO/"))
+}
+
+/// A memo anchor's parsed Command together with the raw string, for the writers that synthesize
+/// a container from the IR.
+pub fn memo_anchor_command(g: &crate::control::GenericControl) -> Option<(MemoCommand, String)> {
+    if !is_memo_anchor(g) {
+        return None;
+    }
+    let command = field_command(&g.data)?;
+    parse_memo_command(&command).map(|parsed| (parsed, command))
+}
+
+/// The memo number a memo anchor carries (07 L3).
+pub fn memo_number(g: &crate::control::GenericControl) -> Option<u32> {
+    memo_anchor_command(g).map(|(parsed, _)| parsed.number)
 }
 
 /// Whether a field control is a memo anchor: HWP5 `%unk`/`%%me` or HWPX `MEMO`, recognized by
@@ -200,35 +270,52 @@ fn opaque_para_text(para: &OpaqueRecord) -> String {
     out
 }
 
+/// Returns the memo paragraphs after a MEMO_LIST marker, up to the adjacent LIST_HEADER's
+/// declared count. Paragraph child records stay inside each paragraph. Any other sibling
+/// terminates the group, even if the saved count is larger.
+pub fn hwp5_memo_body_paragraphs(records: &[OpaqueRecord]) -> Option<&[OpaqueRecord]> {
+    let (header, paragraphs) = records.split_first()?;
+    if header.tag != LIST_HEADER_TAG {
+        return None;
+    }
+    let count = u16::from_le_bytes(header.data.get(..2)?.try_into().ok()?);
+    let available = paragraphs
+        .iter()
+        .take(usize::from(count))
+        .take_while(|record| record.tag == PARA_HEADER_TAG)
+        .count();
+    Some(&paragraphs[..available])
+}
+
 /// HWP5 memo bodies from the extras of a section's last paragraph: number -> body paragraphs.
 fn hwp5_bodies(section: &Section) -> Vec<(u32, Vec<String>)> {
     let Some(last) = section.paragraphs.last() else {
         return Vec::new();
     };
-    let mut out: Vec<(u32, Vec<String>)> = Vec::new();
-    for extra in &last.extras {
-        match extra.tag {
-            MEMO_LIST_TAG if extra.data.len() >= 4 => {
-                let n = u32::from_le_bytes([
-                    extra.data[0],
-                    extra.data[1],
-                    extra.data[2],
-                    extra.data[3],
-                ]);
-                out.push((n, Vec::new()));
+    last.extras
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| {
+            if record.tag != MEMO_LIST_TAG {
+                return None;
             }
-            PARA_HEADER_TAG => {
-                if let Some((_, body)) = out.last_mut() {
-                    body.push(opaque_para_text(extra));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+            let number = u32::from_le_bytes(record.data.get(..4)?.try_into().ok()?);
+            let body = hwp5_memo_body_paragraphs(&last.extras[index + 1..])
+                .unwrap_or_default()
+                .iter()
+                .map(opaque_para_text)
+                .collect();
+            Some((number, body))
+        })
+        .collect()
 }
 
-/// Every memo in the document, in body order.
+/// Every memo in the document, in the order its anchor sits in the text.
+///
+/// A paragraph is walked character by character, and a control is entered where its block sits,
+/// so a memo anchored in a table that precedes a direct anchor in the same paragraph is reported
+/// first. Within one control the order is [`nested_paragraph_lists`]'s: table cells, then the
+/// caption.
 pub fn memos(doc: &Document) -> Vec<Memo> {
     let mut out = Vec::new();
     for (si, section) in doc.sections.iter().enumerate() {
@@ -248,44 +335,24 @@ fn collect_paragraph(
 ) {
     // Anchor text: characters between a memo FIELD_START and its FIELD_END (depth-aware).
     let mut open: Vec<(usize, String)> = Vec::new(); // (index into out, accumulated text)
+    // A control is visited where its block sits in the text, so a memo inside a table that
+    // precedes a direct anchor is reported first. A control the text never references keeps the
+    // after-the-text position it had before.
+    let mut visited = vec![false; para.controls.len()];
     for ch in &para.chars {
         match ch {
             HwpChar::ExtCtrl {
-                code: 3,
-                ctrl_index,
-                ..
+                code, ctrl_index, ..
             } => {
                 let control = ctrl_index.and_then(|i| para.controls.get(i as usize));
-                match control.and_then(|c| memo_command_of(c).map(|m| (c, m))) {
-                    Some((control, cmd)) => {
-                        let inline_body = match control {
-                            Control::Generic(g) => g
-                                .paragraph_lists
-                                .iter()
-                                .flat_map(|l| l.paragraphs.iter().map(paragraph_text))
-                                .collect::<Vec<_>>(),
-                            _ => Vec::new(),
-                        };
-                        let body = if inline_body.is_empty() {
-                            bodies
-                                .iter()
-                                .find(|(n, _)| *n == cmd.number)
-                                .map(|(_, b)| b.clone())
-                                .unwrap_or_default()
-                        } else {
-                            inline_body
-                        };
-                        out.push(Memo {
-                            section: si,
-                            number: cmd.number,
-                            author: cmd.author,
-                            created_filetime: cmd.filetime,
-                            anchor_text: String::new(),
-                            body,
-                        });
-                        open.push((out.len() - 1, String::new()));
+                if *code == 3 {
+                    collect_field_start(si, control, bodies, out, &mut open);
+                }
+                if let (Some(index), Some(control)) = (ctrl_index, control) {
+                    if let Some(slot) = visited.get_mut(*index as usize) {
+                        *slot = true;
                     }
-                    None => open.push((usize::MAX, String::new())),
+                    collect_nested(si, control, bodies, out);
                 }
             }
             HwpChar::InlineCtrl { code: 4, .. } => {
@@ -307,11 +374,65 @@ fn collect_paragraph(
             }
         }
     }
-    for control in &para.controls {
-        for list in nested_paragraph_lists(control) {
-            for p in list {
-                collect_paragraph(si, p, bodies, out);
-            }
+    for (i, control) in para.controls.iter().enumerate() {
+        if !visited.get(i).copied().unwrap_or(true) {
+            collect_nested(si, control, bodies, out);
+        }
+    }
+}
+
+/// Records the memo a field start opens, if the control behind it is one, and pushes its range
+/// onto the anchor-text stack.
+fn collect_field_start(
+    si: usize,
+    control: Option<&Control>,
+    bodies: &[(u32, Vec<String>)],
+    out: &mut Vec<Memo>,
+    open: &mut Vec<(usize, String)>,
+) {
+    match control.and_then(|c| memo_command_of(c).map(|m| (c, m))) {
+        Some((control, cmd)) => {
+            let inline_body = match control {
+                Control::Generic(g) => g
+                    .paragraph_lists
+                    .iter()
+                    .flat_map(|l| l.paragraphs.iter().map(paragraph_text))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            let body = if inline_body.is_empty() {
+                bodies
+                    .iter()
+                    .find(|(n, _)| *n == cmd.number)
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or_default()
+            } else {
+                inline_body
+            };
+            out.push(Memo {
+                section: si,
+                number: cmd.number,
+                author: cmd.author,
+                created_filetime: cmd.filetime,
+                anchor_text: String::new(),
+                body,
+            });
+            open.push((out.len() - 1, String::new()));
+        }
+        None => open.push((usize::MAX, String::new())),
+    }
+}
+
+/// Collects the memos of every paragraph list `control` holds, in that control's own order.
+fn collect_nested(
+    si: usize,
+    control: &Control,
+    bodies: &[(u32, Vec<String>)],
+    out: &mut Vec<Memo>,
+) {
+    for list in nested_paragraph_lists(control) {
+        for p in list {
+            collect_paragraph(si, p, bodies, out);
         }
     }
 }
@@ -343,9 +464,47 @@ pub fn nested_paragraph_lists(control: &Control) -> Vec<&[Paragraph]> {
     lists
 }
 
+/// The mutable twin of [`nested_paragraph_lists`], for the walks that rewrite what they find: an
+/// op-created memo's body being drained out of its own lists, or the site of a memo to edit or
+/// remove. Both build their list from the same container kinds, so a memo inside a table cell, a
+/// caption or a nested list cannot be seen by one walk and missed by the other.
+pub fn nested_paragraph_lists_mut(control: &mut Control) -> Vec<&mut [Paragraph]> {
+    // Read the command before taking a mutable borrow of the control's fields.
+    let is_memo = memo_command_of(control).is_some();
+    let mut lists: Vec<&mut [Paragraph]> = Vec::new();
+    match control {
+        Control::Table(t) => {
+            lists.extend(t.cells.iter_mut().map(|c| c.paragraphs.as_mut_slice()));
+            if let Some(c) = t.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        Control::Picture(p) => {
+            if let Some(c) = p.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        Control::Generic(g) => {
+            if !is_memo {
+                lists.extend(
+                    g.paragraph_lists
+                        .iter_mut()
+                        .map(|l| l.paragraphs.as_mut_slice()),
+                );
+            }
+            if let Some(c) = g.caption.as_mut() {
+                lists.push(c.paragraphs.as_mut_slice());
+            }
+        }
+        _ => {}
+    }
+    lists
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BorderFillId, Cell, GenericControl, HwpUnit, Table};
 
     /// An HWP5 memo body paragraph keeps line breaks, tabs, hyphens and nb/fw spaces through
     /// the shared character mapping, the same text the HWPX path produces; extended controls
@@ -418,5 +577,169 @@ mod tests {
             filetime_to_rfc3339(116_444_736_000_000_000),
             "1970-01-01T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn build_memo_command_round_trips_through_parse() {
+        // The first memo of fixtures/hwp5/memo3.hwp, byte for byte.
+        let command = build_memo_command(1, Some(31_292_991u64 << 32 | 2_485_147_664u64), "yj.lee");
+        assert_eq!(command, "MEMO/65535/1/2485147664/31292991/yj.lee/\\;;");
+        let parsed = parse_memo_command(&command).unwrap();
+        assert_eq!(parsed.number, 1);
+        assert_eq!(parsed.author, "yj.lee");
+        assert_eq!(
+            parsed.filetime,
+            Some(31_292_991u64 << 32 | 2_485_147_664u64)
+        );
+    }
+
+    #[test]
+    fn build_memo_command_writes_zero_time_as_absent() {
+        let command = build_memo_command(3, None, "someone");
+        assert_eq!(command, "MEMO/65535/3/0/0/someone/\\;;");
+        assert_eq!(parse_memo_command(&command).unwrap().filetime, Some(0));
+    }
+
+    #[test]
+    fn hwp5_field_begin_payload_matches_the_measured_block() {
+        // fixtures/hwp5/memo3.hwp, both memos: `em%%` then eight zero bytes.
+        assert_eq!(
+            hwp5_field_begin_payload(),
+            [0x65, 0x6d, 0x25, 0x25, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn hwp5_field_end_payload_flags_the_last_memo() {
+        // fixtures/hwp5/memo3.hwp holds two memos: the first ends 01, the second 05.
+        assert_eq!(
+            hwp5_field_end_payload(1, false),
+            [0x65, 0x6d, 0x25, 0x00, 0x01, 0xff, 0xff, 0x00, 1, 0, 0, 0]
+        );
+        assert_eq!(
+            hwp5_field_end_payload(2, true),
+            [0x65, 0x6d, 0x25, 0x00, 0x05, 0xff, 0xff, 0x00, 2, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn filetime_now_reads_back_as_a_utc_instant() {
+        let now = filetime_now();
+        // Only the stable half is pinned: the value is past 1970 and formats as a 21st-century
+        // instant, so the epoch arithmetic cannot silently drift to the wrong era.
+        assert!(now > 116_444_736_000_000_000, "after 1970");
+        assert!(filetime_to_rfc3339(now).starts_with("20"));
+    }
+
+    fn memo_anchor(number: u32) -> Control {
+        let units: Vec<u16> = build_memo_command(number, None, "someone")
+            .encode_utf16()
+            .collect();
+        let mut data = vec![0u8; 5];
+        data.extend_from_slice(&(units.len() as u16).to_le_bytes());
+        for unit in units {
+            data.extend_from_slice(&unit.to_le_bytes());
+        }
+        Control::Generic(GenericControl {
+            ctrl_id: *b"%unk",
+            data,
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            chart: None,
+            container_box: None,
+        })
+    }
+
+    /// A paragraph holding one memo anchored to `text`, the anchor at control index 0.
+    fn anchored_paragraph(text: &str, number: u32) -> Paragraph {
+        let mut chars = vec![HwpChar::ExtCtrl {
+            code: 3,
+            ctrl_id: *b"%unk",
+            payload: hwp5_field_begin_payload().to_vec(),
+            ctrl_index: Some(0),
+        }];
+        chars.extend(text.chars().map(HwpChar::Text));
+        chars.push(HwpChar::InlineCtrl {
+            code: 4,
+            payload: hwp5_field_end_payload(number, true).to_vec(),
+        });
+        Paragraph {
+            chars,
+            controls: vec![memo_anchor(number)],
+            ..Paragraph::default()
+        }
+    }
+
+    fn one_cell_table(para: Paragraph) -> Control {
+        Control::Table(Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: vec![Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(100),
+                height: HwpUnit(100),
+                margins: [0; 4],
+                border_fill: BorderFillId(0),
+                header_tail: Vec::new(),
+                paragraphs: vec![para],
+            }],
+            caption: None,
+            extras: Vec::new(),
+        })
+    }
+
+    /// A table's cell memo sits before a direct anchor in the same paragraph's text, so the
+    /// numbers must come back in that order rather than every direct anchor first.
+    #[test]
+    fn memos_follow_the_anchor_position_inside_a_paragraph() {
+        let para = Paragraph {
+            chars: vec![
+                HwpChar::ExtCtrl {
+                    code: 11,
+                    ctrl_id: *b"tbl ",
+                    payload: Vec::new(),
+                    ctrl_index: Some(0),
+                },
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_id: *b"%unk",
+                    payload: hwp5_field_begin_payload().to_vec(),
+                    ctrl_index: Some(1),
+                },
+                HwpChar::InlineCtrl {
+                    code: 4,
+                    payload: hwp5_field_end_payload(2, true).to_vec(),
+                },
+            ],
+            controls: vec![one_cell_table(anchored_paragraph("셀", 1)), memo_anchor(2)],
+            ..Paragraph::default()
+        };
+        let doc = Document {
+            sections: vec![Section {
+                paragraphs: vec![para],
+                extras: Vec::new(),
+            }],
+            ..Document::default()
+        };
+        let numbers: Vec<u32> = memos(&doc).iter().map(|m| m.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
     }
 }

@@ -24,6 +24,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). Check the TOC in Hancom before
   distributing.
 
+- Memo edit ops for same-format HWP5 and HWPX documents: `memo_add`, `memo_set_text` and
+  `memo_remove` in `ahwp edit --ops` and `schemas/edit-ops-v1.schema.json`. An added memo is
+  written as the measured `MEMO_LIST` body on the section's last paragraph in HWP5, or a
+  `fieldBegin type="MEMO"` with its inline `subList` in HWPX, while an existing memo keeps its
+  anchor, author and creation time. A memo read from the other container stays a typed drop
+  ([#619](https://github.com/STAIxBWLB/agent-hwp/issues/619)).
+
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
   render those charts, including Hancom switch-wrapped charts, and preserve the source wrappers
   and fallback parts during HWPX edits. Emit package-path references for Hancom. Give line and

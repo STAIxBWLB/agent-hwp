@@ -216,7 +216,7 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
     std::fs::write(path, &png).unwrap();
 }
 
-/// All 33 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
+/// All 36 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
 /// The kind-coverage fixture chains the paragraph-anchored kinds off each other,
 /// exercises the table kinds on the inserted 3x2 table, and deletes what it created
 /// (clone table, image, field, bookmark, doomed para). The run must exit success:
@@ -232,9 +232,9 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
 /// as a floating Picture with both image parts shipped in the package, and the
 /// indent/outdent round trip leaving the list paragraph back at its original level.
 #[test]
-fn kind_coverage_all_33() {
+fn kind_coverage_all_36() {
     // Future renames of a typed edit kind fail loudly here.
-    const ALL_KINDS: [&str; 33] = [
+    const ALL_KINDS: [&str; 36] = [
         "set_meta",
         "set_page",
         "insert_para",
@@ -268,6 +268,9 @@ fn kind_coverage_all_33() {
         "delete_field",
         "delete_bookmark",
         "delete_para",
+        "memo_add",
+        "memo_set_text",
+        "memo_remove",
     ];
 
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -291,8 +294,8 @@ fn kind_coverage_all_33() {
         })
         .collect();
     assert!(
-        ops.len() >= 33,
-        "fixture must carry at least 33 ops, got {}",
+        ops.len() >= 36,
+        "fixture must carry at least 36 ops, got {}",
         ops.len()
     );
     let mut seen = ops;
@@ -302,7 +305,7 @@ fn kind_coverage_all_33() {
     expected.sort_unstable();
     assert_eq!(
         seen, expected,
-        "fixture op set must equal the 33 typed edit kinds"
+        "fixture op set must equal the 36 typed edit kinds"
     );
 
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
@@ -2938,6 +2941,14 @@ fn case_sensitive_enum_values_rejected() {
 /// address description now states that a run reading does not survive an earlier op of the same
 /// batch changing that paragraph's length. Stripping `description` and `$comment` from both
 /// revisions leaves them identical, so the contract shape did not move.
+///
+/// Re-pinned for #619: three additive ops (`memo_add`, `memo_set_text`, `memo_remove`) and one
+/// `$defs/memoAnchor`. Every instance that validated before still validates with the same
+/// meaning, no op gained a required key, and the id, `$id` and version stay edit-ops-v1.
+///
+/// Re-pinned once more on review: `memo_add.author` gained a `pattern` refusing '/', which splits
+/// the fields of a memo Command string and would be read back truncated. That narrows the schema
+/// for one value class, and no memo Command a Hancom file writes can carry it.
 #[test]
 fn schema_hash_frozen() {
     use sha2::{Digest, Sha256};
@@ -2949,7 +2960,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "a64849400a2fba73ec8ee58d6879f1eb95603a1cdab07e7085927c3e56d8f07d",
+        actual, "007b582460dd5e7259ab4fab903e0396d6daca0a3b4a828032a76246ec990647",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

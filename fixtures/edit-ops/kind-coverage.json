@@ -234,5 +234,23 @@
   {
     "op": "delete_para",
     "matching": "doomed para"
+  },
+  {
+    "op": "memo_add",
+    "section": 0,
+    "anchor": { "para": 0, "start": 16, "end": 17 },
+    "author": "kind_coverage",
+    "body": ["memo body"]
+  },
+  {
+    "op": "memo_set_text",
+    "section": 0,
+    "number": 1,
+    "body": ["memo body two"]
+  },
+  {
+    "op": "memo_remove",
+    "section": 0,
+    "number": 1
   }
 ]

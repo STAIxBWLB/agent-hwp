@@ -634,3 +634,72 @@ fn field_tab_guard_allows_eight_wchar_replacement() {
     assert_eq!(crate::list_fields(&doc)[0].value, "\t");
     assert_eq!(doc.sections[0].paragraphs[0].extras, extras);
 }
+
+/// A memo anchor is two 8-WCHAR field blocks, so adding one shifts every later WCHAR position by
+/// sixteen: on a paragraph carrying an opaque range tag the edit must refuse before inserting the
+/// control, the start and the end.
+#[test]
+fn range_tags_memo_add_refuses_before_inserting_the_field_blocks() {
+    let mut doc = document(&["anchor text"]);
+    tag(&mut doc.sections[0].paragraphs[0]);
+    assert_document_refusal(doc, |doc| {
+        add_memo(
+            doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "someone",
+            Some(1),
+            &["본문".to_string()],
+        )
+    });
+}
+
+/// The same shift in the other direction: removing that memo's two field blocks moves every later
+/// position back by sixteen.
+#[test]
+fn range_tags_memo_remove_refuses_before_deleting_the_field_blocks() {
+    let mut doc = document(&["anchor text", "last paragraph"]);
+    let number = add_memo(
+        &mut doc,
+        0,
+        &MemoAnchor {
+            para: 0,
+            start: 0,
+            end: 0,
+        },
+        "someone",
+        Some(1),
+        &["본문".to_string()],
+    )
+    .unwrap();
+    // Store the body as a native HWP5 record group on the final paragraph (07 L2).
+    doc.meta.source_format = "hwp5".into();
+    let para = &mut doc.sections[0].paragraphs[0];
+    let Control::Generic(memo) = &mut para.controls[0] else {
+        panic!("expected the memo field header");
+    };
+    memo.paragraph_lists.clear();
+    doc.sections[0].paragraphs[1].extras.extend([
+        OpaqueRecord {
+            tag: hwp_model::memo::MEMO_LIST_TAG,
+            data: number.to_le_bytes().to_vec(),
+            children: Vec::new(),
+        },
+        OpaqueRecord {
+            tag: hwp_model::memo::LIST_HEADER_TAG,
+            data: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].to_vec(),
+            children: Vec::new(),
+        },
+        OpaqueRecord {
+            tag: hwp_model::memo::PARA_HEADER_TAG,
+            data: vec![0; 24],
+            children: Vec::new(),
+        },
+    ]);
+    tag(&mut doc.sections[0].paragraphs[0]);
+    assert_document_refusal(doc, |doc| remove_memo(doc, 0, number));
+}
