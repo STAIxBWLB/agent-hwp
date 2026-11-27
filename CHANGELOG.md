@@ -85,6 +85,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   HWP5 and HWPX conversions. HWPX-to-HWP5 conversion writes native inline equation records for
   supported placement ([#621](https://github.com/STAIxBWLB/agent-hwp/issues/621)).
 
+**Fixed**
+
+- HWPX memo bodies stay in the memo appendix and no longer produce orphan rows in render layout.
+
 ## [2.1.1]
 
 **Compatibility**
@@ -97,7 +101,6 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
-- HWPX memo bodies stay in the memo appendix and no longer produce orphan rows in render layout.
 - Native HWP5 height-changing edits keep an unchanged zero-width floating-table host in body
   flow instead of resetting it to page top. Unchanged successors retain their source offsets
   translated by the host's movement until a source page/column boundary, non-increasing source
