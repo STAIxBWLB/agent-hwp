@@ -385,13 +385,18 @@ impl<'a> Parser<'a> {
         );
         let spacing = word(bytes, 6);
         let absolute = spacing & 0x8000 != 0;
-        let spacing = i32::from(spacing & 0x7fff) * if absolute { 4 } else { 1 };
+        // The shared paragraph shape stores lengths at twice HWPUNIT.
+        let spacing = if absolute {
+            unit(spacing & 0x7fff).0 * 2
+        } else {
+            i32::from(spacing)
+        };
         self.document.header.para_shapes.push(ParaShape {
             attr1: u32::from(absolute),
             margin_left: unit(word(bytes, 0)).0 * 2,
             margin_right: unit(word(bytes, 2)).0 * 2,
             indent: i32::from(word(bytes, 4) as i16) * 8,
-            spacing_bottom: unit(word(bytes, 8)).0,
+            spacing_bottom: unit(word(bytes, 8)).0 * 2,
             line_spacing: spacing,
             line_spacing_old: spacing,
             line_spacing_type: u8::from(absolute),

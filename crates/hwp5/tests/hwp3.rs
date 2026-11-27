@@ -132,3 +132,34 @@ fn unsupported_embedded_picture_keeps_the_document_readable() {
     bytes[signature - 32] = b'X';
     assert!(hwp5::hwp3::read_bytes(&bytes).is_err());
 }
+
+#[test]
+fn fixed_line_and_paragraph_spacing_keep_their_lengths() {
+    let mut bytes = prefix(false);
+    shapes(&mut bytes);
+    let paragraph_header = bytes.len();
+    text_list(&mut bytes, &[0xd065]);
+    // The 43-byte paragraph header precedes its shape. A set high bit
+    // marks fixed line spacing in legacy length units.
+    let para_shape = paragraph_header + 43;
+    word_at(&mut bytes, para_shape + 6, 0x8000 | 400);
+    word_at(&mut bytes, para_shape + 8, 75);
+
+    let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+    let shape = &read.document.header.para_shapes[0];
+    assert_eq!(shape.line_spacing_type, 1);
+    assert_eq!(shape.line_spacing, 3200);
+    assert_eq!(shape.line_spacing_old, 3200);
+    assert_eq!(shape.spacing_bottom, 600);
+
+    let output =
+        std::env::temp_dir().join(format!("ahwp-hwp3-spacing-{}.hwpx", std::process::id()));
+    hwpx::write_document(&read.document, &output).unwrap();
+    let header = hwpx::package::HwpxPackage::open(&output)
+        .unwrap()
+        .read_entry_string("Contents/header.xml")
+        .unwrap();
+    std::fs::remove_file(output).unwrap();
+    assert!(header.contains(r#"<hh:lineSpacing type="FIXED" value="1600" unit="HWPUNIT"/>"#));
+    assert!(header.contains(r#"<hc:next value="300" unit="HWPUNIT"/>"#));
+}
