@@ -87,7 +87,7 @@ v0.10.0부터 `--preset`과 문서 틀 플래그는 거부되지 않고 템플�
 DocumentSpec v2(`report_blocks`)에 적용된다.
 
 ```bash
-ahwp new report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
+ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
 ```
 
 - `--section-strips`는 `### N. 제목` 제목을 1x3 절 띠 표(음영 번호 칸, 여백 칸, 아래 테두리 제목

@@ -94,7 +94,7 @@ Both are opt-in and leave the output unchanged when absent. They apply to markdo
 `ahwp new` and to DocumentSpec v2 (`report_blocks`).
 
 ```bash
-ahwp new report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
+ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
 ```
 
 - `--section-strips` turns each `### N. Title` heading into a 1x3 strip table (shaded number,

@@ -88,6 +88,9 @@ fn paragraph_pages(
             "{switch}: 레이아웃 세그먼트 기록이 상한에 걸려 쪽 번호를 확정할 수 없습니다\n해결: 문서를 나누어 생성하거나 {switch}를 끄고 생성하세요"
         );
     }
+    // Font resolution records substitutions on the store's own accumulator; fold them in, as
+    // `render` does, or the fallback count below would always read 0.
+    warnings.absorb(store.issues.finish());
     let coverage = warnings.finish().font_coverage();
     let section = doc.sections.first().ok_or_else(|| {
         anyhow::anyhow!(
@@ -132,7 +135,7 @@ pub fn backfill(
     published: impl Fn(&Document) -> anyhow::Result<Document>,
 ) -> anyhow::Result<TocBackfill> {
     let switch = layout.switch;
-    let body_start = plan.table_paragraph + 1;
+    let body_start = plan.body_start;
     let mut targets: Vec<usize> = plan.entries.iter().map(|e| e.paragraph).collect();
     targets.push(body_start);
     let mut previous: Option<Vec<u32>> = None;
@@ -162,4 +165,24 @@ pub fn backfill(
     anyhow::bail!(
         "{switch}: 레이아웃 {MAX_PASSES}회 안에 목차 쪽 번호가 고정되지 않았습니다\n해결: 목차 항목을 줄이거나 {switch}를 끄고 생성한 뒤 한글에서 목차를 넣으세요"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With an isolated, empty font store every glyph run is a substitution or a miss, so the
+    /// layout pass must report fallbacks. Before the store's own issues were absorbed the
+    /// count was always 0 and the caller's warning could never fire.
+    #[test]
+    fn an_empty_isolated_font_store_reports_fallbacks() {
+        let doc = hwp_convert::from_markdown("## 제목\n\n본문 문단입니다.\n");
+        let layout = TocLayout {
+            fonts: TocFonts::Isolated(&[]),
+            switch: "--toc",
+        };
+        let (pages, fallbacks) = paragraph_pages(&doc, &layout, &[0]).expect("layout");
+        assert_eq!(pages, [0]);
+        assert!(fallbacks > 0, "fallbacks = {fallbacks}");
+    }
 }

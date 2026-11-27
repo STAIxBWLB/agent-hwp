@@ -216,6 +216,49 @@ fn section_strips_are_tables_that_read_back_as_headings() {
             .filter(|t| t["rows"] == 1 && t["cols"] == 3)
             .count();
         assert_eq!(strips, 12, "{ext}");
+        // Join-is-total: every row `render --layout-json` reports (strip tables and cells
+        // included) has its segment in the `cat --with-segments` envelope.
+        let envelope = ok(&run(&[
+            "cat".as_ref(),
+            "--format".as_ref(),
+            "markdown".as_ref(),
+            "--with-segments".as_ref(),
+            "--segments".as_ref(),
+            "v2".as_ref(),
+            out.as_os_str(),
+        ]));
+        let env: serde_json::Value =
+            serde_json::from_str(envelope.lines().last().unwrap()).expect("envelope JSON");
+        let ids: std::collections::BTreeSet<&str> = env["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        let layout_path = tmp(&format!("strips-{ext}.layout.json"));
+        let svg = tmp(&format!("strips-{ext}.svg"));
+        ok(&run(&[
+            "render".as_ref(),
+            out.as_os_str(),
+            "-o".as_ref(),
+            svg.as_os_str(),
+            "--layout-json".as_ref(),
+            layout_path.as_os_str(),
+        ]));
+        let layout: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&layout_path).unwrap()).unwrap();
+        let missing: Vec<String> = layout["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["rows"].as_array().unwrap())
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .filter(|id| !ids.contains(id.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{ext}: layout rows without a segment: {missing:?}"
+        );
     }
 }
 
@@ -287,51 +330,76 @@ fn compose_report_blocks_match_the_published_layout() {
         "개요 3": {"font_size_pt": 13.0, "bold": true},
         "본문": {},
     });
-    let spec = serde_json::json!({
-        "version": "2.0",
-        "document": {"version": "1.0", "styles": styles, "sections": [{"blocks": blocks}]},
-        "report_blocks": {"toc": true, "section_strips": true},
-    });
-    let spec_path = tmp("report.json");
-    std::fs::write(&spec_path, spec.to_string()).unwrap();
-    for ext in ["hwpx", "hwp"] {
-        let out = tmp(&format!("composed.{ext}"));
-        ok(&run(&[
-            "compose".as_ref(),
-            spec_path.as_os_str(),
-            "-o".as_ref(),
-            out.as_os_str(),
-        ]));
-        let rows = toc_rows(&out);
-        assert_eq!(rows.len(), 9, "{ext}: {rows:?}");
-        let titles: Vec<String> = rows.iter().map(|(t, _)| t.clone()).collect();
-        let pages: Vec<u32> = rows.iter().map(|(_, p)| *p).collect();
-        assert_eq!(pages, layout_pages(&out, &titles), "{ext}: {rows:?}");
-        assert!(pages.last().unwrap() > &1, "{ext}: {pages:?}");
-        let md = ok(&run(&[
-            "cat".as_ref(),
-            "--format".as_ref(),
-            "markdown".as_ref(),
-            out.as_os_str(),
-        ]));
-        assert!(md.lines().any(|l| l == "### 2. 절 3-2"), "{ext}\n{md}");
-        if ext == "hwp" {
-            // The published .hwp keeps the line caches the structural writer synthesizes, as
-            // without the TOC. Measuring a re-read copy and publishing that instead cleared them,
-            // and the cacheless layout can paginate away from the measured TOC.
-            let json = ok(&run(&[
-                "cat".as_ref(),
-                "--format".as_ref(),
-                "json".as_ref(),
+    // The plain section, and one whose anchor paragraph also holds a header, a footer and a
+    // page number (controls with no text, so the layout gives that paragraph no segment).
+    let plain = serde_json::json!({"blocks": blocks});
+    let mut decorated = plain.clone();
+    decorated["header"] = serde_json::json!({"default": [para("본문", "머리말".into())]});
+    decorated["footer"] = serde_json::json!({"default": [para("본문", "꼬리말".into())]});
+    decorated["page_number"] = serde_json::json!({"position": "bottom_center", "start": 1});
+    for (variant, section) in [("plain", plain), ("decorated", decorated)] {
+        let spec = serde_json::json!({
+            "version": "2.0",
+            "document": {"version": "1.0", "styles": styles, "sections": [section]},
+            "report_blocks": {"toc": true, "section_strips": true},
+        });
+        let spec_path = tmp(&format!("report-{variant}.json"));
+        std::fs::write(&spec_path, spec.to_string()).unwrap();
+        // `.hwp` compose with a header or footer fails its semantic self-check on main
+        // without report_blocks too (a separate writer issue), so the decorated case runs on
+        // HWPX only.
+        let exts: &[&str] = if variant == "decorated" {
+            &["hwpx"]
+        } else {
+            &["hwpx", "hwp"]
+        };
+        for &ext in exts {
+            let ext_label = format!("{variant}.{ext}");
+            let out = tmp(&format!("composed-{ext_label}"));
+            ok(&run(&[
+                "compose".as_ref(),
+                spec_path.as_os_str(),
+                "-o".as_ref(),
                 out.as_os_str(),
             ]));
-            let ir: serde_json::Value = serde_json::from_str(&json).expect("IR JSON");
-            let paras = ir["sections"][0]["paragraphs"].as_array().unwrap();
-            let cached = paras
-                .iter()
-                .filter(|p| p["line_segs"].as_array().is_some_and(|s| !s.is_empty()))
-                .count();
-            assert_eq!(cached, paras.len(), "{ext}: paragraphs without line caches");
+            let rows = toc_rows(&out);
+            assert_eq!(rows.len(), 9, "{ext_label}: {rows:?}");
+            let titles: Vec<String> = rows.iter().map(|(t, _)| t.clone()).collect();
+            let pages: Vec<u32> = rows.iter().map(|(_, p)| *p).collect();
+            assert_eq!(pages, layout_pages(&out, &titles), "{ext_label}: {rows:?}");
+            assert!(pages.last().unwrap() > &1, "{ext_label}: {pages:?}");
+            let md = ok(&run(&[
+                "cat".as_ref(),
+                "--format".as_ref(),
+                "markdown".as_ref(),
+                out.as_os_str(),
+            ]));
+            assert!(
+                md.lines().any(|l| l == "### 2. 절 3-2"),
+                "{ext_label}\n{md}"
+            );
+            if ext == "hwp" {
+                // The published .hwp keeps the line caches the structural writer synthesizes, as
+                // without the TOC. Measuring a re-read copy and publishing that instead cleared them,
+                // and the cacheless layout can paginate away from the measured TOC.
+                let json = ok(&run(&[
+                    "cat".as_ref(),
+                    "--format".as_ref(),
+                    "json".as_ref(),
+                    out.as_os_str(),
+                ]));
+                let ir: serde_json::Value = serde_json::from_str(&json).expect("IR JSON");
+                let paras = ir["sections"][0]["paragraphs"].as_array().unwrap();
+                let cached = paras
+                    .iter()
+                    .filter(|p| p["line_segs"].as_array().is_some_and(|s| !s.is_empty()))
+                    .count();
+                assert_eq!(
+                    cached,
+                    paras.len(),
+                    "{ext_label}: paragraphs without line caches"
+                );
+            }
         }
     }
 }

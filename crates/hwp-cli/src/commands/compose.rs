@@ -190,14 +190,12 @@ fn execute_spec_v2_with_source(
     if spec.report_blocks.toc {
         match hwp_convert::report_blocks::insert_toc(&mut document) {
             Some(plan) => {
-                // Hermetic font files (MCP) lay out from their own directories; the CLI uses
-                // HWP_FONT_DIR like `render`.
-                let font_dirs: Vec<std::path::PathBuf> = match font_files {
-                    Some(files) => files
-                        .iter()
-                        .filter_map(|f| f.parent().map(Path::to_path_buf))
-                        .collect(),
-                    None => crate::commands::convert::resolve_font_dirs(Vec::new()),
+                // The CLI lays out from HWP_FONT_DIR like `render`; hermetic font files (MCP)
+                // lay out from exactly those files with no system fallback.
+                let font_dirs: Vec<std::path::PathBuf> = if font_files.is_some() {
+                    Vec::new()
+                } else {
+                    crate::commands::convert::resolve_font_dirs(Vec::new())
                 };
                 let layout = hwp_cli::toc::TocLayout {
                     fonts: match font_files {
@@ -219,8 +217,13 @@ fn execute_spec_v2_with_source(
                     )
                 })?;
                 if filled.font_fallbacks > 0 {
+                    let remedy = if font_files.is_some() {
+                        "문서가 쓰는 글꼴 파일을 글꼴 목록에 더하세요"
+                    } else {
+                        "HWP_FONT_DIR로 문서 글꼴을 지정하세요"
+                    };
                     toc_warnings.push(format!(
-                        "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 HWP_FONT_DIR로 문서 글꼴을 지정하세요",
+                        "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 {remedy}",
                         filled.font_fallbacks
                     ));
                 }

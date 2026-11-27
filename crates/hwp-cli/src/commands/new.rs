@@ -394,6 +394,12 @@ pub fn execute(
         hwp5::validate_official_hwp_numbering(&doc).map_err(|error| anyhow::anyhow!(error))?;
     }
 
+    if !options.toc && !options.font_dirs.is_empty() {
+        import_warnings.push(
+            "--font-dir는 --toc 레이아웃 계산에만 쓰입니다. --toc 없이 지정해 무시했습니다"
+                .to_string(),
+        );
+    }
     // Opt-in report blocks (#620). Strips come first, so the TOC lists a strip's `N. Title`.
     if options.section_strips || options.toc {
         if matches!(input_kind, InputKind::Json) {

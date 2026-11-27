@@ -64,14 +64,15 @@ pub fn heading_level(doc: &Document, para: &Paragraph) -> Option<u8> {
         .filter(|n| (1..=6).contains(n))
 }
 
-/// Splits `N. Title` (ASCII digits, a dot, then the title) into its parts.
+/// Splits `N. Title` into its parts: one or more ASCII digits, a dot, then a space and the
+/// title. `1.1 Title`, `2.3. Title` and `2026.11 Title` are not of this form.
 fn split_numbered(text: &str) -> Option<(&str, &str)> {
-    let dot = text.find('.')?;
-    let (number, rest) = text.split_at(dot);
-    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
         return None;
     }
-    let title = rest[1..].trim_start();
+    let (number, rest) = text.split_at(digits);
+    let title = rest.strip_prefix(". ")?.trim_start();
     (!title.is_empty()).then_some((number, title))
 }
 
@@ -345,6 +346,9 @@ pub struct TocPlan {
     pub entries: Vec<TocEntry>,
     /// Top-level paragraph index (section 0) of the paragraph anchoring the TOC table.
     pub table_paragraph: usize,
+    /// Top-level paragraph index (section 0) where the body starts: the first paragraph with
+    /// content after the TOC, which carries the page break and the page-number restart.
+    pub body_start: usize,
     /// How many paragraphs [`insert_toc`] put in front of the body.
     pub front_paragraphs: usize,
 }
@@ -542,6 +546,18 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
         .chars
         .push(HwpChar::CharCtrl(ctrl_char::PARA_BREAK));
     move_leading_definitions(&mut doc.sections[0].paragraphs[0], &mut toc_title);
+    // The section/column break bits (0x03) belong to the paragraph that carries the
+    // definitions (from_markdown sets them there): move them with the definitions, so the old
+    // first paragraph never ends up 0x07 (compat rule J1 records body page breaks as 0x04).
+    let moved_breaks = doc.sections[0].paragraphs[0].header.break_type & 0x03;
+    if toc_title
+        .controls
+        .iter()
+        .any(|c| matches!(c, Control::SectionDef(_)))
+    {
+        doc.sections[0].paragraphs[0].header.break_type &= !0x03;
+        toc_title.header.break_type |= moved_breaks;
+    }
     // A first paragraph that held only the definitions (DocumentSpec output) is now empty:
     // drop it, so the body starts at a paragraph with content of its own.
     let dropped_first = {
@@ -563,7 +579,13 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
     let insert_at = 0;
     let section = &mut doc.sections[0];
     section.paragraphs.splice(insert_at..insert_at, front);
-    let body_start = insert_at + front_paragraphs;
+    // The body starts at the first paragraph the layout gives a segment, i.e. one with
+    // content. A DocumentSpec anchor that keeps only header/footer/page-number controls has
+    // none (the renderer emits no row for it), so it stays before the break with the TOC.
+    let first_body = insert_at + front_paragraphs;
+    let body_start = (first_body..section.paragraphs.len())
+        .find(|&i| paragraph_has_content(&section.paragraphs[i]))
+        .unwrap_or(first_body);
     if let Some(body) = section.paragraphs.get_mut(body_start) {
         // Page break before the body (0x04), then restart page numbering at 1 there.
         body.header.break_type |= 0x04;
@@ -581,8 +603,22 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
             })
             .collect(),
         table_paragraph: insert_at + 1,
+        body_start,
         front_paragraphs,
     })
+}
+
+/// Whether the layout gives `para` a segment of its own: any text, or any control other than
+/// the invisible section-level ones (definitions, header/footer, page numbering).
+fn paragraph_has_content(para: &Paragraph) -> bool {
+    para.chars.iter().any(|c| matches!(c, HwpChar::Text(_)))
+        || para.controls.iter().any(|c| match c {
+            Control::SectionDef(_) => false,
+            other => !matches!(
+                &other.ctrl_id(),
+                b"cold" | b"head" | b"foot" | b"nwno" | b"pgnp" | b"pghd" | b"pgct" | b"atno"
+            ),
+        })
 }
 
 /// Writes `pages[i]` into row `i`'s page cell. `pages.len()` must equal the plan's entry count.
@@ -622,6 +658,39 @@ mod tests {
 
     fn doc(md: &str) -> Document {
         crate::from_markdown(md)
+    }
+
+    /// Only `N. Title` (digits, ". ", title) is a numbered heading; decimal, multi-level and
+    /// date-like numbers are not split.
+    #[test]
+    fn only_single_number_dot_space_headings_split() {
+        assert_eq!(split_numbered("1. 추진 배경"), Some(("1", "추진 배경")));
+        assert_eq!(split_numbered("12.  계획"), Some(("12", "계획")));
+        for text in [
+            "1.1 추진 배경",
+            "2.3. 제목",
+            "2026.11 실적",
+            "1.",
+            "1.제목",
+            ". 제목",
+        ] {
+            assert_eq!(split_numbered(text), None, "{text}");
+        }
+    }
+
+    /// The section/column break bits move with the definitions to the TOC title, and the
+    /// body paragraph is a plain page break (0x04), never 0x07.
+    #[test]
+    fn toc_moves_the_section_break_bits_with_the_definitions() {
+        let mut d = doc("## Ⅰ. 개요\n\n본문\n\n## Ⅱ. 계획\n");
+        let first_bits = d.sections[0].paragraphs[0].header.break_type & 0x03;
+        let plan = insert_toc(&mut d).expect("headings exist");
+        let paras = &d.sections[0].paragraphs;
+        assert_eq!(paras[0].header.break_type & 0x03, first_bits);
+        assert_eq!(paras[plan.body_start].header.break_type, 0x04);
+        for (i, p) in paras.iter().enumerate().skip(1) {
+            assert_eq!(p.header.break_type & 0x03, 0, "paragraph {i}");
+        }
     }
 
     #[test]
