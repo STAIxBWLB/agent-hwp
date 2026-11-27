@@ -357,6 +357,8 @@ const HML_RECOVERY: &str = "한글(한컴오피스)에서 열어 HWPX 또는 HWP
 /// JSON 봉투로 함께 내고, 그 값이 봉투 버전을 고른다 — v1은 markdown 전용으로 바이트가
 /// 고정된 v0.8.x 봉투(D-04), v2는 markdown과 json 두 포맷 전용(D-03)이며
 /// `schemas/segment-envelope-v2.schema.json`이 정본이다.
+/// `memos` appends the memo appendix (`--with-memos`) after plain or markdown output.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     path: &Path,
     format: TextFormat,
