@@ -1,0 +1,9 @@
+/target/
+/coverage/
+/artifacts/**
+!/artifacts/*/
+!/artifacts/*/regression-*
+/corpus/**
+!/corpus/*/
+!/corpus/*/seed-*
+/.cargo-tools/
