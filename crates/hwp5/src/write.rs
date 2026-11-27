@@ -2930,13 +2930,9 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
                 // HWP5 keeps memo bodies as MEMO_LIST lists on the section's last paragraph,
                 // which this writer does not synthesize yet, and a `%%me` field without its
                 // body must never be written. Drop the field with its FIELD_END, keep the
-                // anchor text, and record the loss.
-                warnings.loss(
-                    PreservationCode::ControlRemoved,
-                    PreservationResourceKind::Control,
-                    PreservationDisposition::Removed,
-                    1,
-                );
+                // anchor text. The loss is not recorded here: the conversion's semantic check
+                // already reports the missing control as `control_removed`, as it does for the
+                // HWPX writer's memo drop, so recording it here too would count it twice.
                 removed.push(i as u32);
                 removed_memo = true;
                 continue;

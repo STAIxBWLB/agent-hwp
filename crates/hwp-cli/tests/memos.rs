@@ -122,23 +122,32 @@ fn memo_fixtures_list_identical_memos_in_both_formats() {
 /// without `MEMO_LIST`, HWPX never gets an HWP5-only body), and the drop is a typed loss.
 #[test]
 fn cross_format_memos_are_a_typed_loss() {
-    let cases: Vec<(PathBuf, &str)> = (1..=4)
-        .flat_map(|n| {
+    // (source, target extension, memo count): each dropped memo is one control, counted once.
+    let cases: Vec<(PathBuf, &str, usize)> = [(1, 1), (2, 2), (3, 2), (4, 1)]
+        .into_iter()
+        .flat_map(|(n, memos)| {
             [
-                (root().join(format!("fixtures/hwp5/memo{n}.hwp")), "hwpx"),
-                (root().join(format!("fixtures/hwpx/memo{n}.hwpx")), "hwp"),
+                (
+                    root().join(format!("fixtures/hwp5/memo{n}.hwp")),
+                    "hwpx",
+                    memos,
+                ),
+                (
+                    root().join(format!("fixtures/hwpx/memo{n}.hwpx")),
+                    "hwp",
+                    memos,
+                ),
             ]
         })
         .collect();
-    if cases
-        .iter()
-        .fold(false, |acc, (p, _)| fixture_skip::fixture_missing(p) || acc)
-    {
+    if cases.iter().fold(false, |acc, (p, _, _)| {
+        fixture_skip::fixture_missing(p) || acc
+    }) {
         return;
     }
     let dir = std::env::temp_dir().join(format!("ahwp-memo-cross-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for (i, (src, ext)) in cases.iter().enumerate() {
+    for (i, (src, ext, memos)) in cases.iter().enumerate() {
         let out = dir.join(format!("{i}.{ext}"));
         let report = dir.join(format!("{i}.json"));
         let run = Command::new(env!("CARGO_BIN_EXE_ahwp"))
@@ -152,8 +161,16 @@ fn cross_format_memos_are_a_typed_loss() {
             .output()
             .unwrap();
         assert!(run.status.success(), "{src:?}: {}", text(&run.stderr));
-        let report = std::fs::read_to_string(&report).unwrap();
-        assert!(report.contains("\"control_removed\""), "{src:?}: {report}");
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+        let removed: u64 = report["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["code"] == "control_removed")
+            .map(|e| e["count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(removed, *memos as u64, "{src:?}: {report}");
         let back = cat(&[out.to_str().unwrap(), "--with-memos"]);
         assert!(back.status.success(), "{src:?}");
         assert!(!text(&back.stdout).contains("[메모 "), "{src:?}");
