@@ -24,12 +24,13 @@ dot remote run "$PWD" -- bash fuzz/campaign.sh 60
 
 `fuzz/campaign.sh` installs `cargo-fuzz` when it is missing, builds one target at a time, and prints
 one `target=<name> seconds=<n> exit=<code> execs=<n> new_artifacts=<n>` line per target. The same
-loop runs by hand:
+loop runs by hand, with the limits #623 AC1 sets (no panic, no OOM over 256 MiB per input, no
+timeout over 2 s per input):
 
 ```sh
 export CARGO_BUILD_JOBS=2
 for target in fuzz_hwp5_read fuzz_hwpx_read fuzz_wmf_dib fuzz_equation_markdown; do
-    cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=5 -rss_limit_mb=2048 -malloc_limit_mb=2048
+    cargo +nightly fuzz run "$target" -- -max_total_time=60 -timeout=2 -rss_limit_mb=2048 -malloc_limit_mb=256
 done
 ```
 
