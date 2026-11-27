@@ -199,12 +199,15 @@ fn execute_spec_v2_with_source(
                         .collect(),
                     None => crate::commands::convert::resolve_font_dirs(Vec::new()),
                 };
+                // The file written below is `write(rt(document))` (semantic validation needs the
+                // published form), and it reads back as `rt(rt(document))`, so measure exactly
+                // that: the HWP5 writer keeps a re-read file's line caches instead of
+                // synthesizing them, so one round trip alone can paginate differently.
                 let filled = hwp_cli::toc::backfill(&mut document, &plan, &font_dirs, |doc| {
-                    crate::commands::new::published_round_trip(doc, write_hwp)
+                    let once = crate::commands::new::published_round_trip(doc, write_hwp)?;
+                    crate::commands::new::published_round_trip(&once, write_hwp)
                 })?;
-                // Write `document` itself: backfill measured exactly `write(document)`. Writing
-                // a re-read copy instead can paginate differently (the HWP5 writer keeps a
-                // re-read file's line caches rather than synthesizing them).
+                document = crate::commands::new::published_round_trip(&document, write_hwp)?;
                 if filled.font_fallbacks > 0 {
                     toc_warnings.push(format!(
                         "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 HWP_FONT_DIR로 문서 글꼴을 지정하세요",
