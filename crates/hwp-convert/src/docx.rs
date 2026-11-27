@@ -1449,10 +1449,10 @@ mod tests {
                 extras: vec![],
                 raw_children: vec![],
                 gso_shapes: vec![],
-                equation: Some(Equation {
+                equation: Some(Box::new(Equation {
                     script: "x^2".to_string(),
                     ..Equation::default()
-                }),
+                })),
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,

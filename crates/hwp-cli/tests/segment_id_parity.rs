@@ -343,10 +343,10 @@ fn which_paragraphs_always_have_a_para_segment_agrees_across_both_implementation
         text_boxes: Vec::new(),
     });
     let mut equation = generic(*b"eqed");
-    equation.equation = Some(hwp_model::Equation {
+    equation.equation = Some(Box::new(hwp_model::Equation {
         script: "x".into(),
         ..Default::default()
-    });
+    }));
     let whitespace = Paragraph {
         chars: "   ".chars().map(HwpChar::Text).collect(),
         ..Default::default()

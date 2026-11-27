@@ -36,6 +36,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   stderr never carry a matched value, and `--report` may not alias the input or the output.
   Hancom has not yet opened a redacted file: GM-10 stays open until it does.
 
+- Typeset equation matrices, centered operator limits, and stretchy delimiters in PNG, SVG,
+  and PDF. Preserve equation font size, color, baseline, version, and font name in supported
+  HWP5 and HWPX conversions. HWPX-to-HWP5 conversion writes native inline equation records for
+  supported placement ([#621](https://github.com/STAIxBWLB/agent-hwp/issues/621)).
+
 ## [2.1.1]
 
 **Compatibility**

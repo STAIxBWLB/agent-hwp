@@ -404,7 +404,7 @@ pub struct GenericControl {
     pub gso_shapes: Vec<ShapeGeom>,
     /// 수식(hp:equation) — 렌더 전용(box+스크립트 근사). 없으면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub equation: Option<Equation>,
+    pub equation: Option<Box<Equation>>,
     /// 다단 정의(`cold`/hp:colPr) — 렌더러 단 배치·구분선용. 없으면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_def: Option<ColumnDef>,
@@ -446,30 +446,61 @@ pub struct ColumnDef {
     pub divider: Option<crate::header::BorderLine>,
 }
 
-/// 수식 개체 — 렌더러가 상자+스크립트 텍스트로 근사한다.
+/// An equation script, its common object geometry, and its EQEDIT properties.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Equation {
-    /// HWP 수식 스크립트 원문.
     pub script: String,
-    /// 크기(HWPUNIT). 0이면 렌더러가 추정.
+    /// Object size in HWPUNIT. Zero leaves the size to the renderer.
     pub width: i32,
     pub height: i32,
-    /// 글자처럼 취급(인라인)이면 true.
     pub inline: bool,
-    /// 떠 있는 경우 페이지 절대 오프셋(HWPUNIT).
+    /// Object offsets in HWPUNIT.
     pub x: i32,
     pub y: i32,
-    /// hwpx `<hp:equation>`의 시작 태그 속성 원문(`id` 제외 — writer가 재부여).
-    /// 글자색·기준선·baseUnit·수식 글꼴·zOrder·본문배치 등 IR이 의미 모델링하지 않는
-    /// 속성을 왕복에서 보존하기 위한 pass-through다([`SectionDef::secpr_raw_children`]
-    /// 와 같은 규약). 비어 있으면(hwp5 출신·합성) writer가 표준값을 방출한다.
+    /// EQEDIT flags. Bit 0 selects line mode.
+    #[serde(default)]
+    pub props: u32,
+    /// Equation font size in HWPUNIT. Zero selects the geometry-based fallback.
+    #[serde(default)]
+    pub base_unit: u32,
+    /// HWP COLORREF (0x00BBGGRR).
+    #[serde(default)]
+    pub text_color: u32,
+    #[serde(default)]
+    pub baseline: i16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_name: Option<String>,
+    /// Common object placement when available in the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<GsoPlacement>,
+    /// Comment stored in the common object header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The source contains HWPX-only object properties that cannot be synthesized as HWP5.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hwpx_only: bool,
+    /// Original HWPX start-tag attributes (except the regenerated ID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_attrs: Option<String>,
-    /// 개체 공통 자식(`hp:sz`·`hp:pos`·`hp:outMargin`·caption 등)의 원문 XML을 등장
-    /// 순서대로 보존한다(`hp:script`는 제외 — script 필드가 정본). 비어 있으면 writer가
-    /// width/height/inline/x/y와 hwp5 gso 공통 헤더로 재구성한다.
+    /// Original HWPX children in order, excluding the modeled script.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw_props: Vec<String>,
+}
+
+impl Equation {
+    /// Defaults for a newly authored equation. The paired Hancom fixtures
+    /// record these values for the single-line equation.
+    pub fn authored() -> Self {
+        Self {
+            base_unit: 1000,
+            baseline: 86,
+            version: Some("Equation Version 60".into()),
+            font_name: Some("HancomEQN".into()),
+            ..Self::default()
+        }
+    }
 }
 
 /// 도형 종류 (hwpx 그리기 개체).

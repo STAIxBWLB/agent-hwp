@@ -243,7 +243,7 @@ fn parse_paragraph(
                             extras: Vec::new(),
                             raw_children: Vec::new(),
                             gso_shapes: Vec::new(),
-                            equation: Some(eq),
+                            equation: Some(Box::new(eq)),
                             column_def: None,
                             caption: None,
                             hwpx_raw_xml: None,
@@ -1684,9 +1684,39 @@ fn parse_equation(
     let mut script = attr(start, "script").unwrap_or_default();
     let (mut width, mut height, mut x, mut y) = (0i32, 0i32, 0i32, 0i32);
     let mut inline = true;
-    // Preserve unmodeled attributes (character color, baseUnit, equation font, zOrder, body placement,
-    // etc.) raw for round-trips. Exclude id because the writer renumbers it document-wide.
-
+    let mut saw_position = false;
+    let mut placement = hwp_model::GsoPlacement {
+        z_order: attr_i32(start, "zOrder").unwrap_or(0),
+        ..Default::default()
+    };
+    let mut description = None;
+    let mut hwpx_only = start.attributes().flatten().any(|attribute| {
+        !matches!(
+            attribute.key.local_name().as_ref().as_bytes(),
+            b"id"
+                | b"zOrder"
+                | b"numberingType"
+                | b"textWrap"
+                | b"textFlow"
+                | b"lock"
+                | b"dropcapstyle"
+                | b"script"
+                | b"lineMode"
+                | b"baseUnit"
+                | b"textColor"
+                | b"baseLine"
+                | b"version"
+                | b"font"
+        )
+    }) || [
+        ("numberingType", &["EQUATION"][..]),
+        ("textWrap", &["TOP_AND_BOTTOM"][..]),
+        ("textFlow", &["BOTH_SIDES"][..]),
+        ("lock", &["0"][..]),
+        ("dropcapstyle", &["None"][..]),
+    ]
+    .into_iter()
+    .any(|(key, values)| attr(start, key).is_some_and(|value| !values.contains(&value.as_str())));
     let raw_attrs = raw_attrs_except(start, b"id");
     let mut raw_props = Vec::new();
     if !empty {
@@ -1701,17 +1731,55 @@ fn parse_equation(
                         b"sz" => {
                             width = attr_i32(e, "width").unwrap_or(width);
                             height = attr_i32(e, "height").unwrap_or(height);
+                            hwpx_only |= ["widthRelTo", "heightRelTo"]
+                                .into_iter()
+                                .any(|key| attr(e, key).is_some_and(|value| value != "ABSOLUTE"));
+                            hwpx_only |= attr(e, "protect").is_some_and(|value| value != "0");
                             raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
                         b"pos" => {
+                            saw_position = true;
                             inline = attr(e, "treatAsChar").as_deref() == Some("1");
                             x = attr_offset_i32(e, "horzOffset").unwrap_or(0);
                             y = attr_offset_i32(e, "vertOffset").unwrap_or(0);
+                            placement.affect_line_spacing =
+                                attr(e, "affectLSpacing").as_deref() == Some("1");
+                            placement.flow_with_text =
+                                attr(e, "flowWithText").as_deref() == Some("1");
+                            placement.vert_rel_to =
+                                vert_rel_to_code(attr(e, "vertRelTo").as_deref());
+                            placement.horz_rel_to =
+                                horz_rel_to_code(attr(e, "horzRelTo").as_deref());
+                            placement.vert_align = align_code(attr(e, "vertAlign").as_deref());
+                            placement.horz_align = align_code(attr(e, "horzAlign").as_deref());
+                            hwpx_only |=
+                                attr(e, "holdAnchorAndSO").is_some_and(|value| value != "0");
+                            hwpx_only |= attr(e, "allowOverlap").as_deref() != Some("0")
+                                || attr(e, "vertRelTo").as_deref() != Some("PARA")
+                                || attr(e, "horzRelTo").as_deref() != Some("PARA")
+                                || attr(e, "vertAlign").as_deref() != Some("TOP")
+                                || attr(e, "horzAlign").as_deref() != Some("LEFT");
                             raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
-                        // Also preserve other common children such as outMargin/caption/shapeComment
-                        // raw.
-                        _ => raw_props.push(capture_element(reader, e, is_empty_el)?),
+                        b"outMargin" => {
+                            placement.out_margins = ["left", "right", "top", "bottom"]
+                                .map(|name| attr_margin_u16(e, name));
+                            raw_props.push(capture_element(reader, e, is_empty_el)?);
+                        }
+                        b"shapeComment" if is_start => {
+                            let raw = capture_element(reader, e, false)?;
+                            // Re-read just this element so the exact XML remains in raw_props.
+                            let mut comment = XmlReader::from_str(&raw);
+                            if matches!(next_event(&mut comment)?, Event::Start(_)) {
+                                description =
+                                    Some(read_element_text(&mut comment, b"shapeComment")?);
+                            }
+                            raw_props.push(raw);
+                        }
+                        _ => {
+                            hwpx_only = true;
+                            raw_props.push(capture_element(reader, e, is_empty_el)?);
+                        }
                     }
                 }
                 Event::End(e) if e.local_name().as_ref().as_bytes() == b"equation" => break,
@@ -1720,6 +1788,25 @@ fn parse_equation(
             }
         }
     }
+    placement.width = width;
+    placement.height = height;
+    placement.treat_as_char = inline;
+    placement.horz_offset = x;
+    placement.vert_offset = y;
+    // Only the inline, flowing placement was measured in the paired fixtures.
+    hwpx_only |= !saw_position
+        || !inline
+        || !placement.flow_with_text
+        || placement.affect_line_spacing
+        || attr(start, "textWrap").as_deref() != Some("TOP_AND_BOTTOM");
+    let color = attr(start, "textColor").map_or(0, |value| {
+        if value.starts_with('#') {
+            parse_color(&value)
+        } else {
+            u32::MAX
+        }
+    });
+    hwpx_only |= color == u32::MAX;
     Ok(Equation {
         script: script.trim().to_string(),
         width,
@@ -1727,6 +1814,17 @@ fn parse_equation(
         inline,
         x,
         y,
+        props: u32::from(attr(start, "lineMode").as_deref() == Some("LINE")),
+        base_unit: attr_u32(start, "baseUnit").unwrap_or(0),
+        text_color: if color == u32::MAX { 0 } else { color },
+        baseline: attr(start, "baseLine")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+        version: attr(start, "version").filter(|value| !value.is_empty()),
+        font_name: attr(start, "font").filter(|value| !value.is_empty()),
+        placement: Some(placement),
+        description,
+        hwpx_only,
         raw_attrs,
         raw_props,
     })

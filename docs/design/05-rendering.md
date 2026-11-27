@@ -238,21 +238,11 @@ columns side by side (test `다단_2단_렌더`).
 
 ### 1.9 Equation typesetting (`equation.rs`, a mini-TeX)
 
-Hancom equations store **a text script** (EQN compatible) rather than glyphs (hwp5 EQEDIT record 0x58:
-attr(4) + len(2) + WCHAR[len]; the script of hwpx `<hp:equation>`). `equation.rs` tokenizes the
-script, builds a math tree, typesets it with a box model and emits glyph runs plus fraction and
-radical lines (`Item::Line`) in **baseline-relative coordinates**.
-
-**Grammar (Hancom equation spec rev1.2):** `over`/`atop` (fractions), `sqrt` (radical), `^`/`_`
-(scripts), `{ }` (groups), `#` (line break, a vertical stack of rows), `&` (column alignment, a space
-in v1), `~` and `` ` `` (spaces), plus mappings for Greek letters, operators and function words. The
-AST is `Row/Stack/Sym/Frac/Script/Sqrt/Space`. **A stack (multiple rows)** is laid out vertically
-using each row's real height (a fraction row is taller). **Sizing is a two-pass process**: typeset
-trially at a 12pt baseline, measure the real height, scale to fit `eq.height` (preventing multi-row
-equations from being oversized) and align to the top. Verified against the ground truth
-`equation.hwp/.hwpx` (multi-row ΑΒΓ, ∑, fractions, radicals and scripts) matching Hancom structurally
-(test `수식_정답지_렌더`). Still to come: italic variables versus roman function names, matrices and
-large-operator limits.
+The typesetter reads the script and equation properties and emits glyph runs and vector paths in
+baseline-relative coordinates. Matrices align columns on `&` and rows on `#`. Large-operator limits
+are centered and paired delimiters grow with the enclosed box. A quoted ampersand is a literal.
+Font size, color and baseline come from the equation record when available. Missing font size
+uses object-height fitting. Exact Hancom layout comparison remains open.
 
 ### 1.10 Page numbers (`PageNumberState`, `page_number.rs`)
 

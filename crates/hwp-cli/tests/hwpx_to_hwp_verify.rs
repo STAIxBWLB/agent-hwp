@@ -573,21 +573,56 @@ fn font_classification_loss_is_counted_without_exposing_payload() {
 }
 
 #[test]
-fn opaque_equation_loss_still_refuses_publication() {
+fn genuine_equations_convert_to_hwp_with_saved_properties() {
     let input = fixture("fixtures/hwpx/equation-ampersand-groundtruth.hwpx");
     if fixture_skip::fixture_missing(&input) {
         return;
     }
-    let dir = workspace("equation-loss");
-    let output = dir.join("refused.hwp");
-    let result = metadata_edit(&input, &output);
-    assert!(!result.status.success(), "opaque equation loss must refuse");
-    assert!(String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"));
-    assert!(!output.exists(), "lossy equation output must not publish");
+    let dir = workspace("genuine-equations");
+    let output = dir.join("equations.hwp");
+    // This fixture has package settings and list levels outside the native
+    // verification projection. Check equation properties in the real conversion.
+    let result = command()
+        .arg("convert")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let document = hwp5::read_document(&output).unwrap().document;
+    let equations: Vec<_> = document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .filter_map(|control| match control {
+            hwp_model::Control::Generic(generic) => generic
+                .equation
+                .as_ref()
+                .map(|equation| (equation, &generic.data[32..36])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(equations.len(), 2);
+    assert_ne!(equations[0].1, equations[1].1);
+    for ((equation, id), baseline) in equations.into_iter().zip([86, 67]) {
+        assert_ne!(id, &[0; 4]);
+        assert_eq!(equation.base_unit, 1000);
+        assert_eq!(equation.text_color, 0);
+        assert_eq!(equation.baseline, baseline);
+        assert_eq!(equation.version.as_deref(), Some("Equation Version 60"));
+        assert_eq!(equation.font_name.as_deref(), Some("HancomEQN"));
+        assert!(equation.inline);
+        assert!(equation.width > 0 && equation.height > 0);
+    }
 }
 
 #[test]
-fn synthetic_opaque_equation_loss_still_refuses_publication() {
+fn equation_with_an_unmodeled_child_still_refuses_publication() {
     let dir = workspace("public-equation-loss");
     let spec = dir.join("equation.json");
     std::fs::write(
@@ -614,14 +649,73 @@ fn synthetic_opaque_equation_loss_still_refuses_publication() {
         "equation setup: {}",
         String::from_utf8_lossy(&composed.stderr)
     );
-    let document = hwpx::read_document(&input).unwrap().document;
-    assert!(document.sections.iter().flat_map(|section| &section.paragraphs)
-        .flat_map(|paragraph| &paragraph.controls).any(|control| {
-            matches!(control, hwp_model::Control::Generic(generic) if generic.equation.as_ref().is_some_and(|equation| equation.script == "\"&\""))
-        }), "public source must retain its opaque equation before the edit");
-    let original = std::fs::read(&input).unwrap();
+    fn assert_equation_defaults(document: &hwp_model::Document) {
+        let equation = document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Generic(generic) => generic.equation.as_deref(),
+                _ => None,
+            })
+            .expect("equation");
+        let defaults = hwp_model::Equation::authored();
+        assert_eq!(equation.script, "\"&\"");
+        assert_eq!(equation.base_unit, 1000);
+        assert_eq!(equation.baseline, 86);
+        assert_eq!(equation.version, defaults.version);
+        assert_eq!(equation.font_name, defaults.font_name);
+    }
+    assert_equation_defaults(&hwpx::read_document(&input).unwrap().document);
+    let supported = dir.join("supported.hwp");
+    let converted = metadata_edit(&input, &supported);
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    assert_equation_defaults(&hwp5::read_document(&supported).unwrap().document);
+
+    for (name, original, replacement) in [
+        ("floating", r#"treatAsChar="1""#, r#"treatAsChar="0""#),
+        ("overlap", r#"allowOverlap="0""#, r#"allowOverlap="1""#),
+        ("wrap", "TOP_AND_BOTTOM", "IN_FRONT_OF_TEXT"),
+        ("color", "#000000", "none"),
+    ] {
+        let source = dir.join(format!("{name}.hwpx"));
+        rewrite_public_entry(&input, &source, "Contents/section0.xml", |xml| {
+            let start = xml.find("<hp:equation").unwrap();
+            let end = start + xml[start..].find("</hp:equation>").unwrap();
+            assert!(xml[start..end].contains(original));
+            format!(
+                "{}{}{}",
+                &xml[..start],
+                xml[start..end].replacen(original, replacement, 1),
+                &xml[end..]
+            )
+        });
+        let output = dir.join(format!("{name}.hwp"));
+        let result = metadata_edit(&source, &output);
+        assert!(!result.status.success(), "{name}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists());
+    }
+
+    let opaque = dir.join("opaque.hwpx");
+    rewrite_public_entry(&input, &opaque, "Contents/section0.xml", |xml| {
+        xml.replace(
+            "</hp:equation>",
+            "<hp:metaTag>opaque</hp:metaTag></hp:equation>",
+        )
+    });
+    let original = std::fs::read(&opaque).unwrap();
     let output = dir.join("refused.hwp");
-    let result = metadata_edit(&input, &output);
+    let result = metadata_edit(&opaque, &output);
     assert!(!result.status.success(), "opaque equation must refuse");
     assert!(
         String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"),
@@ -629,5 +723,5 @@ fn synthetic_opaque_equation_loss_still_refuses_publication() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!output.exists());
-    assert_eq!(std::fs::read(&input).unwrap(), original);
+    assert_eq!(std::fs::read(&opaque).unwrap(), original);
 }
