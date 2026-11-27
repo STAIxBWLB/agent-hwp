@@ -151,6 +151,7 @@ fn equation_properties_survive_hwp5_hwpx_hwp5() {
         raw_children: Vec::new(),
         gso_shapes: Vec::new(),
         equation: Some(Box::new(expected.clone())),
+        chart: None,
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,

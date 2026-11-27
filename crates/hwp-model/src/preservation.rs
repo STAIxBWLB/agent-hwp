@@ -14,6 +14,7 @@ pub const PRESERVATION_REPORT_CONTRACT: &str = "hwp-preservation-report-v1";
 pub enum PreservationCode {
     BinaryAssetRemoved,
     BinaryRelationshipRemoved,
+    ChartControlUnrepresentable,
     ControlMetadataUnrepresentable,
     ControlRemoved,
     /// A non-primary `hwp merge` input's document metadata differed from the
@@ -63,6 +64,7 @@ impl PreservationCode {
         match self {
             Self::BinaryAssetRemoved => "binary_asset_removed",
             Self::BinaryRelationshipRemoved => "binary_relationship_removed",
+            Self::ChartControlUnrepresentable => "chart_control_unrepresentable",
             Self::ControlMetadataUnrepresentable => "control_metadata_unrepresentable",
             Self::ControlRemoved => "control_removed",
             Self::DocumentMetadataSuperseded => "document_metadata_superseded",
@@ -259,6 +261,7 @@ mod tests {
         let all = [
             BinaryAssetRemoved,
             BinaryRelationshipRemoved,
+            ChartControlUnrepresentable,
             ControlMetadataUnrepresentable,
             ControlRemoved,
             DocumentMetadataSuperseded,
@@ -284,6 +287,7 @@ mod tests {
             match code {
                 BinaryAssetRemoved
                 | BinaryRelationshipRemoved
+                | ChartControlUnrepresentable
                 | ControlMetadataUnrepresentable
                 | ControlRemoved
                 | DocumentMetadataSuperseded

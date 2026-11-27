@@ -359,7 +359,7 @@ lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip sinc
 
 | ID | Object (hwp5 tag / hwpx element) | Code evidence | Spec | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|---|
-| GB-1 | **Charts** (`CHART_DATA` 0x5F / `hp:chart` ooxmlchart) | hwp5 `body_text.rs:617` (Opaque), hwpx unimplemented `write/section.rs:364` (DROP), [11](11-hwpx-structure-map.md) §5(c) | §4.3.9.6 | hwp5 Opaque preserved / hwpx dropped (no text either, that is a total loss) | round-trip (hwpx only), synthesis, render | L; hwpx generation **M** ★ |
+| GB-1 | **Charts** | Seven DrawingML chart kinds read, synthesized and rendered in HWPX. Original part and wrapper are retained | ECMA-376 Part 1 §21.2, HWP 5.0 §4.3.9.6 | HWP5 charts remain opaque. HWPX-to-HWP5 conversion reports `chart_control_unrepresentable`. Hancom open check pending | Round-trip, synthesis, rendering | M |
 | GB-2 | **OLE objects** (`SHAPE_COMPONENT_OLE` 0x54 / `hp:ole`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364`, [10](10-hwp5-structure-map.md) table B | §4.3.9.5 | hwp5 Opaque preserved / hwpx dropped | round-trip (hwpx only), synthesis, render | L |
 | GB-3 | **Video** (`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5 Opaque preserved / hwpx dropped | round-trip (hwpx only), synthesis, render | L |
 | GB-4 | **Word art** (`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191` (text fallback) → `write/section.rs:364` (DROP) | §4.3.9 (word art) | hwp5 Opaque preserved / hwpx falls back to text then drops | round-trip (hwpx only), synthesis, render | M |
@@ -375,6 +375,12 @@ lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip sinc
 | GB-14 | **NUMBERING start numbers and extended levels are unparsed**: paragraph head information (tables 39 and 40) is read and discarded (`_attr`, `_width`, `_dist`), and the global and per-level start numbers are hardcoded to `start: 1` at every level. Levels 8 to 10 extension fields do not even exist as a concept in the IR (fixed at 7 levels) | `hwp5/src/doc_info.rs:452-479` (`read_level`, `start: 1`) | §4.2.8 | approximated (start fixed at 1) | read (dump/json), synthesis | M (the record's trailing layout must be compared against genuine files) |
 | GB-15 | **Image and check bullets are unparsed**: only one bullet character is extracted from BULLET, while the image-bullet flag and id, image information (contrast, brightness, effects) and check characters are preserved only as raw | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5 raw-preserved / dropped in synthesis and render | synthesis, render | S to M (rare in practice, lowest priority) |
 
+A Hancom macOS saved file and the #618 AC4 experiment confirmed package-path chart references.
+Synthesis keeps the direct `hp:chart` wrapper and OPF item. Rewrites of Hancom saved charts
+retain the full OOXML chart switch.
+The DocumentSpec block lives in the existing CLI compiler, `hwp-cli/src/document_spec.rs`.
+
+
 **GB lesson:** looking only at hwp5 → hwp5 round-trips, the entire GB series appears "lossless" and
 the gap is invisible (exactly the trap in §0.3). The defects appear only in **hwpx round-trips,
 cross-format synthesis and rendering**. GB-6 (grouping) is especially subtle: hwp5 even renders it,
@@ -383,8 +389,8 @@ same-format rewrite, and since 2026-08-15 (#90 PR 6a) hwpx containers render too
 now confined to synthesis. Restoring most of this series requires **reverse
 engineering the payload from a genuine file containing that object** (M/L), so obtaining ground truth
 comes first ([00](00-overview.md) §4). ★ The exception is **the hwpx path of GB-1**: in HWPX a
-chart is not OLE but an **OOXML DrawingML `chartSpace` XML part** (`Chart/chartN.xml` plus a manifest
-entry plus `hp:chart chartIDRef`), so it can be generated and interpreted with the existing hwpx
+chart is not OLE but an **OOXML DrawingML `chartSpace` XML part** (`Chart/chartN.xml` referenced
+by `hp:chart chartIDRef`), so it can be generated and interpreted with the existing hwpx
 writing infrastructure (precedent: kordoc v3.16, see [08](08-external-research.md)).
 
 ---

@@ -24,6 +24,7 @@
           "enum": [
             "binary_asset_removed",
             "binary_relationship_removed",
+            "chart_control_unrepresentable",
             "control_metadata_unrepresentable",
             "control_removed",
             "document_metadata_superseded",

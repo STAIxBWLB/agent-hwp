@@ -648,6 +648,7 @@ fn a_point_segment_has_a_range_and_no_fabricated_rectangle() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }));
     para.chars.insert(

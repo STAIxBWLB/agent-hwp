@@ -166,6 +166,7 @@ fn control(ctrl_id: [u8; 4], text: &str) -> GenericControl {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     }
 }

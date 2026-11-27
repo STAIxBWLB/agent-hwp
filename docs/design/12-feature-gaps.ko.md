@@ -305,7 +305,7 @@ ASCII는 두 인코딩에서 바이트가 같으므로, 코퍼스에 자격 증�
 
 | ID | 개체(hwp5 태그 / hwpx 요소) | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
-| GB-1 | **차트**(`CHART_DATA` 0x5F / `hp:chart` ooxmlchart) | hwp5 `body_text.rs:617`(Opaque), hwpx 미구현 `write/section.rs:364`(DROP), [11](11-hwpx-structure-map.ko.md) §5(c) | §4.3.9.6 | hwp5=Opaque 보존 / hwpx=드롭(텍스트도 없음=완전 소실) | 왕복(hwpx만)·합성·렌더 | L / hwpx 생성=**M**★ |
+| GB-1 | **차트** | HWPX DrawingML 7종 읽기·합성·렌더, 원본 파트와 래퍼 보존 | ECMA-376 Part 1 §21.2, HWP 5.0 §4.3.9.6 | HWP5 차트는 Opaque로 보존. HWPX 차트를 HWP5로 변환하면 `chart_control_unrepresentable`이 기록됨. 한컴오피스 확인 대기 | 왕복·합성·렌더 | M |
 | GB-2 | **OLE 개체**(`SHAPE_COMPONENT_OLE` 0x54 / `hp:ole`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364`, [10](10-hwp5-structure-map.ko.md) 표 B | §4.3.9.5 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-3 | **동영상**(`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-4 | **글맵시**(`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`(fallback 텍스트)→`write/section.rs:364`(DROP) | §4.3.9(글맵시) | hwp5=Opaque 보존 / hwpx=텍스트만 fallback 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |
@@ -321,13 +321,19 @@ ASCII는 두 인코딩에서 바이트가 같으므로, 코퍼스에 자격 증�
 | GB-14 | **NUMBERING 시작번호·확장 수준 미파싱** — 문단머리정보(표 39·40)를 읽고 버리며(`_attr`·`_width`·`_dist`), 전역·수준별 시작번호는 파싱 없이 전 레벨 `start: 1` 하드코딩. 수준 8~10 확장 필드는 IR(7레벨 고정)에 개념 자체가 없음 | `hwp5/src/doc_info.rs:452-479`(`read_level`, `start: 1`) | §4.2.8 | 근사(start=1 고정) | 읽기(dump/json)·합성 | M(레코드 후미 레이아웃 정품 대조) |
 | GB-15 | **이미지·체크 글머리표 미해석** — BULLET에서 글머리 문자 1개만 추출, 이미지 글머리 여부/ID·이미지 정보(대비·밝기·효과)·체크 문자 등은 raw로만 보존 | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5=raw 보존 / 합성·렌더=드롭 | 합성·렌더 | S~M(실사용 빈도 낮음 — 우선순위 최하) |
 
+macOS Hancom 저장본과 #618 AC4 실험에서 차트의 패키지 경로 참조를 확인했다.
+차트 합성은 직접 `hp:chart` 래퍼와 OPF 항목을 유지한다. 저장본의 OOXML 차트 switch는
+전체 XML을 보존한다.
+DocumentSpec 블록 구현은 기존 CLI 컴파일러인 `hwp-cli/src/document_spec.rs`에 있다.
+
+
 **GB 교훈:** hwp5→hwp5 왕복만 보면 GB 전체가 "무손실"이라 갭이 안 보인다(그게 §0.3의 함정). 결함은
 **hwpx 왕복·포맷 간 합성·렌더**에서만 터진다. GB-6(묶음)은 특히 미묘하다 — hwp5는 렌더까지 되는데
 hwpx에서는 해석이 안 됐다. 2026-08-14(#90)부터 원문 XML이 같은 포맷 되쓰기에서 살아남고,
 2026-08-15(#90 PR 6a)부터 hwpx 컨테이너도 렌더돼 손실은 합성으로 한정된다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
 (M/L)해야 하므로 정답지 확보가 선행 조건이다([00](00-overview.ko.md) §4).
 ★예외가 **GB-1의 hwpx 경로**다: HWPX에서 차트는 OLE가 아니라 **OOXML DrawingML `chartSpace`
-XML 파트**(`Chart/chartN.xml` + manifest 등재 + `hp:chart chartIDRef`)여서, 기존 hwpx 쓰기
+XML 파트**(`hp:chart chartIDRef`가 가리키는 `Chart/chartN.xml`)여서, 기존 hwpx 쓰기
 인프라만으로 생성·해석이 가능하다(kordoc v3.16 구현 선례 — [08](08-external-research.ko.md) 생태계 대조).
 
 ---

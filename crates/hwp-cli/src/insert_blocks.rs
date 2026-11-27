@@ -90,6 +90,9 @@ fn scan_blocks(blocks: &[BlockSpec], found: &mut Referenced) -> Result<(), Strin
                 }
             }
             BlockSpec::Field { style, .. } => found.styles.extend(style.iter().cloned()),
+            BlockSpec::Chart { .. } => {
+                return Err("차트 블록은 compose에서 지원됩니다. chart 블록을 포함한 HWPX 문서를 합성하세요".into());
+            }
             BlockSpec::Equation { .. } => found.equations = true,
             BlockSpec::Image { .. } => found.images = true,
             BlockSpec::Break {
@@ -1012,6 +1015,7 @@ mod tests {
             }),
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         })
     }
@@ -1409,6 +1413,7 @@ mod tests {
                     }),
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 }));
             check_target(

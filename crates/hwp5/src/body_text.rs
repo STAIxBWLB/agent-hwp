@@ -274,6 +274,7 @@ fn parse_control(node: &RecordNode, warnings: &mut Vec<String>) -> Control {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         });
     }
@@ -833,6 +834,7 @@ pub(crate) fn parse_generic(
         column_def,
         caption,
         hwpx_raw_xml: None,
+        chart: None,
         container_box: None,
     };
     if let Some((start, end)) = caption_range {

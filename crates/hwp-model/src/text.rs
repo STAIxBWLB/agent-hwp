@@ -314,6 +314,7 @@ mod tests {
             column_def: None,
             caption: Some(caption(CaptionSide::Top, "shape caption")),
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         });
         let mut out = String::new();

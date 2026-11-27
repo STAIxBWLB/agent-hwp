@@ -162,6 +162,7 @@ fn parse_paragraph(
     let mut last_shape: Option<u16> = None;
 
     loop {
+        let remaining = *reader.get_ref();
         let event = next_event(reader)?;
         match &event {
             Event::Start(e) | Event::Empty(e) => {
@@ -233,6 +234,11 @@ fn parse_paragraph(
                         push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"tbl ");
                         para.controls.push(Control::Table(table));
                     }
+                    b"chart" => {
+                        let chart = parse_chart_control(reader, e, empty, remaining)?;
+                        push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"chrt");
+                        para.controls.push(Control::Generic(chart));
+                    }
                     b"equation" => {
                         let eq = parse_equation(reader, e, empty)?;
                         push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"eqed");
@@ -247,6 +253,7 @@ fn parse_paragraph(
                             column_def: None,
                             caption: None,
                             hwpx_raw_xml: None,
+                            chart: None,
                             container_box: None,
                         }));
                     }
@@ -285,6 +292,7 @@ fn parse_paragraph(
                             column_def: None,
                             caption: None,
                             hwpx_raw_xml: None,
+                            chart: None,
                             container_box: None,
                         };
                         if let Some(kind) = shape_kind(&name) {
@@ -312,6 +320,15 @@ fn parse_paragraph(
                             // the original reader's subtree.
 
                             let raw = capture_element(reader, e, empty)?;
+                            if name == b"switch" && !empty {
+                                let len = remaining.len() - reader.get_ref().len();
+                                let original = String::from_utf8_lossy(&remaining[..len]);
+                                if let Some(chart) = parse_chart_switch(original.trim_start())? {
+                                    push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"chrt");
+                                    para.controls.push(Control::Generic(chart));
+                                    continue;
+                                }
+                            }
                             if !empty {
                                 let mut raw_reader = Reader::from_str(&raw);
                                 // Consume the capture's first event, the container start tag.
@@ -782,6 +799,7 @@ fn parse_ctrl(
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        chart: None,
                         container_box: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 3, ctrl_id);
@@ -819,6 +837,7 @@ fn parse_ctrl(
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        chart: None,
                         container_box: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 22, *b"bokm");
@@ -868,6 +887,7 @@ fn parse_ctrl(
                     column_def,
                     caption: None,
                     hwpx_raw_xml: None,
+                    chart: None,
                     container_box: None,
                 };
                 // parse_col_pr has already consumed a colPr subtree.
@@ -1674,8 +1694,120 @@ fn collect_shape(
     Ok(())
 }
 
-/// hp:equation: collects the script attribute or hp:script child, hp:sz size and hp:pos position. The
-/// renderer approximates it with a box and text.
+/// Projects the direct chart in Hancom's OOXML chart case. The complete switch,
+/// including the fallback OLE, remains the wrapper used for rewrites.
+fn parse_chart_switch(raw: &str) -> Result<Option<GenericControl>> {
+    let mut reader = Reader::from_str(raw);
+    let _ = next_event(&mut reader)?;
+    let mut in_chart_case = false;
+    loop {
+        let remaining = *reader.get_ref();
+        match next_event(&mut reader)? {
+            Event::Start(tag)
+                if tag.local_name().as_ref().as_bytes() == b"case"
+                    && attr(&tag, "required-namespace").as_deref()
+                        == Some("http://www.hancom.co.kr/hwpml/2016/ooxmlchart") =>
+            {
+                in_chart_case = true;
+            }
+            ref event @ (Event::Start(ref tag) | Event::Empty(ref tag)) => {
+                let name = tag.local_name();
+                let name = name.as_ref().as_bytes();
+                let empty = matches!(event, Event::Empty(_));
+                if in_chart_case && name == b"chart" {
+                    let mut chart = parse_chart_control(&mut reader, tag, empty, remaining)?;
+                    chart.hwpx_raw_xml = Some(raw.to_owned());
+                    return Ok(Some(chart));
+                }
+                if !empty {
+                    skip_subtree(&mut reader, name)?;
+                }
+            }
+            Event::End(tag) if tag.local_name().as_ref().as_bytes() == b"case" => {
+                in_chart_case = false;
+            }
+            Event::End(_) | Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+/// Captures placement and the exact wrapper bytes for an HWPX chart.
+fn parse_chart_control(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    empty: bool,
+    remaining: &[u8],
+) -> Result<GenericControl> {
+    let part_id = attr(start, "chartIDRef");
+    let mut placement = hwp_model::GsoPlacement {
+        z_order: attr_i32(start, "zOrder").unwrap_or(0),
+        ..Default::default()
+    };
+    if !empty {
+        loop {
+            let event = next_event(reader)?;
+            match &event {
+                Event::Start(tag) | Event::Empty(tag) => {
+                    let name = tag.local_name();
+                    match name.as_ref().as_bytes() {
+                        b"sz" => {
+                            placement.width = attr_i32(tag, "width").unwrap_or(0).max(0);
+                            placement.height = attr_i32(tag, "height").unwrap_or(0).max(0);
+                        }
+                        b"pos" => {
+                            placement.treat_as_char =
+                                attr(tag, "treatAsChar").as_deref() == Some("1");
+                            placement.flow_with_text =
+                                attr(tag, "flowWithText").as_deref() == Some("1");
+                            placement.horz_offset = attr_offset_i32(tag, "horzOffset").unwrap_or(0);
+                            placement.vert_offset = attr_offset_i32(tag, "vertOffset").unwrap_or(0);
+                            placement.vert_rel_to =
+                                vert_rel_to_code(attr(tag, "vertRelTo").as_deref());
+                            placement.horz_rel_to =
+                                horz_rel_to_code(attr(tag, "horzRelTo").as_deref());
+                        }
+                        _ => (),
+                    }
+                    if matches!(event, Event::Start(_)) {
+                        skip_subtree(reader, name.as_ref().as_bytes())?;
+                    }
+                }
+                Event::End(tag) if tag.local_name().as_ref().as_bytes() == b"chart" => break,
+                Event::Eof => {
+                    return Err(HwpxError::Xml {
+                        entry: "section".into(),
+                        message: "unclosed chart wrapper".into(),
+                    });
+                }
+                _ => (),
+            }
+        }
+    }
+    let len = remaining.len() - reader.get_ref().len();
+    let raw = String::from_utf8_lossy(&remaining[..len])
+        .trim_start()
+        .to_owned();
+    Ok(GenericControl {
+        ctrl_id: *b"chrt",
+        data: Vec::new(),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        chart: Some(Box::new(hwp_model::Chart {
+            placement,
+            part_id,
+            data: None,
+        })),
+        hwpx_raw_xml: Some(raw),
+        container_box: None,
+    })
+}
+
 fn parse_equation(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,

@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 
 [dev-dependencies]
 # Test-only: the schema-locking test parses

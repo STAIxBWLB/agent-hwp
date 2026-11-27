@@ -466,3 +466,15 @@ Base attr1 is `0x180`; every paragraph header keeps `pageBreak="0"`. Each enable
 5. **Hancom judges a rule, and a wrong rule gets reverted.** B3 (always SET bit31) looked right
    statically but caused black bars in Hancom and was rolled back (e41b440). Genuine Hancom rendering
    is the only final arbiter.
+
+## HWPX chart references
+
+A saved file from Hancom Office on macOS uses the package path
+`chartIDRef="Chart/chart1.xml"`. The chart is in the OOXML chart case of an `hp:switch`,
+with an OLE fallback in `hp:default`. The saved OPF manifest lists the OLE item and has no
+chart item.
+
+Changing only the reference to a package path made Hancom on macOS display the supplied data
+for all seven synthesized kinds (#618 AC4). Synthesized files keep the direct chart wrapper
+and the chart OPF item. Reads resolve both package paths and legacy manifest IDs. Rewrites of
+saved charts retain the complete switch wrapper.

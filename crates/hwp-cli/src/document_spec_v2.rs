@@ -1069,6 +1069,7 @@ fn attach_text_box(
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }),
     )
@@ -1655,11 +1656,11 @@ mod tests {
         for (bytes, expected) in [
             (
                 include_bytes!("../../../schemas/document-spec-v1.schema.json").as_slice(),
-                "ecba7d532ae96b8f8ac79007c04d41f3b9b2fa65e5d9a2d914965529d24e5ca2",
+                "65e50381d96e60166f2d332d5838b861d1ee3dc64acb9ada3b16701f7d3e149e",
             ),
             (
                 include_bytes!("../../../schemas/document-spec-v2.schema.json").as_slice(),
-                "9e930fb72e0ab3bfc0f44d33fa00e0166c3fce4ab5c5da7f85c128bb9cc145a8",
+                "a13570e390860a76ef9770f52c68955407e68dfe05b27d91af913f1aaca35403",
             ),
             (
                 include_bytes!("../../../schemas/document-report-v2.schema.json").as_slice(),

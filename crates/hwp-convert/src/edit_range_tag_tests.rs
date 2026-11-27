@@ -103,6 +103,7 @@ fn generic(inner: Paragraph, caption: Option<Paragraph>) -> Control {
             paragraphs: vec![para],
         }),
         hwpx_raw_xml: Some("<opaque-mirror/>".into()),
+        chart: None,
         container_box: None,
     })
 }

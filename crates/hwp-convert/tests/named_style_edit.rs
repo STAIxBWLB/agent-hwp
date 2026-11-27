@@ -290,6 +290,7 @@ fn generic(paragraphs: Vec<Paragraph>) -> GenericControl {
         column_def: None,
         caption: None,
         hwpx_raw_xml: Some("<captured/>".into()),
+        chart: None,
         container_box: None,
     }
 }

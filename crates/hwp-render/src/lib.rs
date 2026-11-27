@@ -8,6 +8,7 @@
 //! 가운데/오른쪽 정렬). 표·이미지·장식은 M5.
 
 mod border;
+mod chart;
 pub mod diff;
 pub mod display;
 pub mod equation;

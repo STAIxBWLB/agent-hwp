@@ -93,3 +93,25 @@ ahwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 재생성 검증(`crates/hwp-cli/tests/regen.rs`)은 validate 통과, `ahwp cat` 출력 전문 동일, 표 지도
 (개수·행/열·병합·셀 폭) 동일, secPr·tabProperties 슬라이스 바이트 동일을 확인한다. 차이가 남는 것은
 설계상 재생성 대상인 줄 배치 캐시(한글이 열 때 재계산), 미리보기 이미지, settings.xml뿐이다.
+
+## HWPX 차트
+
+DocumentSpec 본문의 `chart` 블록에는 mm 단위 크기와 DrawingML 데이터를 지정한다.
+`column`, `bar`, `line`, `pie`, `doughnut`, `area`, `scatter`를 지원한다.
+원형과 도넛 차트는 음수가 없고 합계가 양수인 계열 하나를 사용한다. 산점도의
+`x_values`를 생략하면 1부터 연속된 값이 들어간다.
+HWP5 변환에서 이 차트는 `chart_control_unrepresentable`로 기록된다.
+
+```json
+{
+  "type": "chart",
+  "width_mm": 120,
+  "height_mm": 65,
+  "data": {
+    "kind": "column",
+    "title": "Enrollment",
+    "categories": ["2025", "2026"],
+    "series": [{"name": "Students", "values": [120, 145], "color": "#173F73"}]
+  }
+}
+```

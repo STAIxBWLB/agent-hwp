@@ -11,6 +11,7 @@
 //! M0에서는 컨테이너 수준([`package`])만 구현한다. OWPML 파싱(M2)과
 //! writer(M4)는 이후 마일스톤에서 추가한다.
 
+mod chart;
 pub mod error;
 pub mod package;
 pub mod patch;
@@ -32,3 +33,15 @@ pub use write::{
     write_document_with, write_document_with_limits, write_document_with_report,
     write_document_with_report_with, write_document_with_report_with_limits,
 };
+
+/// Validate a chart's data and emitted DrawingML size before document compilation.
+pub fn validate_chart_part(data: &hwp_model::ChartData) -> std::result::Result<(), String> {
+    data.validate()?;
+    if chart::write(data).len() > chart::MAX_PART {
+        return Err(format!(
+            "chart DrawingML exceeds the {}-byte part limit",
+            chart::MAX_PART
+        ));
+    }
+    Ok(())
+}

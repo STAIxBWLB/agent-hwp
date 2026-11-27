@@ -205,6 +205,7 @@ fn 원문_보유_개체는_방출하고_없으면_손실이벤트를_낸다() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: None,
         }
     }
@@ -362,6 +363,7 @@ fn 원문없는_컨테이너는_도형을_합성하지_않고_손실이벤트를
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            chart: None,
             container_box: Some(hwp_model::ContainerBox {
                 x: 1000,
                 y: 1500,
