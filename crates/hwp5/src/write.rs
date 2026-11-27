@@ -714,7 +714,8 @@ fn materialize_document(
     // excluding edited HWP5 pictures that already have shape records. Newly inserted pictures with
     // empty extras must be synthesized regardless of origin or strip_unwritable_pictures removes
     // them.
-    let synth_pictures = doc.meta.source_format != "hwp5" || has_synthesizable_picture(doc);
+    let synth_pictures =
+        doc.meta.source_format != "hwp5" || has_synthesizable_picture_or_equation(doc, true);
     // HWPX-origin structured shapes/text boxes (gso_shapes) need HWP5 gso record synthesis to
     // survive stripping, using the same gate logic as picture synthesis.
     let synth_gso = doc.meta.source_format != "hwp5" || has_synthesizable_gso(doc);
@@ -1890,9 +1891,16 @@ fn semantic_caption_mut(control: &mut Control) -> Option<&mut Caption> {
 
 /// Matches the generic-control stripping policy; generated notes can emit their lists.
 fn generic_payload_is_unwritable(generic: &hwp_model::GenericControl) -> bool {
+    if !generic.raw_children.is_empty() {
+        return false;
+    }
+    if generic.ctrl_id == *b"eqed"
+        && let Some(equation) = &generic.equation
+    {
+        return equation.hwpx_only || !equation_strings_fit(equation);
+    }
     generic.data.is_empty()
         && generic.ctrl_id != *b"cold"
-        && generic.raw_children.is_empty()
         && !((generic.ctrl_id == *b"fn  " || generic.ctrl_id == *b"en  ")
             && !generic.paragraph_lists.is_empty())
 }
@@ -2027,33 +2035,45 @@ fn has_synthesizable_gso(doc: &Document) -> bool {
         .any(|s| s.paragraphs.iter().any(in_para))
 }
 
-/// Recursively checks for inserted pictures with empty extras and no shape records. Enable picture
-/// synthesis even for HWP5 origin, or strip_unwritable_pictures removes them.
-fn has_synthesizable_picture(doc: &Document) -> bool {
-    fn in_caption(caption: &Option<Caption>) -> bool {
-        caption
-            .as_ref()
-            .is_some_and(|caption| caption.paragraphs.iter().any(in_para))
+/// Inserted pictures and equations need object synthesis even in an HWP5 source.
+fn has_synthesizable_picture_or_equation(doc: &Document, pictures: bool) -> bool {
+    fn in_caption(caption: &Option<Caption>, pictures: bool) -> bool {
+        caption.as_ref().is_some_and(|caption| {
+            caption
+                .paragraphs
+                .iter()
+                .any(|paragraph| in_para(paragraph, pictures))
+        })
     }
-    fn in_para(p: &Paragraph) -> bool {
+    fn in_para(p: &Paragraph, pictures: bool) -> bool {
         p.controls.iter().any(|c| match c {
-            Control::Picture(pic) => pic.extras.is_empty() || in_caption(&pic.caption),
+            Control::Picture(pic) => {
+                (pictures && pic.extras.is_empty()) || in_caption(&pic.caption, pictures)
+            }
             Control::Table(t) => {
-                in_caption(&t.caption)
-                    || t.cells
-                        .iter()
-                        .any(|cell| cell.paragraphs.iter().any(in_para))
+                in_caption(&t.caption, pictures)
+                    || t.cells.iter().any(|cell| {
+                        cell.paragraphs
+                            .iter()
+                            .any(|paragraph| in_para(paragraph, pictures))
+                    })
             }
             Control::Generic(g) if g.raw_children.is_empty() => {
-                in_caption(&g.caption)
-                    || g.paragraph_lists
-                        .iter()
-                        .any(|list| list.paragraphs.iter().any(in_para))
+                (g.ctrl_id == *b"eqed" && g.data.is_empty() && g.equation.is_some())
+                    || in_caption(&g.caption, pictures)
+                    || g.paragraph_lists.iter().any(|list| {
+                        list.paragraphs
+                            .iter()
+                            .any(|paragraph| in_para(paragraph, pictures))
+                    })
             }
             _ => false,
         })
     }
-    doc.sections.iter().flat_map(|s| &s.paragraphs).any(in_para)
+    doc.sections
+        .iter()
+        .flat_map(|s| &s.paragraphs)
+        .any(|paragraph| in_para(paragraph, pictures))
 }
 
 /// Resolves a `BinRef` to the index into `bin_names` (and the parallel `bin_streams`) it
@@ -2102,10 +2122,10 @@ fn bin_stream_index(
     }
 }
 
-/// Populates shape records and BIN_DATA items for HWPX-origin images in synthesized documents.
+/// Materializes new picture and equation records using one common object ID allocator.
 fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let bin_names: Vec<String> = doc.bin_streams.iter().map(|b| b.name.clone()).collect();
-    if bin_names.is_empty() {
+    if bin_names.is_empty() && !has_synthesizable_picture_or_equation(doc, false) {
         return;
     }
     // Snapshot header.bin_data before the mutable section walk below, so each
@@ -2144,7 +2164,9 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     // previous work_report-derived template (textHeight=2835, list_attr=0x40) gave the wrong header
     // height. Leave HWP5 header_data untouched when already populated.
     for section in &mut doc.sections {
-        if let Some(pg) = section_page_def(section) {
+        if !bin_names.is_empty()
+            && let Some(pg) = section_page_def(section)
+        {
             let text_width = pg.width.0 - pg.margin_left.0 - pg.margin_right.0;
             for para in &mut section.paragraphs {
                 fill_head_foot_list_header(
@@ -2255,7 +2277,7 @@ impl InstanceIds {
                     Control::Generic(g) => {
                         collect_raw_picture_ids(&g.extras, used);
                         collect_raw_picture_ids(&g.raw_children, used);
-                        if g.ctrl_id == *b"gso " {
+                        if matches!(&g.ctrl_id, b"gso " | b"eqed") {
                             used.extend(common_id(&g.data));
                         }
                         for list in &g.paragraph_lists {
@@ -2480,11 +2502,27 @@ fn synth_pictures_para(
                 }
             }
             Control::Generic(g) => {
+                if g.ctrl_id == *b"eqed"
+                    && g.data.is_empty()
+                    && let Some(equation) = &g.equation
+                    && !equation.hwpx_only
+                    && equation_strings_fit(equation)
+                {
+                    if let Some(id) = inst.next() {
+                        g.data = synthesized_equation_common(equation, id);
+                    } else {
+                        // Leave the control unwritable so the strip pass reports typed loss.
+                        g.equation = None;
+                    }
+                }
                 // HWPX-origin head/foot controls lack LIST_HEADER and would be stripped with their
                 // pictures. Populate the genuine LIST_HEADER template, patching paraCount to the
                 // actual count. The HWPX reader fills 8-byte data (page scope plus ID); if absent,
                 // use at least 4 bytes to prevent stripping.
-                if (g.ctrl_id == *b"head" || g.ctrl_id == *b"foot") && g.raw_children.is_empty() {
+                if !bin_names.is_empty()
+                    && (g.ctrl_id == *b"head" || g.ctrl_id == *b"foot")
+                    && g.raw_children.is_empty()
+                {
                     if g.data.is_empty() {
                         g.data = vec![0, 0, 0, 0];
                     }
@@ -3909,12 +3947,110 @@ fn emit_control(
                 ));
             }
             children.extend(g.extras.iter().map(opaque_to_node));
+            if g.ctrl_id == *b"eqed"
+                && let Some(equation) = &g.equation
+                && equation_strings_fit(equation)
+            {
+                children.push(emit_eqedit(equation));
+            }
             RecordNode {
                 tag: tag::CTRL_HEADER,
                 data: w.into_bytes(),
                 children,
             }
         }
+    }
+}
+
+/// Match only the exact binary object we synthesize from the IR. Original opaque
+/// headers and extra children remain part of semantic comparison.
+pub fn is_materialized_synthesized_equation(generic: &hwp_model::GenericControl) -> bool {
+    let Some(equation) = &generic.equation else {
+        return false;
+    };
+    let Some(id) = generic
+        .data
+        .get(32..36)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_le_bytes)
+    else {
+        return false;
+    };
+    if generic.ctrl_id != *b"eqed"
+        || !(InstanceIds::BASE..InstanceIds::END).contains(&id)
+        || !equation_strings_fit(equation)
+        || generic.data != synthesized_equation_common(equation, id)
+    {
+        return false;
+    }
+    let child = crate::doc_info::to_opaque(&emit_eqedit(equation));
+    generic.raw_children == [child.clone()] && generic.extras == [child]
+}
+
+fn equation_strings_fit(equation: &hwp_model::Equation) -> bool {
+    [
+        Some(equation.script.as_str()),
+        equation.version.as_deref(),
+        equation.font_name.as_deref(),
+        equation.description.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|text| text.encode_utf16().count() <= u16::MAX as usize)
+}
+
+fn synthesized_equation_common(equation: &hwp_model::Equation, instance_id: u32) -> Vec<u8> {
+    let mut data = ByteWriter::new();
+    // Table 69. The fixed common flags and outer margins are from the inline
+    // controls in equation-ampersand-groundtruth.hwp.
+    let flags = equation
+        .placement
+        .as_ref()
+        .map_or(0x0c2a_2310, |placement| {
+            placement.synth_attr() | 0x0400_0000
+        });
+    data.write_u32((flags & !1) | u32::from(equation.inline));
+    data.write_i32(equation.y);
+    data.write_i32(equation.x);
+    data.write_i32(equation.width.max(0));
+    data.write_i32(equation.height.max(0));
+    data.write_i32(
+        equation
+            .placement
+            .as_ref()
+            .map_or(0, |placement| placement.z_order),
+    );
+    for margin in equation
+        .placement
+        .as_ref()
+        .map_or([56, 56, 0, 0], |placement| placement.out_margins)
+    {
+        data.write_u16(margin);
+    }
+    data.write_u32(instance_id);
+    data.write_i32(0); // no split prevention
+    hwp_string(
+        &mut data,
+        equation.description.as_deref().unwrap_or_default(),
+    );
+    data.into_bytes()
+}
+
+fn emit_eqedit(equation: &hwp_model::Equation) -> RecordNode {
+    let mut data = ByteWriter::new();
+    data.write_u32(equation.props);
+    hwp_string(&mut data, &equation.script);
+    data.write_u32(equation.base_unit);
+    data.write_u32(equation.text_color);
+    data.write_u16(equation.baseline as u16);
+    // The saved table 105 tail has a reserved zero WORD before the two strings.
+    data.write_u16(0);
+    hwp_string(&mut data, equation.version.as_deref().unwrap_or_default());
+    hwp_string(&mut data, equation.font_name.as_deref().unwrap_or_default());
+    RecordNode {
+        tag: tag::EQEDIT,
+        data: data.into_bytes(),
+        children: Vec::new(),
     }
 }
 
@@ -6376,7 +6512,7 @@ mod tests {
                 unreachable!()
             };
             let document = caption_picture_fixture(owner, picture);
-            if !has_synthesizable_picture(&document) {
+            if !has_synthesizable_picture_or_equation(&document, true) {
                 missed.push(owner);
             }
         }
@@ -6405,7 +6541,7 @@ mod tests {
             children: Vec::new(),
         }];
         assert!(
-            !has_synthesizable_picture(&document),
+            !has_synthesizable_picture_or_equation(&document, true),
             "an extraction-only caption is not emitted"
         );
         let original = document.clone();
@@ -6441,7 +6577,7 @@ mod tests {
             paragraphs: generic.caption.as_ref().unwrap().paragraphs.clone(),
         });
         assert!(
-            !has_synthesizable_picture(&document),
+            !has_synthesizable_picture_or_equation(&document, true),
             "raw-backed extraction lists are not emitted and must not trigger synthesis"
         );
     }

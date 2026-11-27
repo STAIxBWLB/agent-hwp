@@ -2399,16 +2399,15 @@ impl<'a> BlockCompiler<'a> {
                 extras: Vec::new(),
                 raw_children: Vec::new(),
                 gso_shapes: Vec::new(),
-                equation: Some(hwp_model::Equation {
+                equation: Some(Box::new(hwp_model::Equation {
                     script: script.to_string(),
                     width: width_mm.map_or(0, mm_to_hwp),
                     height: height_mm.map_or(0, mm_to_hwp),
                     inline,
                     x: 0,
                     y: 0,
-                    raw_attrs: None,
-                    raw_props: Vec::new(),
-                }),
+                    ..Default::default()
+                })),
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,

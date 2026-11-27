@@ -10,6 +10,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Typeset equation matrices, centered operator limits, and stretchy delimiters in PNG, SVG,
+  and PDF. Preserve equation font size, color, baseline, version, and font name in supported
+  HWP5 and HWPX conversions ([#621](https://github.com/STAIxBWLB/agent-hwp/issues/621)).
+
 ## [2.1.1]
 
 **Compatibility**

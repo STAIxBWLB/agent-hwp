@@ -2409,7 +2409,7 @@ mod tests {
                 extras: vec![],
                 raw_children: vec![],
                 gso_shapes: vec![],
-                equation: Some(Equation {
+                equation: Some(Box::new(Equation {
                     script: script.to_string(),
                     width: 0,
                     height: 0,
@@ -2417,7 +2417,7 @@ mod tests {
                     x: 0,
                     y: 0,
                     ..Equation::default()
-                }),
+                })),
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
@@ -3401,7 +3401,7 @@ mod tests {
             extras: vec![],
             raw_children: vec![],
             gso_shapes: vec![],
-            equation: Some(Equation {
+            equation: Some(Box::new(Equation {
                 script: script.to_string(),
                 width: 0,
                 height: 0,
@@ -3409,7 +3409,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 ..Equation::default()
-            }),
+            })),
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,

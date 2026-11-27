@@ -3024,13 +3024,14 @@ mod tests {
             y: 0,
             raw_attrs,
             raw_props,
+            ..Default::default()
         }
     }
 
     fn with_equation(equation: hwp_model::Equation) -> RangeOutcome {
         extract_b_with(|doc| {
             let mut object = generic(b"eqed");
-            object.equation = Some(equation.clone());
+            object.equation = Some(Box::new(equation.clone()));
             attach(
                 &mut doc.sections[0].paragraphs[4],
                 *b"eqed",
