@@ -309,7 +309,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 22,
+      "maxProperties": 23,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
