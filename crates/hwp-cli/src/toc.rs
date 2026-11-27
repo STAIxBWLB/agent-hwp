@@ -8,10 +8,11 @@
 //! numbers into the TOC. Writing digits can change the TOC's own line breaks, so it lays out
 //! again until the page numbers stop changing (a fixed point), bounded by [`MAX_PASSES`].
 //!
-//! Each pass measures the document as the target writer produces it: the caller's `published`
-//! closure writes the IR and reads it back, so the layout runs on exactly what a reader of the
-//! output file (and `render --layout-json` on it) sees. An HWP5 writer synthesizes line-segment
-//! caches, so the in-memory IR alone can paginate differently from the written file.
+//! Each pass measures the document as the output is published: the caller's `published`
+//! closure writes the IR with the very writer that later publishes it and reads it back, so the
+//! layout runs on exactly what a reader of the output file (and `render --layout-json` on it)
+//! sees, and the caller publishes the measured document itself, never a re-read copy. An HWP5
+//! writer synthesizes line-segment caches, so the in-memory IR alone can paginate differently.
 
 use std::path::PathBuf;
 
