@@ -655,13 +655,40 @@ fn execute_with_preloaded_document(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
+    let mut legacy_losses = hwp_model::PreservationReport::new();
     let (doc, preloaded_source_sha256) = match preloaded {
         Some(preloaded) => (preloaded.document, Some(preloaded.source_sha256)),
-        None => (
-            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
-            None,
-        ),
+        None => match crate::format::detect_legacy(input)? {
+            // Legacy readers report what they could not lower; carry it as a typed loss so
+            // --strict and --loss-report see it for every target, not only native ones.
+            Some(legacy) => {
+                let (doc, warnings) = crate::commands::cat::read_legacy(input, legacy)?;
+                for w in &warnings {
+                    eprintln!("경고: {w}");
+                }
+                if !warnings.is_empty() {
+                    legacy_losses.record(hwp_model::PreservationEvent::new(
+                        hwp_model::PreservationCode::LegacyContentOmitted,
+                        hwp_model::PreservationResourceKind::Control,
+                        hwp_model::PreservationDisposition::Removed,
+                        warnings.len(),
+                    ));
+                }
+                (doc, None)
+            }
+            None => (
+                load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+                None,
+            ),
+        },
     };
+    if strict && !legacy_losses.is_lossless() {
+        // Refuse before any output exists, leaving the ledger as decision evidence.
+        if let Some(report_path) = loss_report {
+            write_loss_report(report_path, &legacy_losses)?;
+        }
+        crate::commands::reject_preservation_loss(preservation_context.as_str(), &legacy_losses)?;
+    }
     if let Some(expected) = &preloaded_source_sha256
         && source_sha256(input)? != *expected
     {
@@ -723,7 +750,7 @@ fn execute_with_preloaded_document(
         };
         let report = ConvertReport {
             warnings,
-            preservation: hwp_model::PreservationReport::new(),
+            preservation: legacy_losses.clone(),
         };
         if let Some(report_path) = loss_report {
             write_loss_report(report_path, &report.preservation)?;
@@ -819,6 +846,7 @@ fn execute_with_preloaded_document(
             }
             ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
         };
+        report.preservation.extend(legacy_losses.clone());
 
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
             if inspect_same_native_container {

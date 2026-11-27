@@ -453,3 +453,97 @@ fn json_extension_and_preview_route_through_legacy_detection() {
     assert!(err.contains("HWPML") && err.contains("미리보기"), "{err}");
     assert!(!err.contains("시그니처 불일치"), "{err}");
 }
+
+/// A legacy reader's omissions are a typed loss: `--loss-report` records
+/// `legacy_content_omitted` for every target and `--strict` refuses before publishing (#114).
+#[test]
+fn legacy_reader_losses_reach_strict_and_the_loss_report() {
+    let input = tmp("lossy.hml");
+    std::fs::write(
+        &input,
+        synthetic_hml().replace("<SECDEF/>", "<SECDEF/><EQUATION/>"),
+    )
+    .unwrap();
+    for ext in ["md", "docx", "hwpx", "hwp"] {
+        let output = tmp(&format!("lossy-out.{ext}"));
+        let report = tmp(&format!("lossy-{ext}.json"));
+        let out = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            output.as_os_str(),
+            "--loss-report".as_ref(),
+            report.as_os_str(),
+        ]);
+        assert!(out.status.success(), "{ext}: {}", stderr(&out));
+        let ledger = std::fs::read_to_string(&*report).unwrap();
+        assert!(ledger.contains("legacy_content_omitted"), "{ext}: {ledger}");
+
+        let strict_out = tmp(&format!("lossy-strict.{ext}"));
+        let out = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            strict_out.as_os_str(),
+            "--strict".as_ref(),
+        ]);
+        assert!(
+            !out.status.success(),
+            "{ext}: strict published a lossy legacy read"
+        );
+        assert!(
+            stderr(&out).contains("legacy_content_omitted"),
+            "{ext}: {}",
+            stderr(&out)
+        );
+        assert!(!strict_out.exists(), "{ext}");
+    }
+}
+
+/// A clean legacy read stays lossless, so `--strict` still converts it.
+#[test]
+fn clean_legacy_read_passes_strict() {
+    let input = tmp("clean.hml");
+    std::fs::write(
+        &input,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY><SECTION>\
+         <P><TEXT><CHAR>깨끗한 문단</CHAR></TEXT></P></SECTION></BODY></HWPML>",
+    )
+    .unwrap();
+    let output = tmp("clean-out.md");
+    let out = run(&[
+        "convert".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        output.as_os_str(),
+        "--strict".as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// Editing a legacy input is refused whatever the output format, before anything is written.
+#[test]
+fn edit_refuses_legacy_input_for_every_output_format() {
+    let input = write_hml("edit-any.hml");
+    for ext in ["md", "json", "hwpx", "hwp"] {
+        let output = tmp(&format!("edit-any-out.{ext}"));
+        let out = run(&[
+            "edit".as_ref(),
+            input.as_os_str(),
+            "--replace".as_ref(),
+            "왼쪽=>X".as_ref(),
+            "-o".as_ref(),
+            output.as_os_str(),
+        ]);
+        assert!(
+            !out.status.success(),
+            "{ext}: edit published from a legacy input"
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("읽기 전용") && err.contains("ahwp convert"),
+            "{ext}: {err}"
+        );
+        assert!(!output.exists(), "{ext}");
+    }
+}

@@ -63,8 +63,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   format's input bound, refusing input past it.
   The complete HWP 3.00 signature routes to the read-only HWP 3.x (Johab) reader, so `cat`,
   `info`, `grep`, `convert` (stdin included) and `render` read HWP 3.x documents. A
-  password-protected one is refused before its body is read, and editing points at `convert`
-  first. Other 3.x revisions, HWP
+  password-protected one is refused before its body is read, and `edit` refuses every legacy
+  input whatever the output format, pointing at `convert` first. A legacy reader's omissions
+  are recorded as a typed `legacy_content_omitted` loss, so `convert --loss-report` lists them
+  for every target and `convert --strict` refuses before publishing. Other 3.x revisions, HWP
   1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).
 
