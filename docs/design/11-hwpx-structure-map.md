@@ -181,7 +181,7 @@ arm** of each parser function (the exhaustive match-arm comparison is at the end
 
 | Element | ctrl_id/code | Attributes read | IR target | Status | Evidence |
 |---|---|---|---|---|---|
-| `fieldBegin` | (type → id) / 3 | type, name, the Command child | `Generic` plus CTRL_DATA (0x0057) | semantic | :516 |
+| `fieldBegin` | (type → id) / 3 | type, name, the Command child | `Generic` plus CTRL_DATA (0x0057); `type="MEMO"` is kept raw with its `subList` body and re-emitted verbatim ([07](07-hangul-compat-rules.md) L2) | semantic | :516 |
 | `fieldEnd` | - / 4 | (LIFO matching) | `InlineCtrl(4)` with the reversed ctrl_id | semantic | :550 |
 | `bookmark` | `bokm` / 22 | name | `Generic` plus the name in CTRL_DATA | semantic | :562 |
 | `colPr` | `cold` / 2 | type, layout, colCount, sameSz, sameGap | `Generic{column_def}` | partial (colSz and colLine uncollected) | :586 → `parse_col_pr` :377 |

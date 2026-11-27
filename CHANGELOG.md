@@ -64,6 +64,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   The complete HWP 3.00 signature is detected ahead of its reader. Other 3.x revisions, HWP
   1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).
+- Read Hangul memos. `cat --with-memos` appends each memo's number, UTC creation time, anchored
+  text and body for HWP 5.0 and HWPX. Authors are account names and print only with
+  `--memo-authors`. Memo bodies no longer leak into extracted text, HWPX memos survive an HWPX
+  rewrite, and a memo crossing formats is reported as a typed `control_removed` loss
+  ([#110](https://github.com/STAIxBWLB/agent-hwp/issues/110)).
 
 - Typeset equation matrices, centered operator limits, and stretchy delimiters in PNG, SVG,
   and PDF. Preserve equation font size, color, baseline, version, and font name in supported

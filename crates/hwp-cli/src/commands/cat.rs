@@ -552,3 +552,49 @@ fn decode_utf16le(raw: &[u8]) -> String {
     let end = units.iter().rposition(|&u| u != 0).map_or(0, |i| i + 1);
     String::from_utf16_lossy(&units[..end])
 }
+
+#[cfg(test)]
+mod memo_render_tests {
+    use super::{MemoOutput, TextFormat, render_memos};
+    use hwp_model::memo::Memo;
+
+    fn memo(number: u32) -> Memo {
+        Memo {
+            section: 0,
+            number,
+            author: "synthetic-author".into(),
+            // 2020-01-01T00:00:00Z as a Windows FILETIME.
+            created_filetime: Some(132_223_104_000_000_000),
+            anchor_text: "앵커".into(),
+            body: vec!["첫 줄".into(), "둘째 줄".into()],
+        }
+    }
+
+    #[test]
+    fn authors_are_printed_only_on_opt_in() {
+        let memos = [memo(1), memo(2)];
+        for format in [TextFormat::Plain, TextFormat::Markdown] {
+            let off = render_memos(&memos, format, MemoOutput::WithoutAuthors);
+            assert!(!off.contains("synthetic-author"), "{off}");
+            let on = render_memos(&memos, format, MemoOutput::WithAuthors);
+            assert_eq!(on.matches("synthetic-author").count(), 2, "{on}");
+        }
+    }
+
+    #[test]
+    fn plain_and_markdown_layouts() {
+        let memos = [memo(1)];
+        assert_eq!(
+            render_memos(&memos, TextFormat::Plain, MemoOutput::WithoutAuthors),
+            "\n[메모 1] (2020-01-01T00:00:00Z) \"앵커\"\n  첫 줄\n  둘째 줄\n"
+        );
+        assert_eq!(
+            render_memos(&memos, TextFormat::Markdown, MemoOutput::WithoutAuthors),
+            "\n## 메모\n\n- **메모 1** (2020-01-01T00:00:00Z) \"앵커\": 첫 줄<br>둘째 줄\n"
+        );
+        assert_eq!(
+            render_memos(&[], TextFormat::Plain, MemoOutput::WithAuthors),
+            ""
+        );
+    }
+}
