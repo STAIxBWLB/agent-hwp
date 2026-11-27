@@ -725,6 +725,86 @@ pub fn make_field_command_data(ctrl_id: &[u8; 4], command: &str) -> Vec<u8> {
     data
 }
 
+/// The memo number a memo anchor's Command string carries (07 L3).
+pub fn memo_number(g: &GenericControl) -> Option<u32> {
+    hwp_model::memo::memo_number(g)
+}
+
+/// CTRL_HEADER attributes measured on every memo anchor (`01 80 00 00`).
+const MEMO_CTRL_ATTR: u32 = 0x0000_8001;
+
+/// CTRL_HEADER payload for a memo anchor (07 L5).
+///
+/// Same layout as [`make_field_command_data`], with the two trailing words a memo carries instead
+/// of one id and a zero: the field instance id, then the memo number (measured on every memo of
+/// the four fixtures).
+pub fn make_memo_command_data(command: &str, field_id: u32, number: u32) -> Vec<u8> {
+    let mut data = MEMO_CTRL_ATTR.to_le_bytes().to_vec();
+    data.push(0); // extra
+    let units: Vec<u16> = command.encode_utf16().collect();
+    data.extend((units.len() as u16).to_le_bytes());
+    for u in units {
+        data.extend(u.to_le_bytes());
+    }
+    data.extend(field_id.to_le_bytes());
+    data.extend(number.to_le_bytes());
+    data
+}
+
+/// The field instance id a new memo anchor takes: one past the highest id any field in the
+/// document carries.
+///
+/// Measured (07 L5): inside one file the id counts up memo by memo, so `max + 1` reproduces the
+/// value the next memo gets. A document carrying no field id at all has nothing to continue, so
+/// the deterministic [`field_instance_id`] stands in. Zero is never returned: Hangul does not treat
+/// an id=0 field as a field (07 E2).
+pub fn next_memo_field_id(doc: &Document, command: &str) -> u32 {
+    let mut max = None;
+    for section in &doc.sections {
+        max_field_id_in_paras(&section.paragraphs, &mut max);
+    }
+    match max.and_then(|id| id.checked_add(1)) {
+        Some(id) if id != 0 => id,
+        _ => field_instance_id(command),
+    }
+}
+
+/// The field instance id inside a field control's CTRL_HEADER payload, if it carries one.
+fn command_field_id(data: &[u8]) -> Option<u32> {
+    let len = usize::from(u16::from_le_bytes([*data.get(5)?, *data.get(6)?]));
+    let start = 7 + len * 2;
+    let bytes = data.get(start..start + 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn max_field_id_in_paras(paras: &[Paragraph], max: &mut Option<u32>) {
+    for para in paras {
+        for control in &para.controls {
+            match control {
+                Control::Generic(g) => {
+                    if is_field_ctrl_id(&g.ctrl_id)
+                        && let Some(id) = command_field_id(&g.data)
+                    {
+                        *max = Some(max.map_or(id, |m: u32| m.max(id)));
+                    }
+                    if let Some(caption) = &g.caption {
+                        max_field_id_in_paras(&caption.paragraphs, max);
+                    }
+                    for list in &g.paragraph_lists {
+                        max_field_id_in_paras(&list.paragraphs, max);
+                    }
+                }
+                Control::Table(t) => {
+                    for cell in &t.cells {
+                        max_field_id_in_paras(&cell.paragraphs, max);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Derive a deterministic nonzero field instance ID with 32-bit FNV-1a, replacing zero with one.
 pub(crate) fn field_instance_id(command: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;

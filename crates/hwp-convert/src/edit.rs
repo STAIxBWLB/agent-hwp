@@ -2964,6 +2964,526 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> Result<usize, Str
     Ok(n)
 }
 
+// ─────────────────────────── Memos ───────────────────────────
+
+/// Where a new memo attaches: a body paragraph of one section, and the WCHAR span inside it that
+/// becomes the anchored text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoAnchor {
+    /// 0-based index into the section's body paragraphs.
+    pub para: usize,
+    /// Start of the anchored span, in WCHAR units from the paragraph start.
+    pub start: u32,
+    /// End of the anchored span, in WCHAR units (exclusive).
+    pub end: u32,
+}
+
+/// The char-stream width of one field control: the eight-WCHAR block a FIELD_START or FIELD_END
+/// occupies (`[code][info 6 WCHAR][code]`, 07 L1).
+const FIELD_BLOCK_WCHAR: u32 = 8;
+
+/// Char index at WCHAR offset `w` in a paragraph's char stream.
+fn char_index_at_wchar(chars: &[HwpChar], w: u32) -> Option<usize> {
+    let mut acc = 0u32;
+    for (i, ch) in chars.iter().enumerate() {
+        if acc == w {
+            return Some(i);
+        }
+        acc += ch.wchar_width();
+    }
+    (acc == w).then_some(chars.len())
+}
+
+/// An anchor paragraph and the index of its memo control, so a caller can edit both.
+struct MemoSite<'a> {
+    para: &'a mut Paragraph,
+    index: usize,
+}
+
+fn find_memo_site_in_lists<'a>(
+    lists: &'a mut [hwp_model::control::ParagraphList],
+    number: u32,
+) -> Option<MemoSite<'a>> {
+    for list in lists {
+        if let Some(site) = find_memo_site_mut(&mut list.paragraphs, number) {
+            return Some(site);
+        }
+    }
+    None
+}
+
+/// Whether any memo anchor inside `control` carries `number` (cells, captions and nested lists).
+fn control_holds_memo(control: &Control, number: u32) -> bool {
+    match control {
+        Control::Generic(g) => {
+            crate::field::memo_number(g) == Some(number)
+                || g.paragraph_lists
+                    .iter()
+                    .any(|list| paragraphs_hold_memo(&list.paragraphs, number))
+                || g.caption
+                    .as_ref()
+                    .is_some_and(|caption| paragraphs_hold_memo(&caption.paragraphs, number))
+        }
+        Control::Table(t) => t
+            .cells
+            .iter()
+            .any(|cell| paragraphs_hold_memo(&cell.paragraphs, number)),
+        _ => false,
+    }
+}
+
+fn paragraphs_hold_memo(paras: &[Paragraph], number: u32) -> bool {
+    paras
+        .iter()
+        .any(|para| para.controls.iter().any(|c| control_holds_memo(c, number)))
+}
+
+/// The paragraph holding memo `number`'s anchor and the control's index in it, searched through
+/// body paragraphs, cells and nested paragraph lists.
+fn find_memo_site_mut(paras: &mut [Paragraph], number: u32) -> Option<MemoSite<'_>> {
+    for para in paras {
+        if let Some(index) = para.controls.iter().position(
+            |c| matches!(c, Control::Generic(g) if crate::field::memo_number(g) == Some(number)),
+        ) {
+            return Some(MemoSite { para, index });
+        }
+        let Some(nested) = para
+            .controls
+            .iter()
+            .position(|c| control_holds_memo(c, number))
+        else {
+            continue;
+        };
+        match &mut para.controls[nested] {
+            Control::Generic(g) => {
+                if let Some(site) = find_memo_site_in_lists(&mut g.paragraph_lists, number) {
+                    return Some(site);
+                }
+                if let Some(caption) = &mut g.caption
+                    && let Some(site) = find_memo_site_mut(&mut caption.paragraphs, number)
+                {
+                    return Some(site);
+                }
+            }
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    if let Some(site) = find_memo_site_mut(&mut cell.paragraphs, number) {
+                        return Some(site);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Body paragraphs for a memo, one paragraph per line, inheriting the anchor paragraph's shapes.
+fn memo_body_paragraphs(template: Option<&Paragraph>, body: &[String]) -> Vec<Paragraph> {
+    let lines: Vec<&str> = if body.is_empty() {
+        vec![""]
+    } else {
+        body.iter().map(String::as_str).collect()
+    };
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut para = blank_para_like(template);
+            para.chars = replacement_chars(line);
+            para
+        })
+        .collect()
+}
+
+/// Recomputes the two measured FIELD_END flag values inside one paragraph (07 L1): `0x05` on the
+/// paragraph's last memo end, `0x01` on the earlier ones. Other fields' ends are left alone.
+fn sync_memo_field_ends(para: &mut Paragraph) {
+    let is_memo_end = |payload: &[u8]| payload.starts_with(b"em%\0");
+    let last = para
+        .chars
+        .iter()
+        .enumerate()
+        .filter(|(_, ch)| matches!(ch, HwpChar::InlineCtrl { code: 4, payload } if is_memo_end(payload)))
+        .map(|(i, _)| i)
+        .next_back();
+    let Some(last) = last else {
+        return;
+    };
+    for (i, ch) in para.chars.iter_mut().enumerate() {
+        if let HwpChar::InlineCtrl { code: 4, payload } = ch
+            && is_memo_end(payload)
+        {
+            payload[4] = if i == last { 0x05 } else { 0x01 };
+        }
+    }
+}
+
+/// The HWP5 body group of memo `number` in the section's last paragraph, as `[start, end)`.
+///
+/// HWP5 keeps every memo body as `MEMO_LIST` + `LIST_HEADER` + paragraph records among the extras
+/// of the section's last paragraph, one group per memo (07 L2). The group ends where the next
+/// `MEMO_LIST` starts.
+fn hwp5_memo_body_range(section: &hwp_model::Section, number: u32) -> Option<(usize, usize)> {
+    let last = section.paragraphs.last()?;
+    let start = last.extras.iter().position(|extra| {
+        extra.tag == hwp_model::memo::MEMO_LIST_TAG
+            && extra.data.len() >= 4
+            && u32::from_le_bytes([extra.data[0], extra.data[1], extra.data[2], extra.data[3]])
+                == number
+    })?;
+    let end = last
+        .extras
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, extra)| extra.tag == hwp_model::memo::MEMO_LIST_TAG)
+        .map(|(i, _)| i)
+        .unwrap_or(last.extras.len());
+    Some((start, end))
+}
+
+/// Adds a memo over `anchor`'s text and returns its number.
+///
+/// The memo is written as format-neutral IR: an HWP5 memo anchor control (`%unk` with a `MEMO/`
+/// Command string) whose body paragraphs sit in `paragraph_lists`. Each writer synthesizes its own
+/// container's body from that — HWP5's `MEMO_LIST` extras on the section's last paragraph, HWPX's
+/// `hp:subList` — and an op-created memo written to the other container stays a typed drop.
+///
+/// The number is one past the highest memo number in the document, and the anchor's field instance
+/// id is allocated by [`crate::field::next_memo_field_id`] (07 L5). A missing `created_filetime`
+/// means now, so the Command carries a real creation time rather than the 1601-01-01 zero value.
+pub fn add_memo(
+    doc: &mut Document,
+    section: usize,
+    anchor: &MemoAnchor,
+    author: &str,
+    created_filetime: Option<u64>,
+    body: &[String],
+) -> Result<u32, String> {
+    if anchor.start > anchor.end {
+        return Err(format!(
+            "메모 범위가 뒤집혔습니다: start={} end={}. start가 end 이하여야 합니다",
+            anchor.start, anchor.end
+        ));
+    }
+    let number = hwp_model::memo::memos(doc)
+        .iter()
+        .map(|m| m.number)
+        .max()
+        .map_or(1, |n| n + 1);
+    let command = hwp_model::memo::build_memo_command(
+        number,
+        Some(created_filetime.unwrap_or_else(hwp_model::memo::filetime_now)),
+        author,
+    );
+    let field_id = crate::field::next_memo_field_id(doc, &command);
+    let section_count = doc.sections.len();
+    let sec = doc.sections.get_mut(section).ok_or_else(|| {
+        format!("메모 구역 {section}이(가) 없습니다: 문서의 구역 수는 {section_count}입니다")
+    })?;
+    let para_count = sec.paragraphs.len();
+    let template = sec.paragraphs.get(anchor.para).cloned().ok_or_else(|| {
+        format!(
+            "메모 앵커 문단 {}이(가) 없습니다: 구역 {section}의 문단 수는 {para_count}입니다",
+            anchor.para
+        )
+    })?;
+
+    let body_paragraphs = memo_body_paragraphs(Some(&template), body);
+    if body_paragraphs.is_empty() {
+        return Err("메모 본문 문단이 없습니다. 본문을 한 줄 이상 지정하세요".to_string());
+    }
+    let control = Control::Generic(hwp_model::control::GenericControl {
+        ctrl_id: *b"%unk",
+        data: crate::field::make_memo_command_data(&command, field_id, number),
+        paragraph_lists: vec![hwp_model::control::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: body_paragraphs,
+        }],
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: None,
+        chart: None,
+        container_box: None,
+    });
+
+    let para = &mut sec.paragraphs[anchor.para];
+    let start_idx = char_index_at_wchar(&para.chars, anchor.start).ok_or_else(|| {
+        format!(
+            "메모 앵커 시작 위치 {}가 문단 경계를 벗어났습니다: 문단의 WCHAR 길이는 {}입니다",
+            anchor.start,
+            para.wchar_len()
+        )
+    })?;
+    let end_idx = char_index_at_wchar(&para.chars, anchor.end).ok_or_else(|| {
+        format!(
+            "메모 앵커 끝 위치 {}가 문단 경계를 벗어났습니다: 문단의 WCHAR 길이는 {}입니다",
+            anchor.end,
+            para.wchar_len()
+        )
+    })?;
+    let ctrl_index = para.chars[..start_idx]
+        .iter()
+        .filter(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+        .count()
+        .min(para.controls.len());
+    para.controls.insert(ctrl_index, control);
+    let memo_ctrl_id = *b"%%me";
+    para.chars.insert(
+        end_idx,
+        HwpChar::InlineCtrl {
+            code: 4,
+            payload: hwp_model::memo::hwp5_field_end_payload(number, true).to_vec(),
+        },
+    );
+    para.chars.insert(
+        start_idx,
+        HwpChar::ExtCtrl {
+            code: 3,
+            ctrl_id: memo_ctrl_id,
+            payload: hwp_model::memo::hwp5_field_begin_payload().to_vec(),
+            ctrl_index: None,
+        },
+    );
+    adjust_runs(&mut para.char_shape_runs, anchor.end, 0, FIELD_BLOCK_WCHAR);
+    adjust_runs(
+        &mut para.char_shape_runs,
+        anchor.start,
+        0,
+        FIELD_BLOCK_WCHAR,
+    );
+    crate::field::relink_ctrl_index(para);
+    sync_memo_field_ends(para);
+    para.header.ctrl_mask = 0;
+    para.line_segs.clear();
+    Ok(number)
+}
+
+/// Replaces the body of memo `number` in `section`, keeping its anchor, command and creation time.
+///
+/// The body source decides where the edit lands: a memo created by an op has its paragraphs in
+/// `paragraph_lists`, an HWPX memo also keeps its captured `hp:subList` (rewritten in place so the
+/// rest of the field stays verbatim), and an HWP5 memo's opaque body group is dropped from the
+/// section's last paragraph so this repository's HWP5 writer re-synthesizes it from the new
+/// paragraphs.
+pub fn set_memo_text(
+    doc: &mut Document,
+    section: usize,
+    number: u32,
+    body: &[String],
+) -> Result<(), String> {
+    let section_count = doc.sections.len();
+    let sec = doc.sections.get_mut(section).ok_or_else(|| {
+        format!("메모 구역 {section}이(가) 없습니다: 문서의 구역 수는 {section_count}입니다")
+    })?;
+    if !memo_exists(sec, number) {
+        return Err(format!(
+            "구역 {section}에 메모 {number}(이)가 없습니다. hwp memo로 번호를 확인하세요"
+        ));
+    }
+    let body_range = hwp5_memo_body_range(sec, number);
+    if let Some(site) = find_memo_site_mut(&mut sec.paragraphs, number) {
+        let template = site.para.clone();
+        let body_paragraphs = memo_body_paragraphs(Some(&template), body);
+        let Control::Generic(g) = &mut site.para.controls[site.index] else {
+            return Err(format!("메모 {number} 앵커가 필드 컨트롤이 아닙니다"));
+        };
+        if let Some(raw) = g.hwpx_raw_xml.clone() {
+            g.hwpx_raw_xml = Some(rewrite_hwpx_memo_sub_list(
+                &raw,
+                &body_paragraphs,
+                &template,
+            )?);
+        }
+        g.paragraph_lists = vec![hwp_model::control::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: body_paragraphs,
+        }];
+    }
+    // An HWP5 memo body lives in the section's last paragraph, not on the control: drop that
+    // group so the writer re-synthesizes it instead of writing both copies.
+    if let Some((start, end)) = body_range
+        && let Some(last) = sec.paragraphs.last_mut()
+    {
+        last.extras.drain(start..end);
+    }
+    Ok(())
+}
+
+/// Whether `section` holds memo `number`, by its anchor control or by an HWP5 body group.
+fn memo_exists(section: &hwp_model::Section, number: u32) -> bool {
+    hwp5_memo_body_range(section, number).is_some()
+        || section_has_memo_anchor(&section.paragraphs, number)
+}
+
+fn section_has_memo_anchor(paras: &[Paragraph], number: u32) -> bool {
+    for para in paras {
+        for control in &para.controls {
+            match control {
+                Control::Generic(g) if crate::field::memo_number(g) == Some(number) => return true,
+                Control::Generic(g) => {
+                    if g.paragraph_lists
+                        .iter()
+                        .any(|l| section_has_memo_anchor(&l.paragraphs, number))
+                    {
+                        return true;
+                    }
+                    if let Some(caption) = &g.caption
+                        && section_has_memo_anchor(&caption.paragraphs, number)
+                    {
+                        return true;
+                    }
+                }
+                Control::Table(t) => {
+                    if t.cells
+                        .iter()
+                        .any(|c| section_has_memo_anchor(&c.paragraphs, number))
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Removes memo `number` from `section`: its anchor field, its body, and the now-stale FIELD_END
+/// flags of the memos that remain in that paragraph.
+pub fn remove_memo(doc: &mut Document, section: usize, number: u32) -> Result<(), String> {
+    let section_count = doc.sections.len();
+    let sec = doc.sections.get_mut(section).ok_or_else(|| {
+        format!("메모 구역 {section}이(가) 없습니다: 문서의 구역 수는 {section_count}입니다")
+    })?;
+    if !memo_exists(sec, number) {
+        return Err(format!(
+            "구역 {section}에 메모 {number}(이)가 없습니다. hwp memo로 번호를 확인하세요"
+        ));
+    }
+    let body_range = hwp5_memo_body_range(sec, number);
+    if let Some((start, end)) = body_range
+        && let Some(last) = sec.paragraphs.last_mut()
+    {
+        last.extras.drain(start..end);
+    }
+    if let Some(site) = find_memo_site_mut(&mut sec.paragraphs, number) {
+        let para = site.para;
+        para.controls.remove(site.index);
+        let mut removed: Vec<usize> = Vec::new();
+        // Pair each FIELD_END with the FIELD_START that opened it, LIFO, because a memo anchor
+        // may span another memo's field and neighboring memos share a paragraph.
+        let mut open: Vec<(usize, u32)> = Vec::new();
+        let mut removed_wchar: Vec<(u32, u32)> = Vec::new();
+        let end_of = |payload: &[u8]| {
+            payload.starts_with(b"em%\0")
+                && payload.len() >= 12
+                && payload[8..12] == number.to_le_bytes()
+        };
+        let mut wpos = 0u32;
+        for (i, ch) in para.chars.iter().enumerate() {
+            match ch {
+                HwpChar::ExtCtrl {
+                    code: 3, ctrl_id, ..
+                } if *ctrl_id == *b"%%me" => open.push((i, wpos)),
+                HwpChar::InlineCtrl { code: 4, payload } if payload.starts_with(b"em%\0") => {
+                    if let Some((s, sw)) = open.pop()
+                        && end_of(payload)
+                    {
+                        removed.push(s);
+                        removed.push(i);
+                        removed_wchar.push((sw, FIELD_BLOCK_WCHAR));
+                        removed_wchar.push((wpos, FIELD_BLOCK_WCHAR));
+                    }
+                }
+                _ => {}
+            }
+            wpos += ch.wchar_width();
+        }
+        for i in removed.into_iter().rev() {
+            para.chars.remove(i);
+        }
+        // Rebase the character-shape runs past the two removed field blocks, as remove_controls
+        // does for any other deleted control.
+        for (pos, _) in &mut para.char_shape_runs {
+            let shift: u32 = removed_wchar
+                .iter()
+                .filter(|(start, width)| start + width <= *pos)
+                .map(|(_, width)| *width)
+                .sum();
+            *pos -= shift;
+        }
+        para.char_shape_runs.dedup();
+        crate::field::relink_ctrl_index(para);
+        sync_memo_field_ends(para);
+        para.header.ctrl_mask = 0;
+        para.line_segs.clear();
+    }
+    Ok(())
+}
+
+/// Rewrites the `hp:subList` of a captured HWPX memo fieldBegin with new body paragraphs, leaving
+/// the field's parameters, ids and everything outside the subList byte-identical.
+fn rewrite_hwpx_memo_sub_list(
+    raw: &str,
+    body: &[Paragraph],
+    template: &Paragraph,
+) -> Result<String, String> {
+    let open = raw
+        .find("<hp:subList")
+        .ok_or_else(|| "HWPX 메모 fieldBegin에 hp:subList가 없습니다".to_string())?;
+    let close = raw
+        .rfind("</hp:subList>")
+        .ok_or_else(|| "HWPX 메모 fieldBegin의 hp:subList가 닫히지 않았습니다".to_string())?;
+    let open_end = raw[open..].find('>').map(|i| open + i + 1).ok_or_else(|| {
+        "HWPX 메모 fieldBegin의 hp:subList 시작 태그가 닫히지 않았습니다".to_string()
+    })?;
+    if close < open_end {
+        return Err("HWPX 메모 fieldBegin의 hp:subList 범위를 해석할 수 없습니다".to_string());
+    }
+    let mut out = String::with_capacity(raw.len());
+    out.push_str(&raw[..open_end]);
+    for para in body {
+        out.push_str(&hwpx_memo_paragraph_xml(para, template));
+    }
+    out.push_str(&raw[close..]);
+    Ok(out)
+}
+
+/// One `<hp:p>` for a memo body paragraph, using the shape and style ids carried by the capture's
+/// template paragraph.
+fn hwpx_memo_paragraph_xml(para: &Paragraph, template: &Paragraph) -> String {
+    let mut text = String::new();
+    for ch in &para.chars {
+        hwp_model::text::char_text(ch, &mut text);
+    }
+    format!(
+        r#"<hp:p id="0" paraPrIDRef="{}" styleIDRef="{}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{}"><hp:t>{}</hp:t></hp:run></hp:p>"#,
+        template.para_shape.0,
+        template.style.0,
+        para.char_shape_runs.first().map_or(0, |r| r.1.0),
+        escape_xml_text(&text)
+    )
+}
+
+/// Escapes the three characters that cannot appear literally inside an XML text node.
+fn escape_xml_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
