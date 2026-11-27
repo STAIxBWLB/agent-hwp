@@ -356,10 +356,11 @@ pub enum Cmd {
         /// heading in `cat --format markdown`. Markdown input only; off by default
         #[arg(long = "section-strips")]
         section_strips: bool,
-        /// Insert a front table of contents listing the level-1 and level-2 headings, with
-        /// page numbers taken from a layout pass. Body pages restart at 1 after the TOC page.
-        /// Pagination depends on fonts: pass --font-dir (or HWP_FONT_DIR) with the document's
-        /// fonts. Markdown input only; off by default
+        /// Insert a front table of contents listing the `##` and `###` headings (styles 개요 2
+        /// and 개요 3; the `#` title is not listed), with page numbers taken from a layout pass.
+        /// Body pages restart at 1 after the TOC page. Pagination depends on fonts: pass
+        /// --font-dir (or HWP_FONT_DIR) with the document's fonts. Markdown input only; off by
+        /// default
         #[arg(long)]
         toc: bool,
         /// Font directory for the --toc layout pass (repeatable)

@@ -315,5 +315,23 @@ fn compose_report_blocks_match_the_published_layout() {
             out.as_os_str(),
         ]));
         assert!(md.lines().any(|l| l == "### 2. 절 3-2"), "{ext}\n{md}");
+        if ext == "hwp" {
+            // The published .hwp keeps the line caches the structural writer synthesizes, as
+            // without the TOC. Measuring a re-read copy and publishing that instead cleared them,
+            // and the cacheless layout can paginate away from the measured TOC.
+            let json = ok(&run(&[
+                "cat".as_ref(),
+                "--format".as_ref(),
+                "json".as_ref(),
+                out.as_os_str(),
+            ]));
+            let ir: serde_json::Value = serde_json::from_str(&json).expect("IR JSON");
+            let paras = ir["sections"][0]["paragraphs"].as_array().unwrap();
+            let cached = paras
+                .iter()
+                .filter(|p| p["line_segs"].as_array().is_some_and(|s| !s.is_empty()))
+                .count();
+            assert_eq!(cached, paras.len(), "{ext}: paragraphs without line caches");
+        }
     }
 }

@@ -123,9 +123,33 @@ fn table_paragraph(table: Table, style: StyleId) -> Paragraph {
 }
 
 fn table(rows: u16, cols: u16, cells: Vec<Cell>) -> Table {
+    // An explicit inline placement, as DocumentSpec tables carry: both writers then emit the
+    // object properties from the model instead of inventing them, so the published file reads
+    // back to this same table (compose's semantic self-check compares the two).
+    let width = cells.iter().filter(|c| c.row == 0).map(|c| c.width.0).sum();
+    let height = cells
+        .iter()
+        .filter(|c| c.col == 0)
+        .map(|c| c.height.0)
+        .sum();
     Table {
         common_data: Vec::new(),
-        placement: None,
+        placement: Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            affect_line_spacing: true,
+            flow_with_text: true,
+            hold_anchor: false,
+            vert_rel_to: 2,
+            horz_rel_to: 3,
+            vert_align: 0,
+            horz_align: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            z_order: 0,
+            width,
+            height,
+            out_margins: [0; 4],
+        }),
         attr: 0,
         rows,
         cols,
@@ -473,7 +497,8 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
         })
         .filter(|(_, _, t)| !t.is_empty())
         .collect();
-    if listed.is_empty() {
+    if listed.is_empty() || u16::try_from(listed.len()).is_err() {
+        // A TOC table holds at most u16::MAX rows (HWP5 TABLE row count).
         return None;
     }
     let title_shape = style_index(doc, "개요 1")
@@ -490,7 +515,7 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
             } else {
                 title.clone()
             };
-            let row = u16::try_from(row).expect("TOC rows fit u16");
+            let row = u16::try_from(row).unwrap_or(u16::MAX);
             let mut left = cell(
                 0,
                 BODY_WIDTH - page_width,
@@ -564,7 +589,7 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
 pub fn fill_toc(doc: &mut Document, plan: &TocPlan, pages: &[u32]) -> Result<(), String> {
     if pages.len() != plan.entries.len() {
         return Err(format!(
-            "TOC page count {} does not match its {} entries",
+            "목차 쪽 번호 {}개가 목차 항목 {}개와 맞지 않습니다",
             pages.len(),
             plan.entries.len()
         ));
@@ -573,15 +598,18 @@ pub fn fill_toc(doc: &mut Document, plan: &TocPlan, pages: &[u32]) -> Result<(),
         .sections
         .first_mut()
         .and_then(|s| s.paragraphs.get_mut(plan.table_paragraph))
-        .ok_or("TOC table paragraph is missing")?;
+        .ok_or("목차 표 문단이 없습니다")?;
     let Some(Control::Table(table)) = para.controls.first_mut() else {
-        return Err("TOC table paragraph holds no table".into());
+        return Err("목차 표 문단에 표가 없습니다".into());
     };
     for cell in table.cells.iter_mut().filter(|c| c.col == 1) {
         let page = pages
             .get(usize::from(cell.row))
-            .ok_or("TOC row without a page")?;
-        let p = cell.paragraphs.first_mut().ok_or("empty TOC cell")?;
+            .ok_or("쪽 번호가 없는 목차 행이 있습니다")?;
+        let p = cell
+            .paragraphs
+            .first_mut()
+            .ok_or("비어 있는 목차 칸이 있습니다")?;
         let shape = p.char_shape_runs.first().map_or(CharShapeId(0), |r| r.1);
         *p = text_paragraph(&page.to_string(), shape, p.style);
     }
@@ -636,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn toc_lists_level_one_and_two_headings_and_restarts_page_numbers() {
+    fn toc_lists_level_two_and_three_headings_and_restarts_page_numbers() {
         let mut d = doc("# 제목\n\n## Ⅰ. 개요\n\n본문\n\n### 1. 세부\n\n## Ⅱ. 계획\n\n본문\n");
         let before = d.sections[0].paragraphs.len();
         let plan = insert_toc(&mut d).expect("headings exist");

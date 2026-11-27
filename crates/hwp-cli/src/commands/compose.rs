@@ -199,15 +199,25 @@ fn execute_spec_v2_with_source(
                         .collect(),
                     None => crate::commands::convert::resolve_font_dirs(Vec::new()),
                 };
-                // The file written below is `write(rt(document))` (semantic validation needs the
-                // published form), and it reads back as `rt(rt(document))`, so measure exactly
-                // that: the HWP5 writer keeps a re-read file's line caches instead of
-                // synthesizing them, so one round trip alone can paginate differently.
-                let filled = hwp_cli::toc::backfill(&mut document, &plan, &font_dirs, |doc| {
-                    let once = crate::commands::new::published_round_trip(doc, write_hwp)?;
-                    crate::commands::new::published_round_trip(&once, write_hwp)
+                let layout = hwp_cli::toc::TocLayout {
+                    fonts: match font_files {
+                        Some(files) => hwp_cli::toc::TocFonts::Isolated(files),
+                        None => hwp_cli::toc::TocFonts::Dirs(&font_dirs),
+                    },
+                    switch: "report_blocks.toc",
+                };
+                // Measure each candidate with exactly the writer that publishes `document`
+                // below (`compose_writer`), so the layout runs on what the output re-reads as
+                // and the published input is the same document as without the TOC.
+                let filled = hwp_cli::toc::backfill(&mut document, &plan, &layout, |doc| {
+                    crate::commands::new::published_round_trip(
+                        doc,
+                        write_hwp,
+                        "compose",
+                        "report_blocks.toc",
+                        |d, p| compose_writer(d, p, write_hwp, font_files),
+                    )
                 })?;
-                document = crate::commands::new::published_round_trip(&document, write_hwp)?;
                 if filled.font_fallbacks > 0 {
                     toc_warnings.push(format!(
                         "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 HWP_FONT_DIR로 문서 글꼴을 지정하세요",
@@ -225,19 +235,7 @@ fn execute_spec_v2_with_source(
     let writer_report = crate::commands::output::write_validated(
         output,
         source_path,
-        |staged| {
-            if write_hwp {
-                if let Some(font_files) = font_files {
-                    crate::commands::convert::write_hwp_structural_isolated(
-                        &document, staged, font_files,
-                    )
-                } else {
-                    crate::commands::convert::write_hwp_structural(&document, staged)
-                }
-            } else {
-                Ok(hwpx::write_document_with_report(&document, staged)?)
-            }
-        },
+        |staged| compose_writer(&document, staged, write_hwp, font_files),
         |staged, writer_report| {
             crate::commands::reject_preservation_loss("compose", &writer_report.preservation)?;
             if font_files.is_some() {
@@ -251,6 +249,26 @@ fn execute_spec_v2_with_source(
     report.warnings = writer_report.warnings;
     report.warnings.extend(toc_warnings);
     Ok(report)
+}
+
+/// The writer DocumentSpec v2 compose publishes with; the `report_blocks.toc` layout pass
+/// measures candidates through this same function.
+fn compose_writer(
+    document: &hwp_model::Document,
+    staged: &Path,
+    write_hwp: bool,
+    font_files: Option<&[std::path::PathBuf]>,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    if write_hwp {
+        match font_files {
+            Some(files) => {
+                crate::commands::convert::write_hwp_structural_isolated(document, staged, files)
+            }
+            None => crate::commands::convert::write_hwp_structural(document, staged),
+        }
+    } else {
+        Ok(hwpx::write_document_with_report(document, staged)?)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -99,13 +99,17 @@ ahwp new report.md -o report.hwpx --preset report --toc --section-strips --font-
 
 - `--section-strips` turns each `### N. Title` heading into a 1x3 strip table (shaded number,
   spacer, bottom-bordered title). `cat --format markdown` reads it back as the same heading.
-- `--toc` inserts a front table of contents over the level-1 and level-2 headings. The body page
-  number restarts at 1 after it. Page numbers come from a layout pass on the written file, repeated
-  until they stop changing. Pagination depends on fonts: give the document's fonts with
-  `--font-dir` or `HWP_FONT_DIR`, otherwise a warning reports the substitutions and Hangul may
-  break pages differently.
+- `--toc` inserts a front table of contents over the `##` and `###` headings (styles `개요 2` and
+  `개요 3`; the `#` title is not listed). The body page number restarts at 1 after it. Page
+  numbers come from a layout pass on the written file, repeated until they stop changing.
+  Pagination depends on fonts: give the document's fonts with `--font-dir` or `HWP_FONT_DIR`,
+  otherwise a warning reports the substitutions and Hangul may break pages differently.
 - In DocumentSpec v2: `"report_blocks": {"toc": true, "section_strips": true}`. Headings are
-  paragraphs whose style is named `개요 N`.
+  paragraphs whose style is named `개요 2` or `개요 3`.
+- Limits: only the first section's headings are listed. A DocumentSpec `page_number.start` other
+  than 1 conflicts with the TOC's restart at 1, so leave it unset with `toc`. For `.hwp` output the
+  writer synthesizes line caches from `HWP_FONT_DIR` only; `--font-dir` reaches the TOC layout
+  pass but not that synthesis, so set `HWP_FONT_DIR` for `.hwp`.
 
 ## Regenerate a document from the JSON IR
 

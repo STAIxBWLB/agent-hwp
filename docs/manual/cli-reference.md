@@ -184,7 +184,7 @@ Create a new document
 | `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
 | `--table-placement` | `inline` \| `floating` |  | Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors each table to its paragraph so a long table can split across pages. Applies to every table the input produces; pictures are unaffected. Omit to keep the historical default (no explicit placement) |
 | `--section-strips` |  |  | Turn each numbered level-3 heading (`### N. Title`) into a 1x3 section strip: a shaded number cell, a spacer and a bottom-bordered title. Reads back as the same heading in `cat --format markdown`. Markdown input only; off by default |
-| `--toc` |  |  | Insert a front table of contents listing the level-1 and level-2 headings, with page numbers taken from a layout pass. Body pages restart at 1 after the TOC page. Pagination depends on fonts: pass --font-dir (or HWP_FONT_DIR) with the document's fonts. Markdown input only; off by default |
+| `--toc` |  |  | Insert a front table of contents listing the `##` and `###` headings (styles 개요 2 and 개요 3; the `#` title is not listed), with page numbers taken from a layout pass. Body pages restart at 1 after the TOC page. Pagination depends on fonts: pass --font-dir (or HWP_FONT_DIR) with the document's fonts. Markdown input only; off by default |
 | `--font-dir` | `<FONT_DIR>` |  | Font directory for the --toc layout pass (repeatable) |
 
 ## `ahwp compose`

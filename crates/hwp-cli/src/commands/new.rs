@@ -129,11 +129,17 @@ pub enum NewInput<'a> {
     Empty,
 }
 
-/// Writes `doc` with the output's writer to a private temp file and reads it back, so the
-/// `--toc` layout pass measures exactly what the published file holds.
+/// Writes `doc` with `write` (the exact writer the command publishes with) to a private temp
+/// file and reads it back, so the `--toc` layout pass measures what the published file holds.
+/// A preservation loss refuses here as it would at publish time, so the measurement never
+/// runs on a silently reduced document. `command` names the caller (`new`, `compose`) and
+/// `switch` the option to drop (`--toc`, `report_blocks.toc`) in messages.
 pub(crate) fn published_round_trip(
     doc: &hwp_model::Document,
     write_hwp: bool,
+    command: &str,
+    switch: &str,
+    write: impl Fn(&hwp_model::Document, &std::path::Path) -> anyhow::Result<hwp_model::WriteReport>,
 ) -> anyhow::Result<hwp_model::Document> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -141,14 +147,29 @@ pub(crate) fn published_round_trip(
         .unwrap_or(0);
     let ext = if write_hwp { "hwp" } else { "hwpx" };
     let path = std::env::temp_dir().join(format!("ahwp-toc-{}-{nanos}.{ext}", std::process::id()));
+    // Claim the path exclusively (0600 on unix), so a file planted at the guessable name is
+    // refused instead of being followed or overwritten.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    opts.open(&path).map_err(|e| {
+        anyhow::anyhow!(
+            "{switch}: 레이아웃용 임시 파일을 만들 수 없습니다: {} ({e})\n해결: 임시 디렉터리(TMPDIR)의 권한을 확인하거나 {switch} 없이 생성하세요",
+            path.display()
+        )
+    })?;
     let result = (|| {
-        if write_hwp {
-            crate::commands::convert::write_hwp(doc, &path, false)?;
-        } else {
-            hwpx::write_document_with_report(doc, &path)?;
-        }
-        crate::commands::cat::load_document(&path)
-            .map_err(|e| anyhow::anyhow!("--toc 레이아웃용 재읽기 실패: {e:#}"))
+        let report = write(doc, &path)?;
+        crate::commands::reject_preservation_loss(command, &report.preservation)?;
+        crate::commands::cat::load_document(&path).map_err(|e| {
+            anyhow::anyhow!(
+                "{switch}: 레이아웃용 재읽기 실패: {e:#}\n해결: {switch} 없이 생성한 뒤 한글에서 목차를 넣으세요"
+            )
+        })
     })();
     let _ = std::fs::remove_file(&path);
     result
@@ -388,10 +409,20 @@ pub fn execute(
                 Some(plan) => {
                     let font_dirs =
                         crate::commands::convert::resolve_font_dirs(options.font_dirs.clone());
-                    let filled =
-                        hwp_cli::toc::backfill(&mut doc, &plan, &font_dirs, |candidate| {
-                            published_round_trip(candidate, write_hwp)
-                        })?;
+                    let layout = hwp_cli::toc::TocLayout {
+                        fonts: hwp_cli::toc::TocFonts::Dirs(&font_dirs),
+                        switch: "--toc",
+                    };
+                    // Measure with the writer `new` publishes with (below).
+                    let filled = hwp_cli::toc::backfill(&mut doc, &plan, &layout, |candidate| {
+                        published_round_trip(candidate, write_hwp, "new", "--toc", |d, p| {
+                            if write_hwp {
+                                crate::commands::convert::write_hwp(d, p, false)
+                            } else {
+                                Ok(hwpx::write_document_with_report(d, p)?)
+                            }
+                        })
+                    })?;
                     if filled.font_fallbacks > 0 {
                         import_warnings.push(format!(
                             "--toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 --font-dir로 문서 글꼴을 지정하세요",
@@ -400,7 +431,7 @@ pub fn execute(
                     }
                 }
                 None => import_warnings.push(
-                    "--toc: 목차에 넣을 1·2수준 제목이 없어 목차를 만들지 않았습니다".to_string(),
+                    "--toc: 목차에 넣을 `##`·`###`(개요 2·개요 3) 제목이 없어 목차를 만들지 않았습니다".to_string(),
                 ),
             }
         }
