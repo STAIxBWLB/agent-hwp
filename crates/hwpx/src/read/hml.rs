@@ -206,12 +206,16 @@ impl GridSim {
         self.row = self.carry.iter().map(|&c| c > 0).collect();
     }
 
-    fn end_row(&mut self) {
+    fn end_row(&mut self) -> std::result::Result<(), ()> {
         self.rows += 1;
         self.cols = self.cols.max(self.row.len());
         for c in &mut self.carry {
             *c = c.saturating_sub(1);
         }
+        if self.rows > IR_MAX_DIM {
+            return Err(());
+        }
+        Ok(())
     }
 
     /// Places one cell; `budget` is the slot count still available to this table. The check
@@ -227,7 +231,7 @@ impl GridSim {
         let cols = self.cols.max(need);
         // At least this row and every row a rowspan already reaches.
         let rows = (self.rows + 1).max(self.rows + row_span as usize);
-        if rows.saturating_mul(cols) > budget {
+        if cols > IR_MAX_DIM || rows > IR_MAX_DIM || rows.saturating_mul(cols) > budget {
             return Err(());
         }
         if self.row.len() < need {
@@ -243,10 +247,15 @@ impl GridSim {
         Ok(())
     }
 
+    /// The IR builder gives every table at least one column and fills it, so rows with no
+    /// cells still occupy one slot each.
     fn slots(&self) -> usize {
-        self.rows.saturating_mul(self.cols)
+        self.rows.saturating_mul(self.cols.max(1))
     }
 }
+
+/// The IR stores table rows, columns and cell addresses as `u16`.
+const IR_MAX_DIM: usize = u16::MAX as usize;
 
 /// Exact length of [`html_escape`]'s output, so the bound is checked before the append.
 fn escaped_len(s: &str) -> usize {
@@ -761,8 +770,10 @@ impl Lower {
                 },
                 Ok(Event::End(e)) => match e.local_name().into_inner() {
                     "ROW" => {
-                        grid.end_row();
-                        if grid.slots() > self.limits.max_table_slots - self.table_slots {
+                        grid.end_row().map_err(|()| self.slot_err())?;
+                        if grid.slots()
+                            > self.limits.max_table_slots.saturating_sub(self.table_slots)
+                        {
                             return Err(self.slot_err());
                         }
                         self.push_html("</tr>")?;
@@ -785,7 +796,7 @@ impl Lower {
 impl Lower {
     fn slot_err(&self) -> HwpxError {
         limit_err(format!(
-            "표 칸 수(행 x 열)가 상한 {}을 넘습니다",
+            "표 칸 수(행 x 열)가 상한 {}을 넘거나 행·열 수가 {IR_MAX_DIM}을 넘습니다",
             self.limits.max_table_slots
         ))
     }
@@ -1091,6 +1102,44 @@ mod tests {
             ..HML_LIMITS
         };
         assert!(read_hml_with_limits(doc(&two, "").as_bytes(), &limits).is_ok());
+
+        // Rows with no cells still take one slot each (the builder adds a column and fills it).
+        let empty_rows = one_cell_table("<ROW></ROW>", 10);
+        let at = HmlLimits {
+            max_table_slots: 10,
+            ..HML_LIMITS
+        };
+        assert!(read_hml_with_limits(doc(&empty_rows, "").as_bytes(), &at).is_ok());
+        let under = HmlLimits {
+            max_table_slots: 9,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(
+            doc(&empty_rows, "").as_bytes(),
+            &under,
+        ));
+        assert!(m.contains("표 칸 수"), "{m}");
+
+        // Dimensions past the IR's u16 are refused even under an unbounded slot budget.
+        let unbounded = HmlLimits {
+            max_table_slots: usize::MAX,
+            ..HML_LIMITS
+        };
+        let too_many_rows = one_cell_table("<ROW></ROW>", IR_MAX_DIM + 1);
+        let m = limit_message(read_hml_with_limits(
+            doc(&too_many_rows, "").as_bytes(),
+            &unbounded,
+        ));
+        assert!(m.contains("표 칸 수"), "{m}");
+        let too_many_cols = format!(
+            "<P><TEXT><TABLE><ROW><CELL ColSpan=\"65535\"><PARALIST><P/></PARALIST></CELL>\
+             {cell}</ROW></TABLE></TEXT></P>"
+        );
+        let m = limit_message(read_hml_with_limits(
+            doc(&too_many_cols, "").as_bytes(),
+            &unbounded,
+        ));
+        assert!(m.contains("표 칸 수"), "{m}");
     }
 
     /// With a BINITEM table, a refused mapped binary is never replaced by the BINDATA whose Id
