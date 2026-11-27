@@ -1547,25 +1547,29 @@ fn assign_instance_ids(
     seen: &mut BTreeSet<u32>,
     deduplicate: bool,
 ) -> Result<()> {
-    let mut memo_body = false;
+    let mut expect_memo_list_header = false;
+    let mut remaining_memo_paragraphs = 0;
     for node in roots {
-        // A memo body is a flat MEMO_LIST + LIST_HEADER + PARA_HEADER sequence among the last
-        // paragraph's children, and every memo body paragraph in the four fixtures keeps
-        // instance id 0: it sits outside the document's paragraph id space, so allocating one
-        // would only move the bytes away from the measured shape.
-        if node.tag == hwp_model::memo::MEMO_LIST_TAG {
-            memo_body = true;
+        // Genuine memo body paragraphs retain instance ID 0. Only skip the adjacent
+        // list header and its counted paragraphs, as later siblings use ordinary IDs.
+        if node.tag == tag::MEMO_LIST {
+            expect_memo_list_header = true;
+            remaining_memo_paragraphs = 0;
             continue;
         }
-        if memo_body
-            && matches!(
-                node.tag,
-                hwp_model::memo::LIST_HEADER_TAG | hwp_model::memo::PARA_HEADER_TAG
-            )
-        {
+        if std::mem::take(&mut expect_memo_list_header) && node.tag == tag::LIST_HEADER {
+            remaining_memo_paragraphs = node
+                .data
+                .first_chunk::<2>()
+                .copied()
+                .map_or(0, u16::from_le_bytes);
             continue;
         }
-        memo_body = false;
+        if remaining_memo_paragraphs > 0 && node.tag == tag::PARA_HEADER {
+            remaining_memo_paragraphs -= 1;
+            continue;
+        }
+        remaining_memo_paragraphs = 0;
         if let Some(id) = para_header_instance_id(node) {
             let duplicate = !seen.insert(id);
             if id == 0 || (deduplicate && duplicate) {
@@ -5066,8 +5070,8 @@ mod tests {
             0,
             &hwp_convert::edit::MemoAnchor {
                 para: 0,
-                start: 0,
-                end: 0,
+                start: 16,
+                end: 16,
             },
             "Author",
             Some(1),
@@ -5412,6 +5416,42 @@ mod tests {
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn memo_instance_id_skip_stops_at_the_declared_body_count() {
+        let mut later = paragraph_id_record(0);
+        later.children.push(paragraph_id_record(0));
+        let mut roots = vec![
+            RecordNode {
+                tag: tag::MEMO_LIST,
+                data: 1u32.to_le_bytes().to_vec(),
+                children: vec![],
+            },
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: 1u16.to_le_bytes().to_vec(),
+                children: vec![],
+            },
+            paragraph_id_record(0),
+            later,
+        ];
+        assign_instance_ids(
+            &mut roots,
+            &mut 0x1000_0000,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            [
+                para_header_instance_id(&roots[2]),
+                para_header_instance_id(&roots[3]),
+                para_header_instance_id(&roots[3].children[0])
+            ],
+            [Some(0), Some(0x1000_0001), Some(0x1000_0002)]
+        );
     }
 
     #[test]

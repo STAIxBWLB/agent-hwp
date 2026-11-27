@@ -3056,6 +3056,7 @@ fn memo_body_paragraphs(template: Option<&Paragraph>, body: &[String]) -> Vec<Pa
         .into_iter()
         .map(|line| {
             let mut para = blank_para_like(template);
+            para.header.break_type = 0;
             para.chars = replacement_chars(line);
             para
         })
@@ -3210,6 +3211,17 @@ pub fn add_memo(
     });
 
     let para = &mut sec.paragraphs[anchor.para];
+    let first_anchor_offset = para
+        .chars
+        .iter()
+        .take_while(|ch| matches!(ch, HwpChar::ExtCtrl { ctrl_id, .. } if matches!(ctrl_id, b"secd" | b"cold")))
+        .map(HwpChar::wchar_width)
+        .sum::<u32>();
+    if anchor.start < first_anchor_offset {
+        return Err(format!(
+            "메모 범위가 문단 앞의 구역 또는 단 정의를 포함합니다. 시작과 끝을 WCHAR 오프셋 {first_anchor_offset} 이상으로 지정하세요"
+        ));
+    }
     let start_idx = char_index_at_wchar(&para.chars, anchor.start).ok_or_else(|| {
         format!(
             "메모 앵커 시작 위치 {}가 문단 경계를 벗어났습니다: 문단의 WCHAR 길이는 {}입니다",
@@ -5117,13 +5129,11 @@ mod tests {
         let number = add_memo(
             &mut doc,
             0,
-            // A zero-width anchor: this test is about which container the walkers reach, and the
-            // markdown builder's paragraph opens with a control block, so an inner offset would
-            // not be a character boundary.
+            // A zero-width anchor just after the two leading eight-WCHAR definitions.
             &MemoAnchor {
                 para: 0,
-                start: 0,
-                end: 0,
+                start: 16,
+                end: 16,
             },
             "yj.lee",
             Some(1),
@@ -5293,6 +5303,64 @@ mod tests {
             .map(|m| m.number)
             .collect();
         assert_eq!(numbers, vec![2]);
+    }
+
+    #[test]
+    fn memo_add_keeps_leading_section_definitions_outside_the_field() {
+        let original = crate::from_markdown("Anchor");
+        let chars = &original.sections[0].paragraphs[0].chars;
+        assert!(matches!(chars[0], HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == *b"secd"));
+        assert!(matches!(chars[1], HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == *b"cold"));
+        let first_text = chars[..2].iter().map(HwpChar::wchar_width).sum::<u32>();
+        let rejected = [(0, 0), (8, 8), (0, first_text + 1)].map(|(start, end)| {
+            let mut doc = original.clone();
+            let result = add_memo(
+                &mut doc,
+                0,
+                &MemoAnchor {
+                    para: 0,
+                    start,
+                    end,
+                },
+                "Tester",
+                Some(1),
+                &["Memo".into()],
+            );
+            (result, doc == original)
+        });
+        assert!(
+            rejected.iter().all(|(result, unchanged)| {
+                result
+                    .as_ref()
+                    .is_err_and(|message| message.contains(&first_text.to_string()))
+                    && *unchanged
+            }),
+            "the leading definitions must remain outside the memo: {rejected:?}"
+        );
+
+        let mut doc = original;
+        add_memo(
+            &mut doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: first_text,
+                end: first_text + 1,
+            },
+            "Tester",
+            Some(1),
+            &["Memo".into()],
+        )
+        .unwrap();
+        assert_eq!(hwp_model::memo::memos(&doc)[0].anchor_text, "A");
+    }
+
+    #[test]
+    fn memo_body_paragraph_does_not_inherit_the_anchor_break_type() {
+        let mut anchor = Paragraph::default();
+        anchor.header.break_type = 3;
+        let body = memo_body_paragraphs(Some(&anchor), &["Memo".into()]);
+        assert_eq!(body[0].header.break_type, 0);
     }
 
     #[test]

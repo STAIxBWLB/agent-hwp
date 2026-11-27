@@ -238,7 +238,7 @@
   {
     "op": "memo_add",
     "section": 0,
-    "anchor": { "para": 0, "start": 0, "end": 0 },
+    "anchor": { "para": 0, "start": 16, "end": 17 },
     "author": "kind_coverage",
     "body": ["memo body"]
   },
