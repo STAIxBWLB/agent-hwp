@@ -478,3 +478,15 @@ Changing only the reference to a package path made Hancom on macOS display the s
 for all seven synthesized kinds (#618 AC4). Synthesized files keep the direct chart wrapper
 and the chart OPF item. Reads resolve both package paths and legacy manifest IDs. Rewrites of
 saved charts retain the complete switch wrapper.
+
+A series fill does not color a line or scatter series. At `d510c6a1` a line series emitted a bare
+`c:ser/c:spPr/a:ln` fill with no width and a scatter series emitted only `c:ser/c:spPr/a:solidFill`;
+Hancom Office on macOS drew both in its default colors. At `59f1ee13` a pen with an explicit width
+colored the line stroke and `c:marker/c:spPr` colored the scatter markers, while the line's markers
+and the scatter's connecting stroke stayed default, because the line emitted no `c:marker` and the
+scatter no pen. At `c1965f11` both kinds emit the same block: a pen, `c:ser/c:spPr/a:ln` with
+`w="28575" cap="flat" cmpd="sng" algn="ctr"` plus a solid dash and a round join, and a `c:marker`
+whose `c:spPr` repeats the fill and the pen. At that head Hancom Office on macOS drew the strokes,
+markers and legend swatches of both kinds in the supplied color. Unverified there: whether those
+exact width, dash and symbol values are required rather than sufficient, and how Windows Hancom
+draws the same parts.
