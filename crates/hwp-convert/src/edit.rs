@@ -3222,6 +3222,17 @@ pub fn add_memo(
             "메모 범위가 문단 앞의 구역 또는 단 정의를 포함합니다. 시작과 끝을 WCHAR 오프셋 {first_anchor_offset} 이상으로 지정하세요"
         ));
     }
+    if matches!(
+        para.chars.last(),
+        Some(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK))
+    ) {
+        let last_anchor_offset = para.wchar_len() - 1;
+        if anchor.end > last_anchor_offset {
+            return Err(format!(
+                "메모 범위가 문단 끝 제어 문자를 포함하거나 그 뒤에 있습니다. 시작과 끝을 WCHAR 오프셋 {last_anchor_offset} 이하로 지정하세요"
+            ));
+        }
+    }
     let start_idx = char_index_at_wchar(&para.chars, anchor.start).ok_or_else(|| {
         format!(
             "메모 앵커 시작 위치 {}가 문단 경계를 벗어났습니다: 문단의 WCHAR 길이는 {}입니다",
@@ -5303,6 +5314,89 @@ mod tests {
             .map(|m| m.number)
             .collect();
         assert_eq!(numbers, vec![2]);
+    }
+
+    #[test]
+    fn memo_add_refuses_anchors_past_or_covering_a_stored_paragraph_end() {
+        use hwp_model::ctrl_char::PARA_BREAK;
+
+        let mut original = crate::from_markdown("A");
+        original.meta.source_format = "hwp5".into();
+        let para = &mut original.sections[0].paragraphs[0];
+        para.chars = vec![HwpChar::Text('A'), HwpChar::CharCtrl(PARA_BREAK)];
+        para.controls.clear();
+        let rejected = [(2, 2), (0, 2)].map(|(start, end)| {
+            let mut doc = original.clone();
+            let result = add_memo(
+                &mut doc,
+                0,
+                &MemoAnchor {
+                    para: 0,
+                    start,
+                    end,
+                },
+                "Tester",
+                Some(1),
+                &["Memo".into()],
+            );
+            (result, doc == original)
+        });
+        assert!(
+            rejected.iter().all(|(result, unchanged)| {
+                result
+                    .as_ref()
+                    .is_err_and(|message| message.contains("오프셋 1"))
+                    && *unchanged
+            }),
+            "anchors after or covering the terminator must be refused atomically: {rejected:?}"
+        );
+
+        add_memo(
+            &mut original,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 1,
+                end: 1,
+            },
+            "Tester",
+            Some(1),
+            &["Memo".into()],
+        )
+        .expect("a zero-width anchor immediately before the paragraph end is valid");
+        assert_eq!(
+            original.sections[0].paragraphs[0].chars.last(),
+            Some(&HwpChar::CharCtrl(PARA_BREAK))
+        );
+    }
+
+    #[test]
+    fn memo_add_accepts_the_hwpx_text_end_when_there_is_no_stored_terminator() {
+        let (section, _) = hwpx::read::section::parse_section(
+            r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+            <hp:p id="0" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run></hp:p></hs:sec>"#,
+        ).unwrap();
+        let mut doc = crate::from_markdown("A");
+        doc.meta.source_format = "hwpx".into();
+        doc.sections = vec![section];
+        assert_eq!(doc.sections[0].paragraphs[0].chars, [HwpChar::Text('A')]);
+        for start in [0, 1] {
+            let mut doc = doc.clone();
+            add_memo(
+                &mut doc,
+                0,
+                &MemoAnchor {
+                    para: 0,
+                    start,
+                    end: 1,
+                },
+                "Tester",
+                Some(1),
+                &["Memo".into()],
+            )
+            .expect("HWPX has no inline paragraph end after its text");
+            assert_eq!(hwp_model::memo::memos(&doc).len(), 1);
+        }
     }
 
     #[test]
