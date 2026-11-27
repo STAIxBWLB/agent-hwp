@@ -3085,28 +3085,41 @@ fn sync_memo_field_ends(para: &mut Paragraph) {
     }
 }
 
-/// The HWP5 body group of memo `number` in the section's last paragraph, as `[start, end)`.
-///
-/// HWP5 keeps every memo body as `MEMO_LIST` + `LIST_HEADER` + paragraph records among the extras
-/// of the section's last paragraph, one group per memo (07 L2). The group ends where the next
-/// `MEMO_LIST` starts.
+/// The HWP5 memo marker and its adjacent list, excluding later opaque records (07 L8).
 fn hwp5_memo_body_range(section: &hwp_model::Section, number: u32) -> Option<(usize, usize)> {
-    let last = section.paragraphs.last()?;
-    let start = last.extras.iter().position(|extra| {
+    let extras = &section.paragraphs.last()?.extras;
+    let start = extras.iter().position(|extra| {
         extra.tag == hwp_model::memo::MEMO_LIST_TAG
-            && extra.data.len() >= 4
-            && u32::from_le_bytes([extra.data[0], extra.data[1], extra.data[2], extra.data[3]])
-                == number
+            && extra.data.get(..4) == Some(number.to_le_bytes().as_slice())
     })?;
-    let end = last
-        .extras
-        .iter()
-        .enumerate()
-        .skip(start + 1)
-        .find(|(_, extra)| extra.tag == hwp_model::memo::MEMO_LIST_TAG)
-        .map(|(i, _)| i)
-        .unwrap_or(last.extras.len());
-    Some((start, end))
+    let list_length = hwp_model::memo::hwp5_memo_body_paragraphs(&extras[start + 1..])
+        .map_or(0, |paragraphs| 1 + paragraphs.len());
+    Some((start, start + 1 + list_length))
+}
+
+/// A new field crosses an existing pair when it encloses exactly one of its control blocks.
+fn crosses_field_pair(chars: &[HwpChar], range: std::ops::Range<usize>) -> bool {
+    use hwp_model::ctrl_char::{FIELD_END, FIELD_START};
+
+    let mut open = Vec::new();
+    for (index, ch) in chars.iter().enumerate() {
+        match ch {
+            HwpChar::ExtCtrl {
+                code: FIELD_START, ..
+            } => open.push(index),
+            HwpChar::InlineCtrl {
+                code: FIELD_END, ..
+            } => {
+                if let Some(start) = open.pop()
+                    && range.contains(&start) != range.contains(&index)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Adds a memo over `anchor`'s text and returns its number.
@@ -3211,6 +3224,12 @@ pub fn add_memo(
             para.wchar_len()
         )
     })?;
+    if crosses_field_pair(&para.chars, start_idx..end_idx) {
+        return Err(
+            "메모 범위가 기존 필드 경계를 가로지릅니다. 기존 필드 안에 완전히 들어가거나 필드 전체를 포함하도록 범위를 조정하세요"
+                .into(),
+        );
+    }
     let ctrl_index = para.chars[..start_idx]
         .iter()
         .filter(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
@@ -5274,6 +5293,124 @@ mod tests {
             .map(|m| m.number)
             .collect();
         assert_eq!(numbers, vec![2]);
+    }
+
+    #[test]
+    fn memo_add_rejects_both_crossings_and_allows_nesting_and_neighbors() {
+        let mut original = crate::from_markdown("A tail");
+        assert!(crate::create_hyperlink(&mut original, "A", "https://example.com", "bc").unwrap());
+        let mut position = 0;
+        let mut boundaries = Vec::new();
+        for ch in &original.sections[0].paragraphs[0].chars {
+            if matches!(
+                ch,
+                HwpChar::ExtCtrl { code: 3, .. } | HwpChar::InlineCtrl { code: 4, .. }
+            ) {
+                boundaries.push(position);
+            }
+            position += ch.wchar_width();
+        }
+        let [start, end] = boundaries[..] else {
+            panic!("fixture has one hyperlink field");
+        };
+        let inside = start + FIELD_BLOCK_WCHAR + 1;
+        let after = end + FIELD_BLOCK_WCHAR;
+
+        let results = [(inside, after + 1), (start - 1, inside)].map(|(start, end)| {
+            let mut doc = original.clone();
+            let result = add_memo(
+                &mut doc,
+                0,
+                &MemoAnchor {
+                    para: 0,
+                    start,
+                    end,
+                },
+                "Tester",
+                Some(1),
+                &["Memo".into()],
+            );
+            (result, doc == original)
+        });
+        assert!(
+            results.iter().all(|(result, unchanged)| {
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("필드 경계"))
+                    && *unchanged
+            }),
+            "both crossing anchors must be refused atomically: {results:?}"
+        );
+
+        for (start, end) in [
+            (start - 1, start),
+            (after, after + 1),
+            (inside, end),
+            (start, after),
+        ] {
+            let mut doc = original.clone();
+            add_memo(
+                &mut doc,
+                0,
+                &MemoAnchor {
+                    para: 0,
+                    start,
+                    end,
+                },
+                "Tester",
+                Some(1),
+                &["Memo".into()],
+            )
+            .expect("neighboring or properly nested fields must remain valid");
+            assert_eq!(hwp_model::memo::memos(&doc).len(), 1);
+        }
+    }
+
+    #[test]
+    fn editing_a_native_memo_preserves_extras_beyond_its_body_count() {
+        use hwp_model::memo::{LIST_HEADER_TAG, MEMO_LIST_TAG, PARA_HEADER_TAG};
+        use hwp_model::opaque::OpaqueRecord;
+
+        let mut original = crate::from_markdown("A");
+        original.meta.source_format = "hwp5".into();
+        let para = &mut original.sections[0].paragraphs[0];
+        let mut memo = hwpx_lowered_memo(1);
+        let Control::Generic(generic) = &mut memo else {
+            panic!("fixture must contain a generic memo");
+        };
+        generic.hwpx_raw_xml = None;
+        generic.paragraph_lists.clear();
+        para.controls = vec![memo];
+        para.chars = lowered_memo_chars(0, 'A');
+        let opaque = |tag, data| OpaqueRecord {
+            tag,
+            data,
+            children: Vec::new(),
+        };
+        let trailing = [
+            opaque(PARA_HEADER_TAG, vec![0; 24]),
+            opaque(0x3ff, vec![0xde, 0xad]),
+        ];
+        let mut list_header = vec![0; 16];
+        list_header[0] = 1;
+        para.extras = vec![
+            opaque(MEMO_LIST_TAG, 1u32.to_le_bytes().to_vec()),
+            opaque(LIST_HEADER_TAG, list_header),
+            opaque(PARA_HEADER_TAG, vec![0; 24]),
+        ];
+        para.extras.extend(trailing.clone());
+
+        let mut set = original.clone();
+        set_memo_text(&mut set, 0, 1, &["Updated".into()]).unwrap();
+        remove_memo(&mut original, 0, 1).unwrap();
+        assert_eq!(
+            [
+                set.sections[0].paragraphs[0].extras.as_slice(),
+                original.sections[0].paragraphs[0].extras.as_slice(),
+            ],
+            [trailing.as_slice(); 2],
+            "both edits must preserve every extra beyond the declared memo paragraphs"
+        );
     }
 
     #[test]

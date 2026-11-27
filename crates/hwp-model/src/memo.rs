@@ -270,32 +270,44 @@ fn opaque_para_text(para: &OpaqueRecord) -> String {
     out
 }
 
+/// Returns the memo paragraphs after a MEMO_LIST marker, up to the adjacent LIST_HEADER's
+/// declared count. Paragraph child records stay inside each paragraph. Any other sibling
+/// terminates the group, even if the saved count is larger.
+pub fn hwp5_memo_body_paragraphs(records: &[OpaqueRecord]) -> Option<&[OpaqueRecord]> {
+    let (header, paragraphs) = records.split_first()?;
+    if header.tag != LIST_HEADER_TAG {
+        return None;
+    }
+    let count = u16::from_le_bytes(header.data.get(..2)?.try_into().ok()?);
+    let available = paragraphs
+        .iter()
+        .take(usize::from(count))
+        .take_while(|record| record.tag == PARA_HEADER_TAG)
+        .count();
+    Some(&paragraphs[..available])
+}
+
 /// HWP5 memo bodies from the extras of a section's last paragraph: number -> body paragraphs.
 fn hwp5_bodies(section: &Section) -> Vec<(u32, Vec<String>)> {
     let Some(last) = section.paragraphs.last() else {
         return Vec::new();
     };
-    let mut out: Vec<(u32, Vec<String>)> = Vec::new();
-    for extra in &last.extras {
-        match extra.tag {
-            MEMO_LIST_TAG if extra.data.len() >= 4 => {
-                let n = u32::from_le_bytes([
-                    extra.data[0],
-                    extra.data[1],
-                    extra.data[2],
-                    extra.data[3],
-                ]);
-                out.push((n, Vec::new()));
+    last.extras
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| {
+            if record.tag != MEMO_LIST_TAG {
+                return None;
             }
-            PARA_HEADER_TAG => {
-                if let Some((_, body)) = out.last_mut() {
-                    body.push(opaque_para_text(extra));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+            let number = u32::from_le_bytes(record.data.get(..4)?.try_into().ok()?);
+            let body = hwp5_memo_body_paragraphs(&last.extras[index + 1..])
+                .unwrap_or_default()
+                .iter()
+                .map(opaque_para_text)
+                .collect();
+            Some((number, body))
+        })
+        .collect()
 }
 
 /// Every memo in the document, in the order its anchor sits in the text.
