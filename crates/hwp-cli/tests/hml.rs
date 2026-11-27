@@ -267,6 +267,7 @@ fn legacy_hwp_signatures_get_typed_refusals() {
         assert!(!out.status.success(), "{name}");
         let err = stderr(&out);
         assert!(err.contains(cause), "{name}: {err}");
+        assert!(err.contains("다시 저장"), "{name}: no recovery: {err}");
         assert!(
             !err.contains("HWP 3.x 읽기"),
             "{name} read as valid HWP 3.x: {err}"
@@ -333,4 +334,76 @@ fn oversized_hml_is_refused_before_reading_it_whole() {
     assert!(!out.status.success());
     let err = stderr(&out);
     assert!(err.contains("상한") && err.contains("다시 저장"), "{err}");
+}
+
+/// Two SECTIONs, a blank paragraph and a TAB-only paragraph, reported through `info`.
+#[test]
+fn info_keeps_sections_and_blank_paragraphs() {
+    let input = tmp("sections.hml");
+    std::fs::write(
+        &input,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+         <SECTION><P><TEXT><CHAR>첫 구역</CHAR></TEXT></P><P><TEXT/></P>\
+         <P><TEXT><TAB/></TEXT></P></SECTION>\
+         <SECTION><P><TEXT><CHAR>둘째 구역</CHAR></TEXT></P></SECTION></BODY></HWPML>",
+    )
+    .unwrap();
+    let out = run(&["info".as_ref(), input.as_os_str(), "--json".as_ref()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["sections"], 2, "{v}");
+    let out = run(&[
+        "cat".as_ref(),
+        "--format".as_ref(),
+        "json".as_ref(),
+        input.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let ir: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        ir["sections"][0]["paragraphs"].as_array().unwrap().len(),
+        3,
+        "blank and TAB-only paragraphs kept"
+    );
+}
+
+#[test]
+fn convert_reads_hml_from_stdin() {
+    use std::io::Write as _;
+    let output = tmp("stdin-out.hwpx");
+    let mut child = hwp()
+        .args(["convert", "-", "-o"])
+        .arg(&*output)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(synthetic_hml().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let back = run(&["cat".as_ref(), output.as_os_str()]);
+    assert!(stdout(&back).contains("병합 셀"), "{}", stdout(&back));
+}
+
+/// Content wins over a `.json` extension, and `--preview` names the legacy format.
+#[test]
+fn json_extension_and_preview_route_through_legacy_detection() {
+    let input = tmp("renamed.json");
+    std::fs::write(&input, synthetic_hml()).unwrap();
+    let out = run(&["cat".as_ref(), input.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("병합 셀"));
+
+    let hml = write_hml("preview.hml");
+    let out = run(&["cat".as_ref(), "--preview".as_ref(), hml.as_os_str()]);
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("HWPML") && err.contains("미리보기"), "{err}");
+    assert!(!err.contains("시그니처 불일치"), "{err}");
 }

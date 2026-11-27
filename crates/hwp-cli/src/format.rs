@@ -107,7 +107,8 @@ pub fn detect_legacy_bytes(head: &[u8]) -> anyhow::Result<Option<LegacyFormat>> 
         }
         if head.len() < HWP3_SIGNATURE.len() {
             anyhow::bail!(
-                "HWP 레거시 시그니처가 잘려 있습니다 ({}/{}바이트). 파일이 완전히 복사됐는지 확인하세요",
+                "HWP 레거시 시그니처가 잘려 있습니다 ({}/{}바이트). 파일이 완전히 복사됐는지 확인하고, \
+                 원본이 온전하다면 {LEGACY_RESAVE_HINT}",
                 head.len(),
                 HWP3_SIGNATURE.len()
             );
@@ -131,12 +132,18 @@ pub fn detect_legacy_bytes(head: &[u8]) -> anyhow::Result<Option<LegacyFormat>> 
 }
 
 /// 바이트 시그니처로 포맷을 판별해 표준 확장자를 돌려준다 (stdin 스테이징용, GM-2).
+/// Read-only legacy inputs stage under their own extension so the loader's content detection
+/// routes them, and unsupported legacy signatures get the same typed refusal as a file path.
 pub fn detect_bytes(bytes: &[u8]) -> anyhow::Result<&'static str> {
     if bytes.len() >= 8 && bytes[..8] == CFB_MAGIC {
         Ok("hwp")
     } else if bytes.len() >= 2 && bytes[..2] == ZIP_MAGIC {
         Ok("hwpx")
     } else {
-        anyhow::bail!("HWP(CFB)도 HWPX(ZIP)도 아닙니다 (시그니처 불일치)")
+        match detect_legacy_bytes(&bytes[..bytes.len().min(4096)])? {
+            Some(LegacyFormat::Hml) => Ok("hml"),
+            Some(LegacyFormat::Hwp3) => Ok("hwp"),
+            None => anyhow::bail!("HWP(CFB)도 HWPX(ZIP)도 아닙니다 (시그니처 불일치)"),
+        }
     }
 }

@@ -77,15 +77,15 @@ fn load_preloaded_document(
 }
 
 fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u64>> {
+    if crate::format::detect_legacy(input)?.is_some() {
+        // Legacy inputs carry no password protection this reader accepts.
+        return Ok(None);
+    }
     if input
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
     {
-        return Ok(None);
-    }
-    if crate::format::detect_legacy(input)?.is_some() {
-        // Legacy inputs carry no password protection this reader accepts.
         return Ok(None);
     }
     match crate::format::detect(input)? {

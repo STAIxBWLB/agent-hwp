@@ -39,10 +39,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Read-only HWPML (`.hml`) input (GJ-2). `cat`, `convert`, `render`, `info` and the other read
   commands detect it by content and lower body text, tables with merged cells, embedded pictures
   and summary metadata into the IR. Character and paragraph shapes are not carried over, and other
-  objects are skipped with a warning naming the element. Input size, table nesting, lowered
+  objects are skipped with a warning naming the element. Each `SECTION` becomes its own section,
+  and blank, tab-only and NBSP-only paragraphs are kept. Field markers keep their text and are
+  reported. Input size, table nesting, lowered
   size, picture count and projected table grid slots are bounded before allocation, and
   compressed embedded binaries are skipped with a warning. With a `BINITEM` table, a missing
   or refused binary is never replaced by another `BINDATA`. Editing in place is refused.
+  HWPML on stdin, an `.hml` renamed to `.json` and `cat --preview` all route through content
+  detection. The shared HTML table builder places cells in linear time and refuses grids past
+  the IR's 65,535 rows or columns.
   The complete HWP 3.00 signature is detected ahead of its reader. Other 3.x revisions, HWP
   1.x/2.x and truncated signatures get typed refusals that suggest re-saving in Hancom
   ([#622](https://github.com/STAIxBWLB/agent-hwp/issues/622)).

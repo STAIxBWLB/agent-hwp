@@ -148,8 +148,7 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
     lower.collect_tail(&text)?;
     lower.run(&text)?;
     let html = std::mem::take(&mut lower.html);
-    let mut document = hwp_convert::from_html::from_html(&html)
-        .map_err(|e| xml_err(&format!("IR 구성 실패: {e}")))?;
+    let mut document = lower_sections(&html, &lower.section_starts)?;
     document.meta = DocMeta {
         source_format: "hml".to_string(),
         source_version: lower.version.clone(),
@@ -161,6 +160,12 @@ pub fn read_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlReadR
         .map(|name| format!("HWPML <{name}> 요소는 읽기 미지원이라 건너뜁니다"))
         .collect();
     warnings.append(&mut lower.warnings);
+    warnings.extend(
+        lower
+            .flattened
+            .iter()
+            .map(|name| format!("HWPML <{name}> 필드는 글자만 남기고 필드 정보는 건너뜁니다")),
+    );
     Ok(HmlReadResult { document, warnings })
 }
 
@@ -169,6 +174,41 @@ fn xml_err(message: &str) -> HwpxError {
         entry: ENTRY.to_string(),
         message: message.to_string(),
     }
+}
+
+/// Builds the IR with one section per HWPML `SECTION`. `starts` are the byte offsets in
+/// `html` where each section's markup begins (block boundaries, so every slice is a complete
+/// fragment). Image names are seeded per section so they stay unique across the document.
+fn lower_sections(html: &str, starts: &[usize]) -> Result<Document> {
+    let build = |fragment: &str, seed: usize| {
+        hwp_convert::from_html::from_html_with(
+            fragment,
+            &hwp_convert::from_html::HtmlImportOptions::lowering(seed),
+        )
+        .map_err(|e| xml_err(&format!("IR 구성 실패: {e}")))
+    };
+    if starts.len() <= 1 {
+        return build(html, 0);
+    }
+    // Anything before the first SECTION (malformed, but possible) stays in the first section.
+    let mut begins: Vec<usize> = starts.to_vec();
+    begins[0] = 0;
+    let mut ends: Vec<usize> = starts[1..].to_vec();
+    ends.push(html.len());
+    let mut document: Option<Document> = None;
+    for (&start, &end) in begins.iter().zip(&ends) {
+        let seed = document.as_ref().map_or(0, |d| d.bin_streams.len());
+        let part = build(&html[start..end], seed)?;
+        match document.as_mut() {
+            None => document = Some(part),
+            Some(doc) => {
+                // Every part shares the default header, so only body and binaries move over.
+                doc.sections.extend(part.sections);
+                doc.bin_streams.extend(part.bin_streams);
+            }
+        }
+    }
+    Ok(document.expect("at least two sections"))
 }
 
 #[derive(Default)]
@@ -185,8 +225,12 @@ struct Lower {
     limits: HmlLimits,
     table_depth: usize,
     pictures: usize,
-    /// Projected grid slots of every table finished so far.
+    /// Slots charged to every table so far, nested tables included (see [`Lower::charge`]).
     table_slots: usize,
+    /// Byte offset in `html` where each `SECTION` starts; each section becomes one IR section.
+    section_starts: Vec<usize>,
+    /// Inline controls whose text is kept but whose control semantics are dropped.
+    flattened: BTreeSet<String>,
 }
 
 /// Mirrors the first-free-slot placement of `hwp_convert::from_html`'s table builder so the
@@ -199,15 +243,25 @@ struct GridSim {
     row: Vec<bool>,
     rows: usize,
     cols: usize,
+    /// First column of the current row not yet known to be covered; cells are placed from
+    /// here, so a row of n cells costs O(n).
+    cursor: usize,
+    /// Furthest row any placed cell's rowspan reaches (exclusive).
+    reach: usize,
+    /// Whether a ROW is open (it counts as one projected row before it closes).
+    open: bool,
 }
 
 impl GridSim {
     fn start_row(&mut self) {
         self.row = self.carry.iter().map(|&c| c > 0).collect();
+        self.cursor = 0;
+        self.open = true;
     }
 
     fn end_row(&mut self) -> std::result::Result<(), ()> {
         self.rows += 1;
+        self.open = false;
         self.cols = self.cols.max(self.row.len());
         for c in &mut self.carry {
             *c = c.saturating_sub(1);
@@ -218,20 +272,17 @@ impl GridSim {
         Ok(())
     }
 
-    /// Places one cell; `budget` is the slot count still available to this table. The check
-    /// runs on the widened column count before either vector grows.
-    fn place(
-        &mut self,
-        col_span: u16,
-        row_span: u16,
-        budget: usize,
-    ) -> std::result::Result<(), ()> {
-        let ci = self.row.iter().position(|&b| !b).unwrap_or(self.row.len());
+    /// Places one cell. Only the IR dimension bound is checked here; the slot budget is
+    /// charged by the caller from [`GridSim::projected`] right after, before any cell content
+    /// (and so any nested table) is read. Vector growth is bounded by `IR_MAX_DIM`.
+    fn place(&mut self, col_span: u16, row_span: u16) -> std::result::Result<(), ()> {
+        let mut ci = self.cursor;
+        while self.row.get(ci).copied().unwrap_or(false) {
+            ci += 1;
+        }
         let need = ci + col_span as usize;
-        let cols = self.cols.max(need);
-        // At least this row and every row a rowspan already reaches.
-        let rows = (self.rows + 1).max(self.rows + row_span as usize);
-        if cols > IR_MAX_DIM || rows > IR_MAX_DIM || rows.saturating_mul(cols) > budget {
+        let reach = self.rows + row_span as usize;
+        if need > IR_MAX_DIM || reach > IR_MAX_DIM {
             return Err(());
         }
         if self.row.len() < need {
@@ -244,13 +295,18 @@ impl GridSim {
             self.row[c] = true;
             self.carry[c] = self.carry[c].max(u32::from(row_span));
         }
+        self.cursor = need;
+        self.cols = self.cols.max(need);
+        self.reach = self.reach.max(reach);
         Ok(())
     }
 
-    /// The IR builder gives every table at least one column and fills it, so rows with no
-    /// cells still occupy one slot each.
-    fn slots(&self) -> usize {
-        self.rows.saturating_mul(self.cols.max(1))
+    /// Grid slots this table will occupy at least, given what has been read so far. The IR
+    /// builder gives every table at least one column and fills it, so rows with no cells
+    /// still occupy one slot each.
+    fn projected(&self) -> usize {
+        let rows = (self.rows + usize::from(self.open)).max(self.reach);
+        rows.saturating_mul(self.cols.max(1))
     }
 }
 
@@ -518,6 +574,11 @@ impl Lower {
                             self.paragraph(r)?;
                             emitted = true;
                         }
+                        // One IR section per SECTION; nested SECTIONs cannot occur in a
+                        // well-formed body, so only BODY-level ones split.
+                        "SECTION" if end == "BODY" => {
+                            self.section_starts.push(self.html.len());
+                        }
                         n if TRANSPARENT.contains(&n) => {}
                         _ => {
                             self.dropped.insert(name);
@@ -526,9 +587,16 @@ impl Lower {
                     }
                 }
                 Ok(Event::Empty(e)) => {
-                    if e.local_name().into_inner() == "P" {
+                    let local = e.local_name().into_inner();
+                    if local == "P" {
                         self.push_html("<p></p>")?;
                         emitted = true;
+                    } else if local == "SECTION" && end == "BODY" {
+                        // An empty section still becomes its own (blank) IR section.
+                        self.section_starts.push(self.html.len());
+                        self.push_html("<p></p>")?;
+                    } else if SKIPPED.contains(&local) {
+                        self.dropped.insert(local.to_string());
                     }
                 }
                 Ok(Event::End(e)) if e.local_name().into_inner() == end => {
@@ -561,6 +629,11 @@ impl Lower {
                             had_block = true;
                         }
                         "PICTURE" => self.picture(r, &mut buf)?,
+                        // Field markers: the text between them stays in the paragraph, the
+                        // field itself is not lowered, and that loss is reported.
+                        "FIELDBEGIN" | "FIELDEND" => {
+                            self.flattened.insert("FIELDBEGIN/FIELDEND".into());
+                        }
                         n if SKIPPED.contains(&n) => {
                             self.dropped.insert(name);
                             skip(r, &e)?;
@@ -577,6 +650,12 @@ impl Lower {
                     "LINEBREAK" => self.push_buf(&mut buf, "<br/>")?,
                     "NBSPACE" | "FWSPACE" => self.push_buf(&mut buf, "\u{a0}")?,
                     "HYPEN" | "HYPHEN" => self.push_buf(&mut buf, "-")?,
+                    "FIELDBEGIN" | "FIELDEND" => {
+                        self.flattened.insert("FIELDBEGIN/FIELDEND".into());
+                    }
+                    n if SKIPPED.contains(&n) => {
+                        self.dropped.insert(n.to_string());
+                    }
                     _ => {}
                 },
                 Ok(Event::Text(t)) if in_char > 0 => {
@@ -731,6 +810,8 @@ impl Lower {
     fn table_body(&mut self, r: &mut Reader<&[u8]>) -> Result<()> {
         self.push_html("<table>")?;
         let mut grid = GridSim::default();
+        // Slots of this table already charged to `table_slots`.
+        let mut charged = 0usize;
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => match e.local_name().into_inner() {
@@ -745,9 +826,11 @@ impl Lower {
                                 .filter(|&v| v > 1)
                         };
                         let (cs, rs) = (span("ColSpan"), span("RowSpan"));
-                        let budget = self.limits.max_table_slots.saturating_sub(self.table_slots);
-                        grid.place(cs.unwrap_or(1), rs.unwrap_or(1), budget)
+                        grid.place(cs.unwrap_or(1), rs.unwrap_or(1))
                             .map_err(|()| self.slot_err())?;
+                        // Reserve before the cell body is read, so nested tables see this
+                        // table's slots already charged.
+                        self.charge(&grid, &mut charged)?;
                         let mut open = String::from("<td");
                         if let Some(c) = cs {
                             open.push_str(&format!(" colspan=\"{c}\""));
@@ -771,15 +854,11 @@ impl Lower {
                 Ok(Event::End(e)) => match e.local_name().into_inner() {
                     "ROW" => {
                         grid.end_row().map_err(|()| self.slot_err())?;
-                        if grid.slots()
-                            > self.limits.max_table_slots.saturating_sub(self.table_slots)
-                        {
-                            return Err(self.slot_err());
-                        }
+                        self.charge(&grid, &mut charged)?;
                         self.push_html("</tr>")?;
                     }
                     "TABLE" => {
-                        self.table_slots += grid.slots();
+                        self.charge(&grid, &mut charged)?;
                         self.push_html("</table>")?;
                         return Ok(());
                     }
@@ -794,10 +873,26 @@ impl Lower {
 }
 
 impl Lower {
+    /// Charges the growth of `grid`'s projection to the document-wide slot budget. Called at
+    /// every cell placement and row end, so an ancestor table's reservation is always in
+    /// place before a nested table's cells are read.
+    fn charge(&mut self, grid: &GridSim, charged: &mut usize) -> Result<()> {
+        let now = grid.projected();
+        if now > *charged {
+            let total = self.table_slots.saturating_add(now - *charged);
+            if total > self.limits.max_table_slots {
+                return Err(self.slot_err());
+            }
+            self.table_slots = total;
+            *charged = now;
+        }
+        Ok(())
+    }
+
     fn slot_err(&self) -> HwpxError {
         limit_err(format!(
-            "표 칸 수(행 x 열)가 상한 {}을 넘거나 행·열 수가 {IR_MAX_DIM}을 넘습니다",
-            self.limits.max_table_slots
+            "표 칸 수(행 x 열)가 상한 {}을 넘거나 행·열 수가 {IR_MAX_DIM}을 넘습니다 (표 중첩 {}단계)",
+            self.limits.max_table_slots, self.table_depth
         ))
     }
 }
@@ -1140,6 +1235,113 @@ mod tests {
             &unbounded,
         ));
         assert!(m.contains("표 칸 수"), "{m}");
+    }
+
+    #[test]
+    fn nested_tables_are_charged_before_their_cells_are_read() {
+        // A 1x2 parent whose first cell holds a 3x1 child: parent 2 + child 3 = 5 slots.
+        let child = "<P><TEXT><TABLE><ROW><CELL><PARALIST><P/></PARALIST></CELL></ROW>\
+                     <ROW><CELL><PARALIST><P/></PARALIST></CELL></ROW>\
+                     <ROW><CELL><PARALIST><P/></PARALIST></CELL></ROW></TABLE></TEXT></P>";
+        let body = format!(
+            "<P><TEXT><TABLE><ROW><CELL ColSpan=\"2\"><PARALIST>{child}</PARALIST></CELL>\
+             </ROW></TABLE></TEXT></P>"
+        );
+        let at = HmlLimits {
+            max_table_slots: 5,
+            ..HML_LIMITS
+        };
+        assert!(read_hml_with_limits(doc(&body, "").as_bytes(), &at).is_ok());
+        // At 4 the parent's 2 slots are reserved first, so the child's third row fails
+        // inside the nesting, not after the parent closes.
+        let under = HmlLimits {
+            max_table_slots: 4,
+            ..HML_LIMITS
+        };
+        let m = limit_message(read_hml_with_limits(doc(&body, "").as_bytes(), &under));
+        assert!(m.contains("표 칸 수"), "{m}");
+        // Ordering: the parent's two slots are reserved when its cell is placed, so the limit
+        // fires inside the child (nesting level 2) at the child's third row. Charging the
+        // parent only when it closes would let the child grow past the ancestor's reservation
+        // and fail later, at level 1.
+        assert!(
+            m.contains("중첩 2단계"),
+            "limit fired outside the child: {m}"
+        );
+    }
+
+    /// A row of many cells is placed in linear time. With the former scan-from-zero
+    /// placement this input took quadratic time in both the HML pass and the IR builder.
+    #[test]
+    fn wide_row_is_placed_in_linear_time() {
+        let n = 60_000;
+        let row = "<CELL><PARALIST><P/></PARALIST></CELL>".repeat(n);
+        let body = format!("<P><TEXT><TABLE><ROW>{row}</ROW></TABLE></TEXT></P>");
+        let started = std::time::Instant::now();
+        let result = read_hml(doc(&body, "").as_bytes()).unwrap();
+        let elapsed = started.elapsed();
+        let cells: usize = result
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match c {
+                hwp_model::Control::Table(t) => Some(t.cells.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(cells, n);
+        // Quadratic placement of 60k cells is ~1.8e9 steps per pass; linear is milliseconds.
+        assert!(elapsed.as_secs() < 20, "wide row took {elapsed:?}");
+    }
+
+    #[test]
+    fn sections_and_blank_paragraphs_are_kept() {
+        let text = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><HWPML Version=\"2.8\"><HEAD/><BODY>\
+            <SECTION><P><TEXT><CHAR>one</CHAR></TEXT></P><P><TEXT/></P><P/>\
+            <P><TEXT><TAB/></TEXT></P><P><TEXT><NBSPACE/></TEXT></P></SECTION>\
+            <SECTION><P><TEXT><CHAR>two</CHAR></TEXT></P></SECTION>\
+            </BODY></HWPML>";
+        let result = read_hml(text.as_bytes()).unwrap();
+        let doc = &result.document;
+        assert_eq!(doc.sections.len(), 2, "one IR section per SECTION");
+        // one, <TEXT/>, <P/>, TAB-only, NBSPACE-only.
+        assert_eq!(doc.sections[0].paragraphs.len(), 5);
+        let tab_para = &doc.sections[0].paragraphs[3];
+        assert!(
+            tab_para.chars.iter().any(|c| matches!(
+                c,
+                hwp_model::HwpChar::InlineCtrl { code, .. } if *code == hwp_model::ctrl_char::TAB
+            )),
+            "TAB lost: {:?}",
+            tab_para.chars
+        );
+        assert!(
+            doc.sections[1]
+                .paragraphs
+                .iter()
+                .any(|p| p.plain_text().contains("two"))
+        );
+    }
+
+    #[test]
+    fn fields_and_empty_equations_are_reported() {
+        let body = "<P><TEXT><FIELDBEGIN Type=\"Hyperlink\"/><CHAR>link</CHAR><FIELDEND/>\
+                    <EQUATION/></TEXT></P>";
+        let result = read_hml(doc(body, "").as_bytes()).unwrap();
+        assert!(
+            result.document.plain_text().contains("link"),
+            "field text kept"
+        );
+        let w = result.warnings.join("\n");
+        assert!(w.contains("FIELDBEGIN"), "{w}");
+        assert!(w.contains("<EQUATION>"), "{w}");
+        // The paired (Start) field form warns the same way.
+        let paired = "<P><TEXT><FIELDBEGIN Type=\"Hyperlink\"></FIELDBEGIN><CHAR>x</CHAR>\
+                      <FIELDEND></FIELDEND></TEXT></P>";
+        let result = read_hml(doc(paired, "").as_bytes()).unwrap();
+        assert!(result.warnings.join("\n").contains("FIELDBEGIN"));
     }
 
     /// With a BINITEM table, a refused mapped binary is never replaced by the BINDATA whose Id

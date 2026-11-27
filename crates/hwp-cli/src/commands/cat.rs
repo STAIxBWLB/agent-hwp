@@ -184,6 +184,10 @@ pub fn load_document_with_options(
     path: &Path,
     options: &LoadOptions<'_>,
 ) -> Result<Document, LoadDocumentError> {
+    // Content wins over the extension: a legacy file renamed to .json is still read as legacy.
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        return load_legacy(path, legacy).map_err(Into::into);
+    }
     if path
         .extension()
         .and_then(|e| e.to_str())
@@ -193,9 +197,6 @@ pub fn load_document_with_options(
         return hwp_convert::from_json(&text)
             .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패 ({}): {e}", path.display()))
             .map_err(Into::into);
-    }
-    if let Some(legacy) = crate::format::detect_legacy(path)? {
-        return load_legacy(path, legacy).map_err(Into::into);
     }
     match detect(path)? {
         FileFormat::Hwp5 => {
@@ -403,6 +404,15 @@ pub fn run(
 }
 
 fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentError> {
+    if let Some(legacy) = crate::format::detect_legacy(path)? {
+        // Legacy formats carry no PrvText stream; say so and point at the full read.
+        return Err(anyhow::anyhow!(
+            "{}: {}에는 미리보기(PrvText)가 없습니다. --preview 없이 `ahwp cat`으로 본문을 읽으세요",
+            path.display(),
+            legacy.label()
+        )
+        .into());
+    }
     let text = match detect(path)? {
         FileFormat::Hwp5 => {
             let mut container = hwp5::Hwp5Container::open(path).map_err(map_hwp5_read_error)?;
