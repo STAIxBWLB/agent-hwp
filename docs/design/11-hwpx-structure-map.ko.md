@@ -149,7 +149,7 @@ Preview text는 재생성한다. `META-INF/*`는 여전히 IR 읽기 경로가 �
 | `secPr` | `p` | (자식 pagePr/margin) | `ExtCtrl(2,secd)`+`SectionDef` | 부분파싱(grid/note/border 무시) | :136 → `parse_sec_pr` :312 |
 | `ctrl` | `p` | (자식별 분기) | — | 재귀 | :149 → `parse_ctrl` :504 |
 | `tbl` | `p` | rowCnt/colCnt/cellSpacing/pageBreak/repeatHeader/noAdjust/borderFillIDRef/zOrder | `ExtCtrl(11,tbl )`+`Table` | 의미파싱 | :154 → `parse_table` :691 |
-| `equation` | `p` | script + sz/pos | `ExtCtrl(11,eqed)`+`Generic{equation}` | 부분파싱(스크립트 원문만) | :159 → `parse_equation` :1130 |
+| `equation` | `p` | 스크립트, 배치와 수식 속성 | `ExtCtrl(11,eqed)` + `Generic{equation}` | IR + raw XML | `parse_equation` |
 | `linesegarray` | `p` | lineseg* | `para.line_segs` | 의미파싱 | :173 → `parse_linesegs` :1255 |
 | `pic` | `p` | zOrder(시작태그) + 자식 | `ExtCtrl(11,gso )`+`Picture` | 의미파싱 | :178 → `parse_picture` :889 |
 | `rect`/`ellipse`/`line`/`polygon`/`curve`/`arc` | `p` | (도형 기하) | `ExtCtrl(11,ctrl_id)`+`Generic{gso_shapes}` | 의미파싱 | :191 → `collect_shape` :995 (`shape_kind` :981) |

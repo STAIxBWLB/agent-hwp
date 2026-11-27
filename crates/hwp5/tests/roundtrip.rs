@@ -117,3 +117,136 @@ fn 전체_fixture_의미_왕복() {
         let _ = std::fs::remove_file(&out);
     }
 }
+
+#[test]
+fn equation_properties_survive_hwp5_hwpx_hwp5() {
+    use hwp_model::{Control, Equation, GenericControl, HwpChar};
+
+    let expected = Equation {
+        script: "LEFT [ x over y RIGHT ]".into(),
+        inline: true,
+        width: 2000,
+        height: 3500,
+        props: 1,
+        base_unit: 1_800,
+        text_color: 0x009c_5210,
+        baseline: 68,
+        version: Some("Equation Version 60".into()),
+        font_name: Some("HancomEQN & Math".into()),
+        ..Default::default()
+    };
+    let mut document = hwp_convert::from_markdown("Equation");
+    let paragraph = &mut document.sections[0].paragraphs[0];
+    paragraph.chars.push(HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"eqed",
+        payload: hwp_convert::field::rev_payload(b"eqed"),
+        ctrl_index: Some(paragraph.controls.len() as u32),
+    });
+    paragraph.controls.push(Control::Generic(GenericControl {
+        ctrl_id: *b"eqed",
+        data: Vec::new(),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: Some(Box::new(expected.clone())),
+        chart: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: None,
+        container_box: None,
+    }));
+
+    let equation = |document: &hwp_model::Document| {
+        document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                Control::Generic(generic) => generic.equation.clone(),
+                _ => None,
+            })
+            .expect("the equation survived conversion")
+    };
+    let assert_properties = |actual: &Equation| {
+        assert_eq!(actual.script, expected.script);
+        assert_eq!(actual.props, expected.props);
+        assert_eq!(actual.base_unit, expected.base_unit);
+        assert_eq!(actual.text_color, expected.text_color);
+        assert_eq!(actual.baseline, expected.baseline);
+        assert_eq!(actual.version, expected.version);
+        assert_eq!(actual.font_name, expected.font_name);
+    };
+    let native = tmp("equation_native.hwp");
+    let xml = tmp("equation_bridge.hwpx");
+    let returned = tmp("equation_returned.hwp");
+    let options = hwp5::WriteOptions::default();
+    assert!(
+        hwp5::write_document_with_report(&document, &native, &options)
+            .unwrap()
+            .preservation
+            .is_lossless()
+    );
+    let first = hwp5::read_document(&native).unwrap().document;
+    assert_properties(&equation(&first));
+    hwpx::write_document(&first, &xml).unwrap();
+    let second = hwpx::read_document(&xml).unwrap().document;
+    assert_properties(&equation(&second));
+    assert!(
+        hwp5::write_document_with_report(&second, &returned, &options)
+            .unwrap()
+            .preservation
+            .is_lossless()
+    );
+    let last = hwp5::read_document(&returned).unwrap().document;
+    assert_properties(&equation(&last));
+    for file in [native, xml, returned] {
+        std::fs::remove_file(file).unwrap();
+    }
+}
+
+#[test]
+fn genuine_equation_controls_remain_byte_identical() {
+    use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+
+    fn equation_records(path: &std::path::Path) -> Vec<Vec<u8>> {
+        fn collect(nodes: &[RecordNode], records: &mut Vec<Vec<u8>>) {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.starts_with(b"deqe") {
+                    records.push(RecordNode::serialize_forest(std::slice::from_ref(node)));
+                } else {
+                    collect(&node.children, records);
+                }
+            }
+        }
+        let mut container = hwp5::Hwp5Container::open(path).unwrap();
+        let mut records = Vec::new();
+        for section in container.body_sections() {
+            let bytes = container.read_record_stream(&section).unwrap();
+            let scan = scan_stream(&bytes, ScanMode::Strict).unwrap();
+            collect(&scan.roots, &mut records);
+        }
+        records
+    }
+
+    let source = fixture("equation-ampersand-groundtruth.hwp");
+    if fixture_skip::fixture_missing(&source) {
+        return;
+    }
+    let original = equation_records(&source);
+    assert_eq!(original.len(), 2);
+    let document = hwp5::read_document(&source).unwrap().document;
+    let output = tmp("equation_raw_identity.hwp");
+    hwp5::write_document(
+        &document,
+        &output,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(equation_records(&output), original);
+    std::fs::remove_file(output).unwrap();
+}

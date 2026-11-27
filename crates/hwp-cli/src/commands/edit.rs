@@ -5340,6 +5340,20 @@ fn clear_raw_paragraph_instance_ids(records: &mut [hwp_model::OpaqueRecord]) {
 }
 
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
+    if hwp5::write::is_materialized_synthesized_equation(generic) {
+        generic.data.clear();
+        generic.raw_children.clear();
+        generic.extras.clear();
+    }
+    if let Some(equation) = &mut generic.equation
+        && !equation.hwpx_only
+        && generic.data.is_empty()
+        && generic.raw_children.is_empty()
+    {
+        // HWP materializes these represented values in EQEDIT and the common header.
+        equation.raw_attrs = None;
+        equation.raw_props.clear();
+    }
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
         // Keep the raw bytes and any extra that is not an exact duplicate.
@@ -5631,6 +5645,12 @@ fn canonical_document(
                             let equation = generic.equation.as_mut().expect("is_some predicate");
                             equation.raw_attrs = None;
                             equation.raw_props.clear();
+                            // Position attributes for a freshly authored object are regenerated.
+                            if equation.placement.as_ref().is_some_and(|placement| {
+                                placement.z_order == 0 && placement.out_margins == [0; 4]
+                            }) {
+                                equation.placement = None;
+                            }
                         }
                     } else if matches!(target, Some(SemanticTarget::Hwp))
                         && hwp5::write::is_materialized_default_column_def(generic)
@@ -6654,7 +6674,10 @@ fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSign
 }
 
 /// Self-verify by rereading after writing and checking the request's key semantic invariants.
-fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyhow::Result<()> {
+pub(crate) fn verify_output(
+    output: &Path,
+    expected: Option<&hwp_model::Document>,
+) -> anyhow::Result<()> {
     verify_output_with_success_log(output, expected, true)
 }
 

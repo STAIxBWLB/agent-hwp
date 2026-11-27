@@ -140,6 +140,16 @@ syntax (used by `fill`, `slots` and the template tools).
 - `ahwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
   low-level record and stream diagnostics for a single file. Reach for it only when `ahwp info`
   and `ahwp validate` do not explain a defect; it prints format internals, not document content.
+- `ahwp redact {in.hwp|in.hwpx} -o {out} [--only rrn,phone,...] [--exclude email] [--mask-char '*'] [--strict-accounts true|false] [--report r.json] [--dry-run] [--verify]` —
+  masks personal information (rrn, phone, email, card, account, passport, driver) in place,
+  keeping every character count and separator (`900101-1******`, `010-****-5678`). Body, cells,
+  captions, headers/footers, notes, text boxes, hyperlink/field commands, object descriptions and
+  the PrvText preview are all covered; the staged output is re-read, rescanned and swept byte for
+  byte (every stream and entry, HWP5 free sectors included) and published only when no masked
+  value remains. A run with no hit still publishes a verified copy. A refusal points to
+  `--report` for locations and `--exclude`/`--strict-accounts`. The `hwp-redact-report-v1`
+  report and stderr never contain a matched value. Images and document properties (author etc.)
+  are not inspected.
 - `ahwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
   official-document notation and structure rules (`-` reads stdin as markdown). Advisory: it
   always exits 0 unless `--strict` finds an error-severity finding. `--json` prints the
@@ -482,7 +492,7 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
-Quick reports 23 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+Quick reports 24 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
 succeeds on an absolute path under the configured LocalLow root (for example
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
@@ -490,7 +500,7 @@ After a connector edit, refresh or start a new chat instead of reusing an old ge
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-Tools (23):
+Tools (24):
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -509,6 +519,7 @@ Tools (23):
 | `hwp_template` | `output`, `template` (+`data`) | Bounded expansion of TemplateSpec/Data v1 |
 | `hwp_fill` | `input`, `output`, `values` | Fill `{{name}}` in an hwpx template (package preserved) |
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
+| `hwp_redact` | `input`, `output`, optional `only`/`exclude`/`mask_char`/`strict_accounts`/`report`/`dry_run`/`verify` | Format-preserving PII masking (seven categories) with rescan before publish; returns the content-free hwp-redact-report-v1 |
 | `hwp_lint` | `path` | Advisory official-document notation/structure lint on a markdown file (path only, `--root` sandboxed); returns the hwp-lint-report-v1 findings JSON (`rule_id`/`severity`/`line`/`col`/`message`) |
 | `hwp_certify` | `input`, `policy`, `report` | Run certification and publish the report atomically |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
@@ -521,7 +532,7 @@ Tools (23):
 ## HTTP mode for containers
 
 `ahwp serve` speaks the same protocol as `ahwp mcp`, over HTTP instead of stdio, so the same
-23 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
+24 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
 terminated TLS, authenticated the caller and capped the request body — not to face the internet
 directly.
 

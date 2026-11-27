@@ -616,7 +616,7 @@ fn 수식_조판_렌더() {
                 extras: vec![],
                 raw_children: vec![],
                 gso_shapes: vec![],
-                equation: Some(Equation {
+                equation: Some(Box::new(Equation {
                     script: sc.to_string(),
                     width: 12000,
                     height: 3500,
@@ -624,7 +624,7 @@ fn 수식_조판_렌더() {
                     x: 8000,
                     y: 6000 + i as i32 * 5000,
                     ..Equation::default()
-                }),
+                })),
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,

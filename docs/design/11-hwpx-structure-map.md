@@ -155,7 +155,7 @@ arm** of each parser function (the exhaustive match-arm comparison is at the end
 | `secPr` | `p` | (children pagePr, margin) | `ExtCtrl(2,secd)` plus `SectionDef` | partial (grid, note and border ignored) | :136 → `parse_sec_pr` :312 |
 | `ctrl` | `p` | (dispatched per child) | - | recursive | :149 → `parse_ctrl` :504 |
 | `tbl` | `p` | rowCnt, colCnt, cellSpacing, pageBreak, repeatHeader, noAdjust, borderFillIDRef, zOrder | `ExtCtrl(11,tbl )` plus `Table` | semantic | :154 → `parse_table` :691 |
-| `equation` | `p` | script plus sz and pos | `ExtCtrl(11,eqed)` plus `Generic{equation}` | partial (the script verbatim only) | :159 → `parse_equation` :1130 |
+| `equation` | `p` | Script, placement and equation metadata | `ExtCtrl(11,eqed)` + `Generic{equation}` | IR + raw XML | `parse_equation` |
 | `linesegarray` | `p` | lineseg* | `para.line_segs` | semantic | :173 → `parse_linesegs` :1255 |
 | `pic` | `p` | zOrder (on the start tag) plus children | `ExtCtrl(11,gso )` plus `Picture` | semantic | :178 → `parse_picture` :889 |
 | `rect`/`ellipse`/`line`/`polygon`/`curve`/`arc` | `p` | (shape geometry) | `ExtCtrl(11,ctrl_id)` plus `Generic{gso_shapes}` | semantic | :191 → `collect_shape` :995 (`shape_kind` :981) |

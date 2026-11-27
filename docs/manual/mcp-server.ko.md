@@ -17,7 +17,7 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`ahwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 23개 도구를 모두 노출할 수 있다. 스킬 설치와
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 24개 도구를 모두 노출할 수 있다. 스킬 설치와
 Windows `LocalLow` 워크스페이스 설정은
 [AI 클라이언트 연동](ai-integrations.ko.md#amazon-quick-desktop)에 있다.
 
@@ -27,7 +27,7 @@ Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `a
 edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, tenant 격리, artifact 전송은
 여전히 [Remote MCP transport](../design/20-remote-mcp.ko.md)의 후속 작업이다.
 
-### 노출 도구 (23종)
+### 노출 도구 (24종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
@@ -48,6 +48,7 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwp_fill` | `input`, `output`, `values` | hwpx 템플릿 `{{name}}` 치환(패키지 보존) |
 | `hwp_diff` | `input`, `ref` | 지정 페이지를 렌더해 기준 PNG와 비교 |
 | `hwp_validate` | `path` | 구조 검증 `{valid, errors, warnings}` |
+| `hwp_redact` | `input`, `output` | 7개 범주 개인정보를 글자 수 보존 마스킹; 검출 값 없는 `hwp-redact-report-v1` 반환 |
 | `hwp_lint` | `path` | 공문서 표기법·구조 규칙 10개를 `hwp-lint-report-v1` 리포트로 반환 |
 | `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합치고 보존 손실 원장을 반환 |
 | `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages` 범위)로 나누거나 `from`/`to`로 형식 있는 범위 하나를 추출하고, 발행된 조각 경로와 범위 추출 시 `hwp-range-extraction-v1` 보고서를 반환 |

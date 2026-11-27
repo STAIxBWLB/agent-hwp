@@ -222,7 +222,7 @@ ID_MAPPINGS(0x11) 페이로드는 **u32 카운트 배열**이고, 실제 테이�
 | 0x55 | SHAPE_COMPONENT_PICTURE | +69 | 4.3.9.4 | 그림: 오프셋 71의 u16 = BinItem ID만 추출, 나머지 raw 보존 | 부분파싱+raw | `body_text.rs:318` |
 | 0x56 | SHAPE_COMPONENT_CONTAINER | +70 | 4.3.9.7 | 묶음 개체 — 렌더가 자식 재귀, IR은 raw | raw보존 | `shape_draw.rs`(렌더) |
 | 0x57 | CTRL_DATA | +71 | 4.3.8 | 컨트롤 임의 데이터(필드 이름 Parameter Set 등) — 온디맨드 BSTR만 읽음 | raw보존 | `field.rs:189` |
-| 0x58 | EQEDIT | +72 | 4.3.9.3 | 수식: attr(4)+len(2)+WCHAR[len] 스크립트를 렌더용 파싱, raw 보존 | 부분파싱+raw | `body_text.rs:536` |
+| 0x58 | EQEDIT | +72 | 4.3.9.3 | 스크립트, 글자 크기, 색상, 기준선, 버전과 글꼴을 해석하고 원본 레코드 보존 | IR + raw | `body_text.rs:find_eqedit` |
 | 0x5A | SHAPE_COMPONENT_TEXTART | +74 | 4.3.9(글맵시) | 글맵시 — 미해석 | Opaque | `body_text.rs:617` |
 | 0x5B | FORM_OBJECT | +75 | 4.3.9(양식) | 양식 개체 — 미해석 | Opaque | `body_text.rs:617` |
 | 0x5D | MEMO_LIST | +77 | 4.3(메모) | 메모 리스트 — 미해석 | Opaque | `body_text.rs:617` |
@@ -398,7 +398,7 @@ payload에 역순 ctrl_id 3B(`%` 제외)를 담아야 짝이 맺힌다(`field.rs
 | 4.3.6 | 컨트롤 헤더(역순 ctrl_id) | `body_text.rs:parse_control` | §4.1, §6 |
 | 4.3.9.1 | 표 개체(★행별 셀 개수) | `body_text.rs:parse_table` | 표 B, §4.1 |
 | 4.3.9.2.* | 그리기 개체 기하 | `hwp-render/src/shape_draw.rs` | 표 B, [02]§10 |
-| 4.3.9.3 | 수식 개체 | `body_text.rs:parse_eqed`·`find_eqedit_script` | 표 B, §6.1 |
+| 4.3.9.3 | 수식 개체 | `body_text.rs:parse_eqed`·`find_eqedit` | 표 B, §6.1 |
 | 4.3.9.4 | 그림 개체(BinItem ID) | `body_text.rs:parse_picture_gso` | 표 B |
 | 4.3.10.1.1 | 용지 설정 | `body_text.rs:parse_page_def` | 표 B |
 | 4.3.10.2~4.3.10.11 | 개체 외 컨트롤(단/머리말/각주/쪽/책갈피) | `section.rs`(hwpx 합성), `body_text.rs:parse_generic` | §6.1 |

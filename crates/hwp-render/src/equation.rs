@@ -1,29 +1,22 @@
-//! HWP 수식 스크립트 조판 (mini-TeX).
-//!
-//! 한글 수식 개체는 글립 배치가 아니라 **텍스트 스크립트**(EQN 호환)를 저장한다(deep-research
-//! 확정). 이 모듈은 스크립트를 math 트리로 파싱해 box model로 배치하고, 글리프 런 + 선(분수선·
-//! 근호 vinculum)을 **baseline 상대 좌표**로 방출한다. `layout.rs`의 수식 arm이 사용.
-//!
-//! 문법 근거(한컴 수식 spec rev1.2): `over`/`atop`(분수, atop=선없음), `sqrt`(근호), `^`/`_`
-//! (첨자), `{ }`(그룹), `~`·`` ` ``(공백), `#`(줄바꿈), `&`(열정렬). 함수어(sin/cos/log/lim…)는
-//! 로만체, 그 외 단일 라틴 문자는 변수로 이탤릭. v1: 분수·첨자·근호·기호·함수어. 범위 밖:
-//! 행렬(matrix)·큰연산자 극한·복잡 구분자.
+//! HWP equation scripts laid out as glyph runs and baseline-relative vector strokes.
 
-use crate::display::PageList;
+use crate::display::{PageList, PathCmd};
 use crate::fonts::FontStore;
-use crate::shape::{ShapedRun, shape_plain};
-use hwp_model::Document;
+use crate::shape::{ShapedRun, shape_plain, shape_text_with_font};
+use hwp_model::{Document, Equation};
 
-// ── 1. 토큰 ──
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
     Word(String),
+    Literal(String),
     LBrace,
     RBrace,
-    Sup,        // ^
-    Sub,        // _
-    Hash,       // # — 줄바꿈(행 나눔)
-    Space(f32), // ~ (1) 또는 ` (0.25) — em 배수
+    Delimiter(char),
+    Sup,
+    Sub,
+    Hash,
+    Amp,
+    Space(f32),
 }
 
 fn tokenize(s: &str) -> Vec<Tok> {
@@ -34,176 +27,281 @@ fn tokenize(s: &str) -> Vec<Tok> {
             out.push(Tok::Word(std::mem::take(word)));
         }
     };
-    for c in s.chars() {
-        match c {
-            '{' => {
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        let token = match c {
+            '{' => Tok::LBrace,
+            '}' => Tok::RBrace,
+            '(' | ')' | '[' | ']' | '|' => Tok::Delimiter(c),
+            '^' => Tok::Sup,
+            '_' => Tok::Sub,
+            '#' => Tok::Hash,
+            '&' => Tok::Amp,
+            '~' => Tok::Space(1.0),
+            '`' => Tok::Space(0.25),
+            '"' => Tok::Literal(chars.by_ref().take_while(|&c| c != '"').collect()),
+            c if c.is_whitespace() => {
                 flush(&mut word, &mut out);
-                out.push(Tok::LBrace);
+                continue;
             }
-            '}' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::RBrace);
+            _ => {
+                word.push(c);
+                continue;
             }
-            '^' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::Sup);
-            }
-            '_' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::Sub);
-            }
-            '#' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::Hash);
-            }
-            '&' => flush(&mut word, &mut out), // 열 정렬(matrix) — v1은 공백 취급
-            '~' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::Space(1.0));
-            }
-            '`' => {
-                flush(&mut word, &mut out);
-                out.push(Tok::Space(0.25));
-            }
-            c if c.is_whitespace() => flush(&mut word, &mut out),
-            _ => word.push(c),
-        }
+        };
+        flush(&mut word, &mut out);
+        out.push(token);
     }
     flush(&mut word, &mut out);
     out
 }
 
-// ── 2. AST ──
+#[derive(Debug, Clone, Copy)]
+enum MatrixKind {
+    Bare,
+    Parentheses,
+    Brackets,
+    Bars,
+    Cases,
+}
+
+impl MatrixKind {
+    fn delimiters(self) -> (Option<char>, Option<char>) {
+        match self {
+            Self::Bare => (None, None),
+            Self::Parentheses => (Some('('), Some(')')),
+            Self::Brackets => (Some('['), Some(']')),
+            Self::Bars => (Some('|'), Some('|')),
+            Self::Cases => (Some('{'), None),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Node {
     Row(Vec<Node>),
-    /// 여러 행을 세로로 쌓음(`#` 줄바꿈).
     Stack(Vec<Node>),
-    /// 기호/텍스트 (roman=참이면 로만체, 거짓이면 변수 이탤릭 — v1은 스타일 미분화, 표시만).
     Sym(String),
-    /// 분수: (분자, 분모, bar=분수선 유무).
+    Literal(String),
     Frac(Box<Node>, Box<Node>, bool),
-    /// 첨자: (base, sup, sub).
     Script(Box<Node>, Option<Box<Node>>, Option<Box<Node>>),
-    /// 근호.
     Sqrt(Box<Node>),
-    /// 가로 공백(em 배수).
     Space(f32),
+    Matrix(MatrixKind, Vec<Vec<Node>>),
+    Delimited(Option<char>, Box<Node>, Option<char>),
+    LargeOp(String, Option<Box<Node>>, Option<Box<Node>>),
 }
 
 struct Parser {
     toks: Vec<Tok>,
     i: usize,
+    remaining_fraction_links: usize,
 }
 
 impl Parser {
-    /// 한 원자(atom): 그룹 {}·sqrt·단어·공백. 첨자(^/_)는 상위에서 후위로 붙인다.
-    fn atom(&mut self) -> Option<Node> {
-        match self.toks.get(self.i)?.clone() {
-            Tok::LBrace => {
-                self.i += 1;
-                let inner = self.row_until_brace();
-                if self.toks.get(self.i) == Some(&Tok::RBrace) {
-                    self.i += 1;
-                }
-                Some(inner)
-            }
-            Tok::Space(w) => {
-                self.i += 1;
-                Some(Node::Space(w))
-            }
-            Tok::Word(w) => {
-                self.i += 1;
-                match w.as_str() {
-                    "sqrt" | "root" => Some(Node::Sqrt(Box::new(self.atom_scripted()))),
-                    _ => Some(Node::Sym(w)),
-                }
-            }
-            _ => None, // RBrace/Sup/Sub는 원자 아님
+    // Bound work and stack depth on deeply nested source scripts.
+    const MAX_DEPTH: usize = 64;
+
+    fn delimiter(&mut self) -> Option<char> {
+        let delimiter = match self.toks.get(self.i)? {
+            Tok::Delimiter(c) => Some(*c),
+            Tok::LBrace => Some('{'),
+            Tok::RBrace => Some('}'),
+            Tok::Word(word) if word == "." => None,
+            Tok::Word(word) if word.eq_ignore_ascii_case("lbrace") => Some('{'),
+            Tok::Word(word) if word.eq_ignore_ascii_case("rbrace") => Some('}'),
+            _ => return None,
+        };
+        self.i += 1;
+        delimiter
+    }
+
+    fn eat(&mut self, token: Tok) -> bool {
+        if self.toks.get(self.i) == Some(&token) {
+            self.i += 1;
+            true
+        } else {
+            false
         }
     }
 
-    /// 원자 + 후위 첨자(^{..} _{..}). base^sup_sub 순서 무관 수집.
-    fn atom_scripted(&mut self) -> Node {
-        let base = self.atom().unwrap_or(Node::Row(vec![]));
-        let (mut sup, mut sub) = (None, None);
-        loop {
-            match self.toks.get(self.i) {
-                Some(Tok::Sup) => {
-                    self.i += 1;
-                    sup = Some(Box::new(self.atom().unwrap_or(Node::Row(vec![]))));
+    fn at_keyword(&self, keyword: &str) -> bool {
+        matches!(self.toks.get(self.i), Some(Tok::Word(word)) if word.eq_ignore_ascii_case(keyword))
+    }
+
+    fn atom(&mut self, depth: usize) -> Option<Node> {
+        if depth >= Self::MAX_DEPTH {
+            return None;
+        }
+        let token = self.toks.get(self.i)?.clone();
+        self.i += 1;
+        match token {
+            Tok::LBrace => {
+                let inner = self.stack(depth + 1, false);
+                self.eat(Tok::RBrace);
+                Some(inner)
+            }
+            Tok::Space(width) => Some(Node::Space(width)),
+            Tok::Delimiter(c) => Some(Node::Literal(c.to_string())),
+            Tok::Literal(text) => Some(Node::Literal(text)),
+            Tok::Word(word) => {
+                let keyword = word.to_ascii_lowercase();
+                match keyword.as_str() {
+                    "sqrt" | "root" => Some(Node::Sqrt(Box::new(self.scripted(depth + 1)))),
+                    "left" => {
+                        let left = self.delimiter();
+                        let inner = self.stack(depth + 1, true);
+                        let right = if self.at_keyword("right") {
+                            self.i += 1;
+                            self.delimiter()
+                        } else {
+                            None
+                        };
+                        Some(Node::Delimited(left, Box::new(inner), right))
+                    }
+                    "matrix" | "pmatrix" | "bmatrix" | "dmatrix" | "cases"
+                        if self.eat(Tok::LBrace) =>
+                    {
+                        let kind = match keyword.as_str() {
+                            "pmatrix" => MatrixKind::Parentheses,
+                            "bmatrix" => MatrixKind::Brackets,
+                            "dmatrix" => MatrixKind::Bars,
+                            "cases" => MatrixKind::Cases,
+                            _ => MatrixKind::Bare,
+                        };
+                        Some(Node::Matrix(kind, self.matrix(depth + 1)))
+                    }
+                    "sum" | "int" | "oint" | "dint" | "tint" | "prod" | "union" | "inter"
+                    | "lim" => Some(Node::LargeOp(keyword, None, None)),
+                    _ => Some(Node::Sym(word)),
                 }
-                Some(Tok::Sub) => {
-                    self.i += 1;
-                    sub = Some(Box::new(self.atom().unwrap_or(Node::Row(vec![]))));
-                }
-                _ => break,
+            }
+            _ => {
+                self.i -= 1;
+                None
             }
         }
-        if sup.is_some() || sub.is_some() {
-            Node::Script(Box::new(base), sup, sub)
+    }
+
+    fn matrix(&mut self, depth: usize) -> Vec<Vec<Node>> {
+        let mut rows = Vec::new();
+        loop {
+            let mut row = vec![self.row(depth, true, false)];
+            while self.eat(Tok::Amp) {
+                row.push(self.row(depth, true, false));
+            }
+            rows.push(row);
+            if !self.eat(Tok::Hash) {
+                self.eat(Tok::RBrace);
+                return rows;
+            }
+        }
+    }
+
+    fn scripted(&mut self, depth: usize) -> Node {
+        let base = self.atom(depth).unwrap_or_else(|| Node::Row(Vec::new()));
+        if depth >= Self::MAX_DEPTH {
+            return base;
+        }
+        let operator = matches!(base, Node::LargeOp(..));
+        let (mut upper, mut lower) = (None, None);
+        loop {
+            if self.eat(Tok::Sup) || operator && self.take_keyword("to") {
+                upper = self.atom(depth + 1).map(Box::new);
+            } else if self.eat(Tok::Sub) || operator && self.take_keyword("from") {
+                lower = self.atom(depth + 1).map(Box::new);
+            } else {
+                break;
+            }
+        }
+        if let Node::LargeOp(name, _, _) = base {
+            Node::LargeOp(name, upper, lower)
+        } else if upper.is_some() || lower.is_some() {
+            Node::Script(Box::new(base), upper, lower)
         } else {
             base
         }
     }
 
-    /// `}` 또는 끝까지 한 행. `over`/`atop`은 중위 분수로 분할(행 전체 = 분자, 이후 = 분모).
-    fn row_until_brace(&mut self) -> Node {
+    fn take_keyword(&mut self, keyword: &str) -> bool {
+        if self.at_keyword(keyword) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn row(&mut self, depth: usize, matrix_cell: bool, stop_at_right: bool) -> Node {
         let mut items = Vec::new();
-        while let Some(t) = self.toks.get(self.i) {
-            if *t == Tok::RBrace || *t == Tok::Hash {
+        let mut chained_fractions = 0;
+        while let Some(token) = self.toks.get(self.i) {
+            if matches!(token, Tok::RBrace | Tok::Hash)
+                || matrix_cell && *token == Tok::Amp
+                || stop_at_right && self.at_keyword("right")
+            {
                 break;
             }
-            if let Tok::Word(w) = t
-                && (w == "over" || w == "atop")
-            {
-                // `over`/`atop`은 중위 연산자: 분자=바로 앞 원자, 분모=바로 뒤 원자(HWP 실측).
-                // 전체 행 분할이 아니다 — `a + b over c` = a + (b/c), `{a+b} over c`로 그룹.
-                let bar = w == "over";
-                self.i += 1;
-                let num = items.pop().unwrap_or(Node::Row(vec![]));
-                let den = self.atom_scripted();
-                items.push(Node::Frac(Box::new(num), Box::new(den), bar));
+            if self.eat(Tok::Amp) {
                 continue;
             }
-            match self.atom_scripted() {
-                Node::Row(v) if v.is_empty() => break, // 진행 불가 방어
-                n => items.push(n),
+            // Hancom's infix fractions bind to the adjacent atoms.
+            if self.at_keyword("over") || self.at_keyword("atop") {
+                // Bound left-deep infix trees as well as explicit nesting.
+                if depth >= Self::MAX_DEPTH {
+                    break;
+                }
+                if chained_fractions != 0 {
+                    // Extra links accumulate across nested groups, so share one budget.
+                    let Some(remaining) = self.remaining_fraction_links.checked_sub(1) else {
+                        break;
+                    };
+                    self.remaining_fraction_links = remaining;
+                }
+                chained_fractions += 1;
+                let bar = self.at_keyword("over");
+                self.i += 1;
+                let numerator = items.pop().unwrap_or_else(|| Node::Row(Vec::new()));
+                let denominator = self.scripted(depth);
+                items.push(Node::Frac(Box::new(numerator), Box::new(denominator), bar));
+                continue;
             }
+            let before = self.i;
+            let item = self.scripted(depth);
+            if self.i == before {
+                break;
+            }
+            items.push(item);
+            chained_fractions = 0;
         }
         if items.len() == 1 {
-            items.pop().unwrap()
+            items.pop().expect("one item")
         } else {
             Node::Row(items)
+        }
+    }
+
+    fn stack(&mut self, depth: usize, stop_at_right: bool) -> Node {
+        let mut rows = vec![self.row(depth, false, stop_at_right)];
+        while self.eat(Tok::Hash) {
+            rows.push(self.row(depth, false, stop_at_right));
+        }
+        if rows.len() == 1 {
+            rows.pop().expect("one row")
+        } else {
+            Node::Stack(rows)
         }
     }
 }
 
 fn parse(script: &str) -> Node {
-    let mut p = Parser {
+    Parser {
         toks: tokenize(script),
         i: 0,
-    };
-    // `#`로 나뉜 행들을 세로로 쌓는다.
-    let mut rows = Vec::new();
-    loop {
-        rows.push(p.row_until_brace());
-        if p.toks.get(p.i) == Some(&Tok::Hash) {
-            p.i += 1;
-        } else {
-            break;
-        }
+        remaining_fraction_links: Parser::MAX_DEPTH,
     }
-    if rows.len() == 1 {
-        rows.pop().unwrap()
-    } else {
-        Node::Stack(rows)
-    }
+    .stack(0, false)
 }
-
-// ── 3. 기호 매핑 ──
-// 함수어(sin/cos/log/lim…)는 원문 그대로 로만체로 표시된다(sym_text의 기본 분기). 이탤릭/로만
-// 스타일 분화는 후속 — v1은 표시 문자열만 매핑한다.
 
 /// 수식 토큰 → 표시 문자열(기호). 함수어/숫자/미지정은 원문.
 fn sym_text(tok: &str) -> String {
@@ -216,6 +314,11 @@ fn sym_text(tok: &str) -> String {
         "sum" | "SUM" => "∑",
         "int" | "INT" => "∫",
         "prod" | "PROD" => "∏",
+        "oint" => "∮",
+        "dint" => "∬",
+        "tint" => "∭",
+        "union" => "⋃",
+        "inter" => "⋂",
         "inf" | "infinity" => "∞",
         "partial" => "∂",
         "nabla" => "∇",
@@ -280,212 +383,323 @@ fn sym_text(tok: &str) -> String {
     m.to_string()
 }
 
-// ── 4. 조판 상자 (baseline 상대: y=0 baseline, 음수=위, 양수=아래) ──
-/// baseline 상대 배치 결과. 원점 x=0(좌), y=0(baseline).
+/// Baseline-relative layout in points. Negative vertical offsets are above the baseline.
 pub struct EqBox {
     pub width: f32,
-    pub ascent: f32,                       // baseline 위(양수 크기)
-    pub descent: f32,                      // baseline 아래(양수 크기)
-    runs: Vec<(ShapedRun, f32, f32)>,      // (run, dx, dy_baseline)
-    lines: Vec<(f32, f32, f32, f32, f32)>, // (x1,y1,x2,y2, 두께)
+    pub ascent: f32,
+    pub descent: f32,
+    runs: Vec<(ShapedRun, f32, f32)>,
+    strokes: Vec<(Vec<PathCmd>, f32)>,
+    color: u32,
 }
 
 impl EqBox {
     fn empty() -> Self {
-        EqBox {
+        Self {
             width: 0.0,
             ascent: 0.0,
             descent: 0.0,
-            runs: vec![],
-            lines: vec![],
+            runs: Vec::new(),
+            strokes: Vec::new(),
+            color: 0,
         }
     }
-    /// dx, dy 이동(합성용) — 소비.
-    fn shift(mut self, dx: f32, dy: f32) -> Self {
-        for r in &mut self.runs {
-            r.1 += dx;
-            r.2 += dy;
+
+    fn place(&mut self, child: Self, x: f32, y: f32) {
+        self.runs.extend(
+            child
+                .runs
+                .into_iter()
+                .map(|(run, dx, dy)| (run, dx + x, dy + y)),
+        );
+        for (mut path, width) in child.strokes {
+            translate_path(&mut path, x, y);
+            self.strokes.push((path, width));
         }
-        for l in &mut self.lines {
-            l.0 += dx;
-            l.1 += dy;
-            l.2 += dx;
-            l.3 += dy;
-        }
-        self.ascent -= dy; // dy>0(아래로) → ascent 감소
-        self.descent += dy;
-        self
+        self.width = self.width.max(x + child.width);
+        self.ascent = self.ascent.max(child.ascent - y);
+        self.descent = self.descent.max(child.descent + y);
     }
-    fn merge(&mut self, other: EqBox) {
-        self.runs.extend(other.runs);
-        self.lines.extend(other.lines);
-        self.width = self.width.max(other.width);
-        self.ascent = self.ascent.max(other.ascent);
-        self.descent = self.descent.max(other.descent);
+
+    fn rule(&mut self, x1: f32, x2: f32, y: f32, size: f32) {
+        self.strokes.push((
+            vec![PathCmd::MoveTo(x1, y), PathCmd::LineTo(x2, y)],
+            (size * 0.05).max(0.6),
+        ));
     }
 }
 
-/// 한 기호/텍스트를 셰이핑해 상자로. italic=변수 기울임.
-fn box_sym(store: &mut FontStore, doc: &Document, text: &str, size: f32, italic: bool) -> EqBox {
-    if text.is_empty() {
-        return EqBox::empty();
-    }
-    let Some(run) = shape_plain(store, doc, text, size, 0, italic) else {
-        return EqBox::empty();
-    };
-    let width = run.width_pt;
-    EqBox {
-        width,
-        ascent: size * 0.72,
-        descent: size * 0.22,
-        runs: vec![(run, 0.0, 0.0)],
-        lines: vec![],
+fn translate_path(path: &mut [PathCmd], dx: f32, dy: f32) {
+    for command in path {
+        match command {
+            PathCmd::MoveTo(x, y) | PathCmd::LineTo(x, y) => {
+                *x += dx;
+                *y += dy;
+            }
+            PathCmd::CubicTo(x1, y1, x2, y2, x3, y3) => {
+                *x1 += dx;
+                *x2 += dx;
+                *x3 += dx;
+                *y1 += dy;
+                *y2 += dy;
+                *y3 += dy;
+            }
+            PathCmd::Close => {}
+        }
     }
 }
 
-/// 트리를 조판해 EqBox 생성(baseline 상대).
-fn layout(store: &mut FontStore, doc: &Document, node: &Node, size: f32) -> EqBox {
-    match node {
-        Node::Space(w) => EqBox {
-            width: size * w,
+struct Typesetter<'a> {
+    store: &'a mut FontStore,
+    doc: &'a Document,
+    color: u32,
+    font_name: Option<&'a str>,
+}
+
+impl Typesetter<'_> {
+    fn symbol(&mut self, text: &str, size: f32, italic: bool) -> EqBox {
+        if text.is_empty() {
+            return EqBox::empty();
+        }
+        let named = self
+            .font_name
+            .and_then(|name| self.store.resolve_family_selection(name, false))
+            .and_then(|selection| {
+                shape_text_with_font(&selection.font, size, self.color, italic, text, false)
+            });
+        let run =
+            named.or_else(|| shape_plain(self.store, self.doc, text, size, self.color, italic));
+        let width = run
+            .as_ref()
+            .map_or(size * 0.5 * text.chars().count() as f32, |run| run.width_pt);
+        EqBox {
+            width,
+            ascent: size * 0.72,
+            descent: size * 0.22,
+            runs: run.into_iter().map(|run| (run, 0.0, 0.0)).collect(),
             ..EqBox::empty()
-        },
-        Node::Sym(w) => {
-            let t = sym_text(w);
-            // 변수(매핑 안 된 단일 라틴 문자)는 이탤릭, 함수어·숫자·그리스·기호는 로만(실측 정합).
-            let italic = t == *w
-                && w.chars().count() == 1
-                && w.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
-            box_sym(store, doc, &t, size, italic)
         }
-        Node::Row(items) => {
-            let mut acc = EqBox::empty();
-            let mut x = 0.0;
-            for it in items {
-                let b = layout(store, doc, it, size).shift(x, 0.0);
-                x += bwidth(&b, x);
-                acc.merge(b);
+    }
+
+    fn layout(&mut self, node: &Node, size: f32) -> EqBox {
+        let mut result = EqBox::empty();
+        match node {
+            Node::Space(width) => result.width = size * width,
+            Node::Sym(word) => {
+                let text = sym_text(word);
+                let italic =
+                    text == *word && word.len() == 1 && word.as_bytes()[0].is_ascii_alphabetic();
+                return self.symbol(&text, size, italic);
             }
-            acc.width = x;
-            acc
-        }
-        Node::Stack(rows) => {
-            let boxes: Vec<EqBox> = rows.iter().map(|r| layout(store, doc, r, size)).collect();
-            let width = boxes.iter().map(|b| b.width).fold(0.0, f32::max);
-            let gap = size * 0.35; // 행 사이 여백
-            // 각 행의 실제 높이(ascent+descent)로 배치 — 분수 행은 더 높으므로 겹침 방지.
-            let total_h: f32 = boxes.iter().map(|b| b.ascent + b.descent).sum::<f32>()
-                + gap * boxes.len().saturating_sub(1) as f32;
-            let mut acc = EqBox::empty();
-            let mut top = -total_h * 0.5; // 스택 상단(baseline 중심 기준)
-            for b in boxes {
-                let dx = (width - b.width) * 0.5; // 가로 중앙정렬
-                let baseline = top + b.ascent; // 이 행의 baseline
-                let (a, d) = (b.ascent, b.descent);
-                acc.merge(b.shift(dx, baseline));
-                top += a + d + gap;
+            Node::Literal(text) => return self.symbol(text, size, false),
+            Node::Row(items) => {
+                for item in items {
+                    result.place(self.layout(item, size), result.width, 0.0);
+                }
             }
-            acc.width = width;
-            acc
-        }
-        Node::Script(base, sup, sub) => {
-            let bb = layout(store, doc, base, size);
-            let mut acc = EqBox::empty();
-            let bw = bb.width;
-            acc.merge(bb);
-            let ss = size * 0.72;
-            if let Some(s) = sup {
-                let raised = layout(store, doc, s, ss).shift(bw, -size * 0.5);
-                acc.merge(raised);
+            Node::Stack(rows) => {
+                let rows = rows
+                    .iter()
+                    .map(|row| vec![self.layout(row, size)])
+                    .collect();
+                return layout_grid(rows, size, 0.0);
             }
-            if let Some(s) = sub {
-                let lowered = layout(store, doc, s, ss).shift(bw, size * 0.28);
-                acc.merge(lowered);
+            Node::Matrix(kind, rows) => {
+                let rows = rows
+                    .iter()
+                    .map(|row| row.iter().map(|cell| self.layout(cell, size)).collect())
+                    .collect();
+                let (left, right) = kind.delimiters();
+                return enclose(layout_grid(rows, size, -size * 0.28), left, right, size);
             }
-            // 폭 = base + 첨자 폭(대략).
-            let sw = sup
-                .as_ref()
-                .map(|s| layout(store, doc, s, ss).width)
-                .unwrap_or(0.0)
-                .max(
-                    sub.as_ref()
-                        .map(|s| layout(store, doc, s, ss).width)
-                        .unwrap_or(0.0),
-                );
-            acc.width = bw + sw;
-            acc
-        }
-        Node::Frac(num, den, bar) => {
-            let n = layout(store, doc, num, size * 0.95);
-            let d = layout(store, doc, den, size * 0.95);
-            let width = n.width.max(d.width);
-            let axis = size * 0.28; // 분수선 위치(baseline 위)
-            let gap = size * 0.15;
-            // 분자: 하단(baseline+descent)이 분수선 위 gap.
-            let n_dy = -(axis + gap + n.descent);
-            let nb = n.shift((width - nbw(num, store, doc, size)) * 0.5, n_dy);
-            // 분모: 상단(baseline-ascent)이 분수선 아래 gap.
-            let d_dy = axis + gap + layout(store, doc, den, size * 0.95).ascent;
-            let db = d.shift((width - nbw(den, store, doc, size)) * 0.5, d_dy);
-            let mut acc = EqBox {
-                width,
-                ascent: axis,
-                descent: 0.0,
-                runs: vec![],
-                lines: vec![],
-            };
-            let _ = nb.width;
-            acc.merge(nb);
-            acc.merge(db);
-            acc.width = width;
-            if *bar {
-                acc.lines
-                    .push((0.0, -axis, width, -axis, (size * 0.05).max(0.6)));
+            Node::Delimited(left, inner, right) => {
+                return enclose(self.layout(inner, size), *left, *right, size);
             }
-            acc
+            Node::Script(base, upper, lower) => {
+                result = self.layout(base, size);
+                let script_x = result.width;
+                if let Some(upper) = upper {
+                    result.place(self.layout(upper, size * 0.72), script_x, -size * 0.5);
+                }
+                if let Some(lower) = lower {
+                    result.place(self.layout(lower, size * 0.72), script_x, size * 0.28);
+                }
+            }
+            Node::LargeOp(op, upper, lower) => {
+                let op = self.symbol(&sym_text(op), size * 1.16, false);
+                let upper = upper.as_ref().map(|node| self.layout(node, size * 0.72));
+                let lower = lower.as_ref().map(|node| self.layout(node, size * 0.72));
+                let width = [Some(&op), upper.as_ref(), lower.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .map(|b| b.width)
+                    .fold(0.0, f32::max);
+                if let Some(upper) = upper {
+                    let y = -op.ascent - size * 0.12 - upper.descent;
+                    let x = (width - upper.width) * 0.5;
+                    result.place(upper, x, y);
+                }
+                if let Some(lower) = lower {
+                    let y = op.descent + size * 0.12 + lower.ascent;
+                    let x = (width - lower.width) * 0.5;
+                    result.place(lower, x, y);
+                }
+                let x = (width - op.width) * 0.5;
+                result.place(op, x, 0.0);
+            }
+            Node::Frac(num, den, bar) => {
+                let num = self.layout(num, size * 0.95);
+                let den = self.layout(den, size * 0.95);
+                let width = num.width.max(den.width);
+                let axis = -size * 0.28;
+                let gap = size * 0.15;
+                let num_position = ((width - num.width) * 0.5, axis - gap - num.descent);
+                let den_position = ((width - den.width) * 0.5, axis + gap + den.ascent);
+                result.place(num, num_position.0, num_position.1);
+                result.place(den, den_position.0, den_position.1);
+                if *bar {
+                    result.rule(0.0, width, axis, size);
+                }
+            }
+            Node::Sqrt(inner) => {
+                let inner = self.layout(inner, size);
+                let radical = self.symbol("√", size + inner.ascent * 0.3, false);
+                let x = radical.width;
+                result.place(radical, 0.0, 0.0);
+                result.place(inner, x, 0.0);
+                result.rule(x, result.width, -result.ascent, size);
+            }
         }
-        Node::Sqrt(inner) => {
-            let ib = layout(store, doc, inner, size);
-            let radical = box_sym(
-                store,
-                doc,
-                "√",
-                size * (1.0 + ib.ascent / size * 0.3),
-                false,
-            );
-            let mut acc = EqBox::empty();
-            let rw = radical.width;
-            acc.merge(radical);
-            let inner_shifted = ib.shift(rw, 0.0);
-            let iw = inner_shifted.width - rw;
-            let top = -(acc.ascent.max(inner_shifted.ascent));
-            acc.merge(inner_shifted);
-            // vinculum: 근호 위 가로선.
-            acc.lines
-                .push((rw, top, rw + iw, top, (size * 0.05).max(0.6)));
-            acc.width = rw + iw;
-            acc.ascent = acc.ascent.max(-top);
-            acc
-        }
+        result
     }
 }
 
-/// Row 배치 시 다음 x 진행량(폭).
-fn bwidth(b: &EqBox, _x: f32) -> f32 {
-    b.width
+fn layout_grid(rows: Vec<Vec<EqBox>>, size: f32, axis: f32) -> EqBox {
+    let mut widths = vec![0.0_f32; rows.iter().map(Vec::len).max().unwrap_or(0)];
+    let mut heights = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut ascent = 0.0_f32;
+        let mut descent = 0.0_f32;
+        for (cell, width) in row.iter().zip(&mut widths) {
+            *width = width.max(cell.width);
+            ascent = ascent.max(cell.ascent);
+            descent = descent.max(cell.descent);
+        }
+        heights.push((ascent, descent));
+    }
+    let column_gap = 0.55 * size;
+    let row_gap = 0.35 * size;
+    let height = heights.iter().map(|(a, d)| a + d).sum::<f32>()
+        + row_gap * rows.len().saturating_sub(1) as f32;
+    let mut top = axis - height * 0.5;
+    let mut result = EqBox::empty();
+    for (row, (ascent, descent)) in rows.into_iter().zip(heights) {
+        let mut left = 0.0;
+        for (cell, width) in row.into_iter().zip(&widths) {
+            let x = left + (width - cell.width) * 0.5;
+            result.place(cell, x, top + ascent);
+            left += width + column_gap;
+        }
+        top += ascent + descent + row_gap;
+    }
+    result.width = widths.iter().sum::<f32>() + column_gap * widths.len().saturating_sub(1) as f32;
+    result
 }
 
-/// 노드 폭만 측정(중앙정렬 계산용). 재조판이지만 v1은 단순성 우선.
-fn nbw(node: &Node, store: &mut FontStore, doc: &Document, size: f32) -> f32 {
-    layout(store, doc, node, size * 0.95).width
+fn enclose(inner: EqBox, left: Option<char>, right: Option<char>, size: f32) -> EqBox {
+    if left.is_none() && right.is_none() {
+        return inner;
+    }
+    let top = -inner.ascent.max(size * 0.72) - size * 0.08;
+    let bottom = inner.descent.max(size * 0.22) + size * 0.08;
+    let mut result = EqBox::empty();
+    let left_width = left.map_or(0.0, |ch| delimiter(&mut result, ch, 0.0, top, bottom, size));
+    result.place(inner, left_width, 0.0);
+    if let Some(ch) = right {
+        let x = result.width;
+        result.width += delimiter(&mut result, ch, x, top, bottom, size);
+    }
+    result.ascent = -top;
+    result.descent = bottom;
+    result
 }
 
-/// 스크립트를 조판해 EqBox 반환(baseline 상대). size=기준 글자 크기(pt).
+fn delimiter(result: &mut EqBox, ch: char, x: f32, top: f32, bottom: f32, size: f32) -> f32 {
+    use PathCmd::{CubicTo, LineTo, MoveTo};
+    let span = bottom - top;
+    let mid = (top + bottom) * 0.5;
+    let width = size * 0.28;
+    let (outer, inner) = if matches!(ch, ')' | ']' | '}') {
+        (x + width, x)
+    } else {
+        (x, x + width)
+    };
+    let path = match ch {
+        '(' | ')' => vec![
+            MoveTo(inner, top),
+            CubicTo(
+                outer,
+                top + span * 0.22,
+                outer,
+                bottom - span * 0.22,
+                inner,
+                bottom,
+            ),
+        ],
+        '[' | ']' => vec![
+            MoveTo(inner, top),
+            LineTo(outer, top),
+            LineTo(outer, bottom),
+            LineTo(inner, bottom),
+        ],
+        '{' | '}' => vec![
+            MoveTo(inner, top),
+            CubicTo(outer, top, inner, mid - span * 0.10, outer, mid),
+            CubicTo(inner, mid + span * 0.10, outer, bottom, inner, bottom),
+        ],
+        _ => vec![
+            MoveTo(x + width * 0.5, top),
+            LineTo(x + width * 0.5, bottom),
+        ],
+    };
+    result.strokes.push((path, (size * 0.05).max(0.6)));
+    width + size * 0.12
+}
+
 pub fn typeset(store: &mut FontStore, doc: &Document, script: &str, size: f32) -> EqBox {
-    layout(store, doc, &parse(script), size)
+    Typesetter {
+        store,
+        doc,
+        color: 0,
+        font_name: None,
+    }
+    .layout(&parse(script), size.max(1.0))
 }
 
-/// 조판 상자를 페이지에 그린다. (ox, baseline_y) = 수식 원점 x + baseline의 페이지 y.
+pub(crate) fn typeset_equation(
+    store: &mut FontStore,
+    doc: &Document,
+    equation: &Equation,
+    height: f32,
+) -> EqBox {
+    let tree = parse(&equation.script);
+    let mut typesetter = Typesetter {
+        store,
+        doc,
+        color: equation.text_color,
+        font_name: equation.font_name.as_deref(),
+    };
+    let size = if equation.base_unit == 0 {
+        let probe = typesetter.layout(&tree, 12.0);
+        (12.0 * height / (probe.ascent + probe.descent).max(1.0)).clamp(6.0, 18.0)
+    } else {
+        (equation.base_unit as f32 / 100.0).clamp(1.0, 144.0)
+    };
+    let mut result = typesetter.layout(&tree, size);
+    result.color = equation.text_color;
+    result
+}
+
 pub fn render_into(
     page: &mut PageList,
     eq: EqBox,
@@ -495,20 +709,17 @@ pub fn render_into(
 ) {
     use crate::display::Item;
     for (run, dx, dy) in eq.runs {
-        // Equation runs use a synthetic character shape with border_fill_id=0.
         crate::layout::push_run(page, ox + dx, baseline_y + dy, run, &[], issues);
     }
-    for (x1, y1, x2, y2, wdt) in eq.lines {
+    for (mut commands, width) in eq.strokes {
         if !issues.charge_display_items(1) {
             return;
         }
+        translate_path(&mut commands, ox, baseline_y);
         page.items.push(Item::Path {
-            commands: vec![
-                crate::display::PathCmd::MoveTo(ox + x1, baseline_y + y1),
-                crate::display::PathCmd::LineTo(ox + x2, baseline_y + y2),
-            ],
+            commands,
             fill: None,
-            stroke: Some(crate::display::Stroke::solid(0x0000_0000, wdt)),
+            stroke: Some(crate::display::Stroke::solid(eq.color, width)),
             rule: crate::display::FillRule::NonZero,
         });
     }
@@ -559,6 +770,126 @@ mod tests {
             Node::Sqrt(_) => {}
             other => panic!("근호 아님: {other:?}"),
         }
+    }
+
+    #[test]
+    fn matrix_variants_keep_cells_and_share_the_same_grid() {
+        let document = Document::default();
+        let mut store = FontStore::new_isolated();
+        let bare = typeset(&mut store, &document, "MATRIX{1&22#333&4}", 10.0);
+        assert!(bare.strokes.is_empty());
+        assert!(bare.ascent + bare.descent > 18.0);
+        for (script, strokes) in [
+            ("PMATRIX{1&22#333&4}", 2),
+            ("BMATRIX{1&22#333&4}", 2),
+            ("DMATRIX{1&22#333&4}", 2),
+            ("CASES{1&22#333&4}", 1),
+        ] {
+            let Node::Matrix(_, rows) = parse(script) else {
+                panic!("{script}");
+            };
+            assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
+            assert!(matches!(&rows[0][1], Node::Sym(cell) if cell == "22"));
+            let formatted = typeset(&mut store, &document, script, 10.0);
+            assert_eq!(formatted.strokes.len(), strokes);
+            assert!((formatted.width - bare.width - 4.0 * strokes as f32).abs() < 0.001);
+            assert!(formatted.ascent > bare.ascent);
+            assert!(formatted.descent > bare.descent);
+        }
+        let Node::Literal(text) = parse(r#""&""#) else {
+            panic!("expected quoted text")
+        };
+        assert_eq!(text, "&");
+    }
+
+    #[test]
+    fn large_operator_limits_extend_both_sides_of_the_baseline() {
+        let document = Document::default();
+        let mut store = FontStore::new_isolated();
+        for (operator, script) in [
+            ("sum", "sum_{i=1}^{n}"),
+            ("int", "INT from {0} to {infinity}"),
+        ] {
+            assert!(matches!(parse(script), Node::LargeOp(_, Some(_), Some(_))));
+            let operator = typeset(&mut store, &document, operator, 10.0);
+            let limits = typeset(&mut store, &document, script, 10.0);
+            assert!(limits.ascent > operator.ascent);
+            assert!(limits.descent > operator.descent);
+        }
+    }
+
+    #[test]
+    fn paired_delimiters_enclose_a_nested_fraction() {
+        let document = Document::default();
+        let mut store = FontStore::new_isolated();
+        let tall = typeset(
+            &mut store,
+            &document,
+            "LEFT ( {a over b} over c RIGHT )",
+            10.0,
+        );
+        let short = typeset(&mut store, &document, "LEFT[x RIGHT]", 10.0);
+        assert_eq!(tall.strokes.len(), 4);
+        assert_eq!(short.strokes.len(), 2);
+        assert!(tall.ascent + tall.descent > short.ascent + short.descent);
+        let delimiter = &tall.strokes[0].0;
+        let [
+            PathCmd::MoveTo(_, top),
+            PathCmd::CubicTo(_, _, _, _, _, bottom),
+        ] = delimiter.as_slice()
+        else {
+            panic!("expected a curved delimiter");
+        };
+        assert_eq!(*top, -tall.ascent);
+        assert_eq!(*bottom, tall.descent);
+    }
+
+    #[test]
+    fn nested_fraction_chains_and_extreme_font_sizes_are_bounded() {
+        let mut script = "x".to_owned();
+        for _ in 0..40 {
+            script = format!("{{{script}{}}}", " over x".repeat(40));
+        }
+        let doc = Document::default();
+        let mut fonts = FontStore::new_isolated();
+        let expression = Equation {
+            script,
+            base_unit: u32::MAX,
+            ..Equation::authored()
+        };
+        let result = typeset_equation(&mut fonts, &doc, &expression, 20.0);
+        assert!(result.ascent.is_finite() && result.descent.is_finite());
+        let size = |base_unit, fonts: &mut FontStore| {
+            typeset_equation(
+                fonts,
+                &doc,
+                &Equation {
+                    script: "~".into(),
+                    base_unit,
+                    ..Equation::authored()
+                },
+                20.0,
+            )
+            .width
+        };
+        assert_eq!(size(u32::MAX, &mut fonts), size(14_400, &mut fonts));
+    }
+
+    #[test]
+    fn equation_size_and_color_come_from_metadata() {
+        let document = Document::default();
+        let mut store = FontStore::new_isolated();
+        let equation = Equation {
+            script: "LEFT [ a over b RIGHT ]".into(),
+            base_unit: 2_200,
+            text_color: 0x0022_44a0,
+            ..Default::default()
+        };
+        let sized = typeset_equation(&mut store, &document, &equation, 10.0);
+        let same = typeset(&mut store, &document, &equation.script, 22.0);
+        assert_eq!(sized.width, same.width);
+        assert_eq!(sized.ascent, same.ascent);
+        assert_eq!(sized.color, equation.text_color);
     }
 
     #[test]

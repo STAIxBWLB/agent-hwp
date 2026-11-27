@@ -365,21 +365,18 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 
 ## 4. GD — 수식
 
-수식은 mini-TeX 조판기로 대부분 렌더되지만([05](05-rendering.ko.md), 커밋 `ff4184b` 이후), 다음
-구성은 아직 근사·미조판이다. 근거는 조판기 헤더 주석이 명시한 **알려진 미지원 목록**이다.
+#621에서 수식 스크립트 조판과 HWP5·HWPX 공통 수식 속성을 처리한다.
 
-| ID | 현상 | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
+| ID | 구문 또는 속성 | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
-| GD-1 | **행렬(matrix) 미조판** — 열 정렬 문자 `&`를 조판하지 않고 공백으로 취급 | `hwp-render/src/equation.rs:10`(미지원 명시), `:59`(`'&' => … 열 정렬(matrix) — v1은 공백 취급`) | §4.3.9.3 수식 스크립트 | 근사(공백 취급) | 렌더 | M |
-| GD-2 | **큰연산자 극한 미배치** — `sum`·`int` 심볼은 나오나 아래·위 극한을 연산자에 붙여 배치하지 못함 | `hwp-render/src/equation.rs:10`(미지원 명시), `:216`(`sum`→∑), `:217`(`int`→∫) | §4.3.9.3 | 근사(첨자 배치) | 렌더 | M |
-| GD-3 | **복잡 구분자 미지원**(크기 자동조절 괄호 등) | `hwp-render/src/equation.rs:10`(`복잡 구분자`) | §4.3.9.3 | 근사 | 렌더 | M |
-| GD-4 | **EQEDIT 자체 속성 미파싱** — 수식 레코드(표 105)의 글자크기(HWPUNIT)·색상·baseline·버전정보·폰트이름을 IR `Equation`이 갖지 않음(script/크기/위치뿐). 렌더는 개체 상자 크기 역산으로 폰트 크기를 근사하므로 소스 지정값과 다를 수 있음 | `hwp-model/src/control.rs:270`(`Equation` 구조), `hwp5/src/body_text.rs:592`(`find_eqedit_script` — 스크립트만 추출) | §4.3.9.3 표 105 | 근사(역산) | 렌더·합성 | S~M |
+| GD-1 | 행렬의 행과 열 | `hwp-render/src/equation.rs` (`matrix`, `layout_grid`) | 수식 스크립트 | `MATRIX`, `PMATRIX`, `BMATRIX`, `DMATRIX`, `CASES`에서 `&`와 `#`로 구분된 셀을 정렬한다. 따옴표로 감싼 앰퍼샌드는 문자로 출력한다. | 렌더 | M |
+| GD-2 | 큰 연산자의 극한 | `hwp-render/src/equation.rs` (`LargeOp`) | 수식 스크립트 | 위·아래 극한을 연산자 상하에 가운데 정렬한다. | 렌더 | M |
+| GD-3 | 높이 조절 구분자 | `hwp-render/src/equation.rs` (`enclose`, `delimiter`) | 수식 스크립트 | 행렬 괄호와 짝을 이룬 `LEFT`/`RIGHT` 구분자가 내부 높이에 맞춰 늘어난다. | 렌더 | M |
+| GD-4 | EQEDIT 속성 | `hwp-model/src/control.rs` (`Equation`), `hwp5/src/body_text.rs` (`find_eqedit`) | §4.3.9.3 표 105 | 변환 시 글자 크기, 색상, 기준선, 버전과 글꼴 이름을 보존한다. 렌더링은 저장된 글자 크기, 색상과 기준선을 사용한다. | 렌더·합성 | S~M |
 
-**GD 교훈:** 세 항목 모두 **정품 수식 정답지**(정답지 α+β/2 정합처럼)로 조판 메트릭을 맞춰야
-확정되므로 M. 왕복 자체는 스크립트 원문을 raw로 보존하므로([10](10-hwp5-structure-map.ko.md) 표 B
-`EQEDIT`) 갭은 **렌더 경로에 국한**된다. 같은 언어(Rust) 구현체 rhwp가 `MATRIX`/`PMATRIX`/
-`BMATRIX`/`DMATRIX` 조판을 이미 구현한 선례가 있어 참조 가능하다([08](08-external-research.ko.md)
-생태계 대조).
+한컴에서 저장한 앰퍼샌드·행렬 픽스처 두 종으로 EQEDIT 후행 필드와 대응하는 HWPX 속성을
+확인했다. 조판 치수, 검정 이외의 색상, 다른 글꼴 이름과 변환 문서는 한컴오피스에서 비교가
+필요하다. HWP5 동일 포맷 왕복은 원본 EQEDIT 바이트를 그대로 출력한다.
 
 ---
 
@@ -406,7 +403,7 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | GE-12 | **문서 시작번호 hwpx read 미파싱** — write는 `<hh:beginNum>`을 방출하지만 read에 파싱이 없어(전체 grep 0건) hwpx 소스의 페이지/각주/미주/그림/표/수식 시작번호가 IR에 안 올라옴 | write `hwpx/src/write/header.rs:53-59` ↔ read 부재 | §4.2.1 / `hh:beginNum` | 드롭(read) | 왕복(hwpx→hwpx)·합성(hwpx→hwp5) | S(GE-3 계열 동일 패턴) |
 | GE-13 | ✅**해소 2026-11-08** — ~~**스타일 종류(PARA/CHAR) hwpx 양방향 무시** — read는 `type` 속성을 안 읽고(attr 항상 0) write는 `type="PARA"` 고정 → 글자 스타일이 항상 문단 스타일로 오기록, hwpx→hwpx 왕복에서도 매번 유실~~ | read `hwpx/src/read/header.rs`(`style_kind_attr`: `CHAR`은 attr 1, 그 외 0) ↔ write `hwpx/src/write/header.rs`(`write_styles`: attr 하위 3비트가 1이면 `CHAR`, 아니면 `PARA`). 실기 근거: `fixtures/hwpx/minimal.hwpx`(한글 13, Windows)와 `fixtures/hwpx/seal-groundtruth.hwpx`(한글 12.30, macOS)가 `쪽 번호`를 `CHAR`로 저장하고, 실기 HWP5 파일은 같은 스타일을 attr 1로 가진다. `ahwp styles`가 이제 HWPX 문서에도 종류를 보고한다. `type`이 없거나 인식하지 못하는 값이면 `Style::kind_unknown`으로 싣고(attr은 0으로 두어 예약값이 HWP5 레코드로 가지 않게 한다) `null`로 보고하며 `type` 없이 다시 쓴다. OWPML 모델의 값 집합은 `PARA`와 `CHAR` 둘뿐이고(`hancom-io/hwpx-owpml-model` `g_StyleList`) 누락 시 기본값을 규정하지 않는다 | §4.2.11 표 48 / `hh:style@type` | PARA·CHAR 정확 | 왕복(hwpx→hwpx), hwp5↔hwpx | S |
 
-| GE-14 | **수식(eqed) hwpx 쓰기 드롭** — read는 `<hp:equation>`을(hwp5는 EQEDIT 스크립트를) IR `Equation`으로 올리지만 writer arm이 없어 generic fallback으로 빠짐 → hwpx를 편집·변환만 해도 수식이 통째로 사라짐 | write `hwpx/src/write/section.rs`(`write_equation`) ↔ read `hwpx/src/read/section.rs`(`parse_equation`), hwp5 `body_text.rs`(`parse_eqed`) | §4.3.9.3 / `hp:equation` | ✅ **해소(2026-07-27)** — run 직속 `<hp:equation>` + `hp:sz`/`hp:pos`/`hp:script` 방출(`수식_hwpx_왕복` 락). ⚠ 수식 전용 속성(version·baseLine·baseUnit·font)은 **정답지 미확보 표준 추정값** — 한글 실기 확정 대기 | 왕복(hwpx→hwpx)·합성(hwp5→hwpx) | S |
+| GE-14 | **수식(eqed) hwpx 쓰기 드롭** — read는 `<hp:equation>`을(hwp5는 EQEDIT 스크립트를) IR `Equation`으로 올리지만 writer arm이 없어 generic fallback으로 빠짐 → hwpx를 편집·변환만 해도 수식이 통째로 사라짐 | write `hwpx/src/write/section.rs`(`write_equation`) ↔ read `hwpx/src/read/section.rs`(`parse_equation`), hwp5 `body_text.rs`(`parse_eqed`) | §4.3.9.3 / `hp:equation` | ✅ **해소(2026-07-27)** — run 직속 `<hp:equation>` + `hp:sz`/`hp:pos`/`hp:script` 방출(`수식_hwpx_왕복` 락). 수식 전용 속성은 EQEDIT 또는 HWPX 원본 속성에서 읽는다(#621). 한컴오피스 육안 확인은 남아 있다 부유 수식과 실측하지 않은 배치는 HWPX에 보존한다. | 왕복(hwpx→hwpx)·합성(hwp5→hwpx) | S |
 | GE-15 | **hp:script 엔티티·CDATA 유실(read)** — `read_element_text`가 `Event::GeneralRef`/`CData`를 무시해 `x &lt; y` 같은 수식 스크립트의 특수문자가 읽기에서 사라짐(`hp:t` 파서에는 있던 해석이 이 경로만 누락) | `hwpx/src/read/section.rs`(`resolve_entity` 공용 헬퍼 — `parse_text`와 공유) | XML 1.0 §4.6 미리 정의 엔티티 | ✅ **해소(2026-07-27)** — 참조 5종+숫자 참조 해석, CDATA 구획 수집. writer `esc()`와 짝을 이루는 역변환 | 왕복(hwpx→hwpx)·추출 | S |
 
 | GE-16 | **속성값 엔티티 이중 이스케이프(hwpx read)** — `attr()`이 quick-xml raw 값을 그대로 올려(`A&amp;B` → IR `A&amp;amp;B`가 아니라 `A&amp;B` 원문), writer `esc()`가 다시 감싸 왕복마다 `&amp;`가 늘어남. 책갈피·필드·스타일 이름, 수식 `script` 속성 전부 해당 | `hwpx/src/read/xml.rs`(`attr` — unescape 적용) | XML 1.0 §4.6 | ✅ **해소(2026-07-27)** — 속성값을 읽는 즉시 엔티티 해석(해석 불가 참조는 원문 유지). 적대적 점검(codex) 발견 | 왕복(hwpx→hwpx)·합성 | S |
@@ -638,7 +635,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 | GM-7 | **도장/서명 자동 날인** — `edit --seal "앵커=>이미지@크기mm"` 구현(부유·글 앞 Picture, 앵커 텍스트 유지, 기본 20mm) | `hwp-convert/src/image.rs insert_seal` | ✅ **실기 확정(2026-07-16, D1·D2 통과)** — 실기 3회 반복으로 확정: hwpx=`IN_FRONT_OF_TEXT`+`allowOverlap=1`+오프셋, hwp5=attr `0x04aa4310`(글앞·PARA·본문제한 해제, §4.3.9.1 비트 표 대조) |
 | GM-8 | **문서 내용 비교 없음** — `diff`는 렌더 픽셀 비교 전용, 텍스트/구조 비교 없음 | kordoc compare_documents 선례 | ✅ **확인(2026-08-29)** — `hwp compare`는 두 문서의 문단·구조 차이를 보고하며 둘 다 수정하지 않음(실행 전후 SHA-256 불변 확인), 차이가 있으면 종료 코드 1. 읽기 전용 명령이라 한글 실행 확인 대상이 아님 | M |
 | GM-9 | **AI 연동이 client 환경별로 다름** - Amazon Quick Desktop은 publish-safe skill을 active profile에 설치하고 local stdio connector를 실행할 수 있으나, Quick Web은 `ahwp mcp`를 시작하거나 desktop path를 공유할 수 없음. Tenant-isolated artifact를 사용하는 hosted authenticated Streamable HTTP service는 미구현 | Desktop profile 탐색/설치는 `skill export --install amazon-quick`으로 ✅ **해소(2026-08-09)**. Web은 [20-remote-mcp](20-remote-mcp.ko.md)와 [issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52)의 open item | Desktop S / Web L |
-| GM-10 | **PII 비식별 처리 없음** — 공문서에는 주민등록번호·전화번호·계좌·카드번호가 일상적으로 들어가지만 이를 탐지·마스킹하는 명령이 없고, 편집 파이프라인은 리터럴로 지정한 문자열만 치환 가능 | kordoc `src/redact.ts` 선례(탐지기 7종, 자릿수·구분자를 보존하는 형식 유지 마스킹, 원문 PII를 절대 담지 않는 적출 보고서). 2026-08-20 결정: 외부 관심사가 아니라 원본 보존 편집 파이프라인 위의 코어 `ahwp redact` 명령 — 후보이며 미착수 | M |
+| GM-10 | 🟡 **2026-11-27 구현 (#617), 한컴 열기 확인 대기** — **PII 비식별 처리**: `ahwp redact` / MCP `hwp_redact`가 7개 범주(rrn·phone·email·card·account·passport·driver)를 글자 수와 구분자를 보존해 마스킹하고, 본문·셀·캡션·머리말/꼬리말·각주·글상자·필드 명령·개체 설명·두 미리보기를 처리하며, 재검사 0건과 모든 스트림·항목 바이트 검사(HWP5 출력은 압축 재구성, 빈 섹터 없음)를 통과할 때만 게시. 형식별로 한컴이 마스킹 결과 파일을 열면 해소 | `crates/hwp-convert/src/redact.rs`, `crates/hwp-cli/src/commands/redact.rs`; 검출 값 없는 `hwp-redact-report-v1`. 범위 밖: 그림 픽셀, 문서 정보 | M |
 
 ## 14. GN — 공문서 저작 계층 (2026-08-20 kordoc 대조 신설)
 

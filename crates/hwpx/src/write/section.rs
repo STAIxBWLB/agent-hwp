@@ -1216,18 +1216,38 @@ fn chart_wrapper(chart: &hwp_model::Chart, part_id: &str, id: u32) -> String {
     )
 }
 
+/// Reconstruct equation attributes from the IR when there is no original HWPX
+/// start tag. Source EQEDIT values feed the same attributes as native HWPX values.
 fn generated_equation_attrs(g: &GenericControl, eq: &Equation) -> String {
-    // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
-    // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
+    // The paired inline equation fixtures use this XML wrapping value.
     let wrap = if eq.inline {
-        "SQUARE"
+        "TOP_AND_BOTTOM"
     } else {
         "IN_FRONT_OF_TEXT"
     };
-    let z = parse_gso_header(&g.data).map_or(0, |header| header.5.max(0));
-    format!(
-        r##"zOrder="{z}" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="85" textColor="#000000" baseUnit="1000" lineMode="CHAR" font="HYhwpEQ""##
-    )
+    let z = parse_gso_header(&g.data)
+        .map_or_else(
+            || {
+                eq.placement
+                    .as_ref()
+                    .map_or(0, |placement| placement.z_order)
+            },
+            |header| header.5,
+        )
+        .max(0);
+    let mode = if eq.props & 1 != 0 { "LINE" } else { "CHAR" };
+    let mut attrs = format!(
+        r#"zOrder="{z}" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" baseLine="{}" textColor="{}" baseUnit="{}" lineMode="{mode}""#,
+        eq.baseline,
+        color_hex(eq.text_color),
+        eq.base_unit,
+    );
+    for (key, value) in [("version", &eq.version), ("font", &eq.font_name)] {
+        if let Some(value) = value {
+            let _ = write!(attrs, r#" {key}="{}""#, esc(value));
+        }
+    }
+    attrs
 }
 
 fn generated_equation_props(g: &GenericControl, eq: &Equation) -> Vec<String> {
@@ -1244,15 +1264,26 @@ fn generated_equation_props(g: &GenericControl, eq: &Equation) -> Vec<String> {
             )
         }
     };
-    vec![
+    let [left, right, top, bottom] = eq
+        .placement
+        .as_ref()
+        .map_or([0; 4], |placement| placement.out_margins);
+    let mut properties = vec![
         format!(
             r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>"##,
             eq.width.max(0),
             eq.height.max(0),
         ),
         pos_xml,
-        r##"<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##.to_string(),
-    ]
+        format!(r#"<hp:outMargin left="{left}" right="{right}" top="{top}" bottom="{bottom}"/>"#),
+    ];
+    if let Some(description) = &eq.description {
+        properties.push(format!(
+            "<hp:shapeComment>{}</hp:shapeComment>",
+            esc(description)
+        ));
+    }
+    properties
 }
 
 /// HWPX reader가 합성 수식에 materialize한 정확한 writer 기본 속성/자식인지 확인한다.

@@ -27,6 +27,7 @@ This document is generated from the clap definitions of the `ahwp` CLI. Do not e
 - [`ahwp slots`](#ahwp-slots)
 - [`ahwp fill`](#ahwp-fill)
 - [`ahwp validate`](#ahwp-validate)
+- [`ahwp redact`](#ahwp-redact)
 - [`ahwp lint`](#ahwp-lint)
 - [`ahwp certify`](#ahwp-certify)
 - [`ahwp corpus`](#ahwp-corpus)
@@ -368,6 +369,24 @@ Structural validation (mimetype, required entries, XML parsing); exit code 0 whe
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
+
+## `ahwp redact`
+
+Mask personal information (resident registration, phone, email, card, account, passport and driver's license numbers) in place, keeping every character count and separator so layout does not move. The output keeps the input format; the report and stderr never contain a matched value. A run with nothing to mask publishes a verified copy
+
+**Usage:** `ahwp redact [OPTIONS] --output <OUTPUT> <INPUT>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<INPUT>` |  |  | Input .hwp/.hwpx file |
+| `-o, --output` | `<OUTPUT>` |  | Output path, same format as the input |
+| `--only` | `<ONLY>` |  | Only these categories (comma-separated or repeated): rrn, phone, email, card, account, passport, driver (repeatable) |
+| `--exclude` | `<EXCLUDE>` |  | Skip these categories (comma-separated or repeated) (repeatable) |
+| `--mask-char` | `<MASK_CHAR>` | `*` | Mask character: one BMP character that is not a letter, digit, space or separator |
+| `--strict-accounts` | `true` \| `false` | `true` | Account numbers need a bank or account label in the same paragraph, table row or column header; false masks every account-shaped number |
+| `--report` | `<REPORT>` |  | Write the content-free hwp-redact-report-v1 JSON to this path |
+| `--dry-run` |  |  | Detect, write and verify a staged output without publishing it; prints the report to stdout unless --report is given |
+| `--verify` |  |  | Also re-read the output and compare it with the masked document |
 
 ## `ahwp lint`
 

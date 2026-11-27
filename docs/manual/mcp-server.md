@@ -18,7 +18,7 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 23 tools. Its skill
+Amazon Quick Desktop can launch this local stdio server and expose all 24 tools. Its skill
 install and the Windows `LocalLow` workspace setup are in
 [AI client integrations](ai-integrations.md#amazon-quick-desktop).
 
@@ -28,7 +28,7 @@ but it is a private hop that expects a trusted edge in front of it: authenticate
 tenant isolation and artifact transfer remain future work in
 [Remote MCP transport](../design/20-remote-mcp.md).
 
-### Exposed tools (23)
+### Exposed tools (24)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -49,6 +49,7 @@ tenant isolation and artifact transfer remain future work in
 | `hwp_fill` | `input`, `output`, `values` | Fill `{{name}}` in an hwpx template (package preserved) |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
+| `hwp_redact` | `input`, `output` | Format-preserving PII masking of seven categories; returns a content-free `hwp-redact-report-v1` report |
 | `hwp_lint` | `path` | Ten official-document notation and structure rules, as an `hwp-lint-report-v1` report |
 | `hwp_merge` | `inputs`, `output` | Combine two or more documents; returns the preservation ledger |
 | `hwp_split` | `input`, `out_dir` | Split per Section (or per `pages` range), or extract one typed range with `from`/`to`; returns the published fragment paths and, for a range, the `hwp-range-extraction-v1` report |
