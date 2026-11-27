@@ -77,6 +77,7 @@ committed input carries its own evidence that it was built rather than saved by 
 | `fuzz_hwpx_read/seed-header.xml`, `seed-section.xml`, `seed-legacy.hml` | Minimal XML and HWPML documents written as text. |
 | `fuzz_wmf_dib/seed-wmf-header` | An 18-byte WMF header and an EOF record, 24 bytes total. |
 | `fuzz_wmf_dib/seed-bitmap-info` | A 1x1x24 `BITMAPINFOHEADER` and one pixel. |
+| `*/seed-fuzz-1`, `*/seed-fuzz-2` | Inputs the campaign generated itself: libFuzzer mutations of the synthetic seeds above, never of a saved document. Kept because the campaign reached them and the replay suite should keep reaching them. |
 | `fuzz_equation_markdown/seed-equation`, `seed-text.md`, `seed-table.html` | Three short text documents. |
 
 Campaign mutations and raw crash artifacts stay local: `fuzz/.gitignore` keeps the corpus to
