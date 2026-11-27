@@ -1294,6 +1294,7 @@
               "type": "string",
               "minLength": 1,
               "pattern": "^[^/]+$",
+              "maxLength": 65535,
               "description": "Memo author. '/' separates the fields of a memo Command string, so it cannot appear here."
             },
             "created_filetime": { "type": "integer", "minimum": 0 },

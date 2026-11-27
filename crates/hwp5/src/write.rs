@@ -1012,6 +1012,12 @@ fn materialize_document(
     let synth_gso = doc.meta.source_format != "hwp5" || has_synthesizable_gso(doc);
     let synthesize = synth_pictures || synth_gso || opts.edited;
     let normalized;
+    // PARA_HEADER tail gate: versions 5.0.3.2+ require a UINT16 merged-track-change-paragraph field
+    // (specification table 58, total 24 bytes). Pad only synthesized paragraphs with empty tails to
+    // 24 bytes. Writing 22 causes a version/layout mismatch and Hangul corruption/tampering
+    // warnings, verified with sample_m6 5.1.0.1 and halla 5.1.1.0. Pre-5.0.3.2 (work_report
+    // 5.0.2.4) correctly uses 22 bytes, so disable this gate there.
+    let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
     let doc = if needs_normalize(doc) || synthesize {
         let mut d = doc.clone();
         // First synthesize HWP5 shape records (SHAPE_COMPONENT plus picture) for HWPX/Markdown
@@ -1025,7 +1031,7 @@ fn materialize_document(
         }
         // Memo bodies this writer synthesizes must exist as MEMO_LIST records before the strip
         // pass decides whether an anchor still has a body to point at.
-        synthesize_memo_bodies(&mut d, &mut report);
+        synthesize_memo_bodies(&mut d, add_tracking_tail, &mut report);
         for section in &mut d.sections {
             let memo_bodies = hwp5_memo_numbers(section);
             for para in &mut section.paragraphs {
@@ -1075,12 +1081,6 @@ fn materialize_document(
     // Construct record streams.
     let doc_info_nodes = emit_doc_info(doc, &mut report);
     let doc_info = RecordNode::serialize_forest(&doc_info_nodes);
-    // PARA_HEADER tail gate: versions 5.0.3.2+ require a UINT16 merged-track-change-paragraph field
-    // (specification table 58, total 24 bytes). Pad only synthesized paragraphs with empty tails to
-    // 24 bytes. Writing 22 causes a version/layout mismatch and Hangul corruption/tampering
-    // warnings, verified with sample_m6 5.1.0.1 and halla 5.1.1.0. Pre-5.0.3.2 (work_report
-    // 5.0.2.4) correctly uses 22 bytes, so disable this gate there.
-    let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
     // Paragraph instance id counter: a synthesized paragraph (instance_id 0) gets a non-zero id.
     // Hancom judges instance_id 0 abnormal ("corrupt/tampered", A8; every sample is non-zero).
     // An hwp5 round trip keeps the source ids (0 included) for byte identity, so it is skipped.
@@ -3110,7 +3110,11 @@ fn hwp5_memo_numbers(section: &hwp_model::Section) -> std::collections::BTreeSet
 /// Only an HWP5 source is synthesized: a memo read from HWPX keeps PR1's cross-format drop. An
 /// HWP5-read anchor's body is already on the last paragraph, so its paragraph lists are empty and
 /// it is left untouched.
-fn synthesize_memo_bodies(doc: &mut hwp_model::Document, warnings: &mut WriteReport) {
+fn synthesize_memo_bodies(
+    doc: &mut hwp_model::Document,
+    add_tracking_tail: bool,
+    warnings: &mut WriteReport,
+) {
     if doc.meta.source_format != "hwp5" {
         return;
     }
@@ -3138,8 +3142,11 @@ fn synthesize_memo_bodies(doc: &mut hwp_model::Document, warnings: &mut WriteRep
                 children: Vec::new(),
             });
             for (index, paragraph) in paragraphs.iter().enumerate() {
-                last.extras
-                    .push(memo_body_record(paragraph, index + 1 == paragraphs.len()));
+                last.extras.push(memo_body_record(
+                    paragraph,
+                    index + 1 == paragraphs.len(),
+                    add_tracking_tail,
+                ));
             }
             if paragraphs.is_empty() {
                 warnings.warning(format!("메모 {number} 본문이 비어 있음"));
@@ -3187,7 +3194,11 @@ fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragr
 /// line and cleared on the others. The four fixtures only ever hold single-line memo bodies, so
 /// every body paragraph they show carries it; inheriting the anchor template's own flag would put
 /// it on every line and make Hangul treat each line as the end of the list.
-fn memo_body_record(para: &Paragraph, last: bool) -> hwp_model::OpaqueRecord {
+fn memo_body_record(
+    para: &Paragraph,
+    last: bool,
+    add_tracking_tail: bool,
+) -> hwp_model::OpaqueRecord {
     let mut chars = para.chars.clone();
     if chars.last() != Some(&HwpChar::CharCtrl(13)) {
         chars.push(HwpChar::CharCtrl(13));
@@ -3202,7 +3213,7 @@ fn memo_body_record(para: &Paragraph, last: bool) -> hwp_model::OpaqueRecord {
     let nchars = char_count | (u32::from(chars_flags) << 24);
     let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&nchars.to_le_bytes());
-    data.extend_from_slice(&0u32.to_le_bytes()); // ctrl_mask: no control in a plain body line
+    data.extend_from_slice(&paragraph_control_mask(&chars).to_le_bytes());
     data.extend_from_slice(&para.para_shape.0.to_le_bytes());
     data.push(para.style.0 as u8);
     data.push(para.header.break_type);
@@ -3210,7 +3221,9 @@ fn memo_body_record(para: &Paragraph, last: bool) -> hwp_model::OpaqueRecord {
     data.extend_from_slice(&0u16.to_le_bytes()); // range tags
     data.extend_from_slice(&0u16.to_le_bytes()); // line segments, as in the fixtures
     data.extend_from_slice(&0u32.to_le_bytes()); // instance id
-    data.extend_from_slice(&0u16.to_le_bytes()); // merged-track-change tail (5.0.3.2+)
+    if add_tracking_tail {
+        data.extend_from_slice(&0u16.to_le_bytes()); // merged-track-change tail
+    }
     let mut children = Vec::new();
     if char_count > 1 {
         children.push(hwp_model::OpaqueRecord {
@@ -4222,6 +4235,14 @@ fn emit_section(
     roots
 }
 
+/// Marks inline and extended WCHAR controls carried by PARA_TEXT.
+fn paragraph_control_mask(chars: &[HwpChar]) -> u32 {
+    chars.iter().fold(0, |mask, ch| match ch {
+        HwpChar::InlineCtrl { code, .. } | HwpChar::ExtCtrl { code, .. } => mask | (1u32 << code),
+        _ => mask,
+    })
+}
+
 fn emit_paragraph(
     para: &Paragraph,
     synthesize: bool,
@@ -4274,15 +4295,7 @@ fn emit_paragraph(
     let ctrl_mask = if para.header.ctrl_mask != 0 {
         para.header.ctrl_mask
     } else {
-        para.chars
-            .iter()
-            .filter_map(|c| match c {
-                HwpChar::InlineCtrl { code, .. } | HwpChar::ExtCtrl { code, .. } => {
-                    Some(1u32 << code)
-                }
-                _ => None,
-            })
-            .fold(0, |a, b| a | b)
+        paragraph_control_mask(&para.chars)
     };
     w.write_u32(ctrl_mask);
     w.write_u16(para.para_shape.0);
@@ -5030,6 +5043,62 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memo_body_header_matches_the_source_version() {
+        let mut doc = hwp_convert::from_markdown("Anchor");
+        doc.meta.source_format = "hwp5".into();
+        let number = hwp_convert::edit::add_memo(
+            &mut doc,
+            0,
+            &hwp_convert::edit::MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            "Author",
+            Some(1),
+            &["Memo".into()],
+        )
+        .unwrap();
+        let opts = WriteOptions {
+            edited: true,
+            ..WriteOptions::default()
+        };
+        for (version, expected) in [("5.0.2.4", 22), ("5.0.3.2", 24)] {
+            doc.meta.source_version = version.into();
+            let result = materialize_document(&doc, &opts, false, false).unwrap();
+            let roots = scan_stream(&result.streams["/BodyText/Section0"], ScanMode::Strict)
+                .unwrap()
+                .roots;
+            let body = roots
+                .iter()
+                .flat_map(|root| &root.children)
+                .skip_while(|node| node.tag != tag::MEMO_LIST || node.data != number.to_le_bytes())
+                .skip(1)
+                .find(|node| node.tag == tag::PARA_HEADER)
+                .expect("synthesized memo body header");
+            assert_eq!(body.data.len(), expected, "source version {version}");
+        }
+    }
+
+    #[test]
+    fn memo_body_header_declares_the_tab_control() {
+        let para = Paragraph {
+            chars: vec![HwpChar::InlineCtrl {
+                code: hwp_model::ctrl_char::TAB,
+                payload: vec![0; 12],
+            }],
+            ..Paragraph::default()
+        };
+        let record = memo_body_record(&para, true, true);
+        let mask = u32::from_le_bytes(record.data[4..8].try_into().unwrap());
+        assert_eq!(mask, 1 << hwp_model::ctrl_char::TAB);
+        assert_eq!(
+            &record.children[0].data[..2],
+            &u16::from(hwp_model::ctrl_char::TAB).to_le_bytes()
+        );
+    }
 
     /// Dropping a non-original memo field removes its FIELD_START and FIELD_END (8 WCHARs
     /// each), so every char-shape run and line start after them moves back by those widths.

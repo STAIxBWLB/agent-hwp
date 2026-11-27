@@ -3153,7 +3153,15 @@ pub fn add_memo(
         Some(created_filetime.unwrap_or_else(hwp_model::memo::filetime_now)),
         author,
     );
-    let field_id = crate::field::next_memo_field_id(doc, &command);
+    if command.encode_utf16().count() > usize::from(u16::MAX) {
+        return Err(
+            "메모 명령이 UTF-16 65535 코드 단위를 넘습니다. 작성자 이름을 줄여 다시 실행하세요"
+                .into(),
+        );
+    }
+    let field_id = crate::field::next_memo_field_id(doc, &command).ok_or(
+        "메모 필드 ID가 최댓값에 도달했습니다. 최댓값을 쓰는 필드를 지운 뒤 다시 실행하세요",
+    )?;
     let section_count = doc.sections.len();
     let sec = doc.sections.get_mut(section).ok_or_else(|| {
         format!("메모 구역 {section}이(가) 없습니다: 문서의 구역 수는 {section_count}입니다")
@@ -3314,11 +3322,6 @@ pub fn remove_memo(doc: &mut Document, section: usize, number: u32) -> Result<()
         ));
     }
     let body_range = hwp5_memo_body_range(sec, number);
-    if let Some((start, end)) = body_range
-        && let Some(last) = sec.paragraphs.last_mut()
-    {
-        last.extras.drain(start..end);
-    }
     if let Some(site) = find_memo_site_mut(&mut sec.paragraphs, number) {
         let para = site.para;
         // Pair every FIELD_END with the start that opened it, LIFO over all fields, because a
@@ -3372,6 +3375,11 @@ pub fn remove_memo(doc: &mut Document, section: usize, number: u32) -> Result<()
         para.header.ctrl_mask = 0;
         para.line_segs.clear();
     }
+    if let Some((start, end)) = body_range
+        && let Some(last) = sec.paragraphs.last_mut()
+    {
+        last.extras.drain(start..end);
+    }
     Ok(())
 }
 
@@ -3411,22 +3419,25 @@ fn hwpx_memo_paragraph_xml(para: &Paragraph, template: &Paragraph) -> String {
         hwp_model::text::char_text(ch, &mut text);
     }
     format!(
-        r#"<hp:p id="0" paraPrIDRef="{}" styleIDRef="{}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{}"><hp:t>{}</hp:t></hp:run></hp:p>"#,
+        r#"<hp:p id="0" paraPrIDRef="{}" styleIDRef="{}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{}"><hp:t xml:space="preserve">{}</hp:t></hp:run></hp:p>"#,
         template.para_shape.0,
         template.style.0,
         para.char_shape_runs.first().map_or(0, |r| r.1.0),
-        escape_xml_text(&text)
+        hwpx_memo_text_content(&text)
     )
 }
 
-/// Escapes the three characters that cannot appear literally inside an XML text node.
-fn escape_xml_text(text: &str) -> String {
+/// Emits mixed text content using the HWPX writer's default tab and line-break forms.
+fn hwpx_memo_text_content(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\t' => out.push_str(r#"<hp:tab width="4000" leader="0" type="1"/>"#),
+            '\n' => out.push_str("<hp:lineBreak/>"),
+            c if c < ' ' => {}
             c => out.push(c),
         }
     }
@@ -5262,6 +5273,44 @@ mod tests {
             .map(|m| m.number)
             .collect();
         assert_eq!(numbers, vec![2]);
+    }
+
+    #[test]
+    fn hwpx_memo_rewrite_uses_inline_tab_and_line_break_elements() {
+        let raw = "<hp:fieldBegin><hp:subList><hp:p/></hp:subList></hp:fieldBegin>";
+        let template = Paragraph::default();
+        let body = memo_body_paragraphs(Some(&template), &["앞<&\t중간\n뒤".into()]);
+        let rewritten = rewrite_hwpx_memo_sub_list(raw, &body, &template).unwrap();
+        assert!(
+            rewritten.contains(
+                r#"앞&lt;&amp;<hp:tab width="4000" leader="0" type="1"/>중간<hp:lineBreak/>뒤"#
+            ),
+            "{rewritten}"
+        );
+        assert!(!rewritten.contains(['\t', '\n']));
+    }
+
+    #[test]
+    fn memo_command_refuses_author_wider_than_the_utf16_length_field() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        let before = doc.clone();
+        let result = add_memo(
+            &mut doc,
+            0,
+            &MemoAnchor {
+                para: 0,
+                start: 0,
+                end: 0,
+            },
+            &"😀".repeat(32768),
+            Some(1),
+            &["본문".into()],
+        );
+        assert!(
+            result.as_ref().is_err_and(|error| error.contains("65535")),
+            "{result:?}"
+        );
+        assert_eq!(doc.sections[0].paragraphs, before.sections[0].paragraphs);
     }
 
     /// A memo author names the account, and a '/' would split the Command string's fields: it is

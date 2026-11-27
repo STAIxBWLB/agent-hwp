@@ -758,14 +758,14 @@ pub fn make_memo_command_data(command: &str, field_id: u32, number: u32) -> Vec<
 /// value the next memo gets. A document carrying no field id at all has nothing to continue, so
 /// the deterministic [`field_instance_id`] stands in. Zero is never returned: Hangul does not treat
 /// an id=0 field as a field (07 E2).
-pub fn next_memo_field_id(doc: &Document, command: &str) -> u32 {
+pub(crate) fn next_memo_field_id(doc: &Document, command: &str) -> Option<u32> {
     let mut max = None;
     for section in &doc.sections {
         max_field_id_in_paras(&section.paragraphs, &mut max);
     }
-    match max.and_then(|id| id.checked_add(1)) {
-        Some(id) if id != 0 => id,
-        _ => field_instance_id(command),
+    match max {
+        Some(id) => id.checked_add(1),
+        None => Some(field_instance_id(command)),
     }
 }
 
@@ -1477,6 +1477,30 @@ mod tests {
     /// A field inside a caption still carries a field instance id, so handing that id out again
     /// would put two fields on one id (07 L5). Both captions count, not only table cells.
     #[test]
+    fn memo_field_id_refuses_exhaustion_instead_of_using_a_colliding_hash() {
+        let command = "MEMO/65535/1/1/0/author/";
+        let mut doc = crate::from_markdown::from_markdown("text");
+        let controls = &mut doc.sections[0].paragraphs[0].controls;
+        for id in [field_instance_id(command), u32::MAX] {
+            controls.push(Control::Generic(GenericControl {
+                ctrl_id: *b"%unk",
+                data: make_memo_command_data(command, id, 1),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                chart: None,
+                container_box: None,
+            }));
+        }
+        assert_eq!(next_memo_field_id(&doc, command), None);
+    }
+
+    #[test]
     fn next_memo_field_id_sees_caption_fields() {
         let mut doc = crate::from_markdown::from_markdown("본문\n");
         // The generated id is a hash of the command, so each caption field takes the id this
@@ -1516,7 +1540,7 @@ mod tests {
         table.caption = Some(caption(vec![field_paragraph("표 캡션", 41)]));
         assert_eq!(
             next_memo_field_id(&doc, "cmd"),
-            42,
+            Some(42),
             "a table caption's field id must be continued, not handed out again"
         );
 
@@ -1546,7 +1570,7 @@ mod tests {
             .push(Control::Picture(picture));
         assert_eq!(
             next_memo_field_id(&doc, "cmd"),
-            58,
+            Some(58),
             "a picture caption's field id must be continued too"
         );
     }
