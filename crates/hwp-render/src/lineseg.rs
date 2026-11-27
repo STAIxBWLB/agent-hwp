@@ -786,7 +786,8 @@ fn native_cache_cell_margins(margins: [u16; 4], inner_margins: [u16; 4]) -> [u16
 /// (0, 0, 900, 900, 765, 452, 0, 42520, 0x60000) for header/footer, and
 /// (0, 0, 900, 900, 765, 272, 0, 42520, 0x60000) for footnote/endnote.
 /// The second text-box paragraph starts at 1600. Cache synthesis reuses the
-/// existing box line walker. Width and flags are backed by the saved bytes.
+/// existing box line walker. The saved bytes establish width at offset 28 and
+/// flags at offset 32.
 /// Header/footer and note spacing uses the generic fallback (450 and 270 in
 /// these examples) pending the Hancom Office layout check.
 fn saved_generic_list_width(ctrl_id: [u8; 4], header: &[u8], body_width: i32) -> Option<i32> {
