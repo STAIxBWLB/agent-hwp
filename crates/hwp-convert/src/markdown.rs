@@ -987,11 +987,18 @@ fn render_paragraph(
     if let Some(level) = heading {
         // An opt-in section strip (#620) is a 1x3 table under a `개요 3` anchor; it reads
         // back as the `### N. Title` heading it was built from. Only a paragraph holding
-        // nothing but that table qualifies, so no other text is dropped. The table and cell
+        // nothing but that table (besides invisible section-level controls such as the TOC's
+        // page-number restart or a leading section definition) qualifies, so no other text is
+        // dropped. The table and cell
         // segments still reach the envelope (as points at the heading line), so the join
         // with `render --layout-json` stays total.
         if level == 3
-            && para.controls.len() == 1
+            && para
+                .controls
+                .iter()
+                .filter(|c| !crate::report_blocks::is_strip_neutral_control(c))
+                .count()
+                == 1
             && para.chars.iter().all(|c| match c {
                 HwpChar::ExtCtrl { .. } => true,
                 HwpChar::CharCtrl(code) => *code == hwp_model::ctrl_char::PARA_BREAK,

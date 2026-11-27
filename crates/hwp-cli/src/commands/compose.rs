@@ -229,7 +229,7 @@ fn execute_spec_v2_with_source(
                 }
             }
             None => toc_warnings.push(
-                "report_blocks.toc: 목차에 넣을 개요 2·개요 3 제목이 없어 목차를 만들지 않았습니다"
+                "report_blocks.toc: 목차에 넣을 개요 2·개요 3 제목이 첫 구역에 없어(또는 65535개를 넘어) 목차를 만들지 않았습니다. 해결: 제목 문단의 스타일을 개요 2·개요 3으로 지정하세요"
                     .to_string(),
             ),
         }

@@ -56,6 +56,7 @@ fn paragraph_pages(
     doc: &Document,
     layout: &TocLayout<'_>,
     paragraphs: &[usize],
+    toc_table: Option<usize>,
 ) -> anyhow::Result<(Vec<usize>, u64)> {
     let switch = layout.switch;
     // `doc` here is the published (written and re-read) document.
@@ -81,7 +82,7 @@ fn paragraph_pages(
         }
     };
     let mut warnings = hwp_render::RenderIssueAccumulator::new();
-    let (_, map) =
+    let (list, map) =
         hwp_render::layout::layout_document_with_segments(doc, &mut store, &mut warnings);
     if map.truncated {
         anyhow::bail!(
@@ -97,6 +98,9 @@ fn paragraph_pages(
             "{switch}: 게시본을 다시 읽었더니 구역이 없습니다\n해결: {switch}를 끄고 생성한 뒤 한글에서 목차를 넣으세요"
         )
     })?;
+    if let Some(index) = toc_table {
+        toc_fits_one_page(doc, &list, &map, index, switch)?;
+    }
     let mut pages = Vec::with_capacity(paragraphs.len());
     for &index in paragraphs {
         let para = section.paragraphs.get(index).ok_or_else(|| {
@@ -125,6 +129,73 @@ fn paragraph_pages(
     Ok((pages, coverage.substituted + coverage.missing))
 }
 
+/// Refuses a TOC that does not fit on its page. The TOC table is placed inline (treat as
+/// character), and an inline table never splits: the renderer clips whatever runs past the page,
+/// so rows would be lost silently. Every cell of the table must lie on the TOC's page inside the
+/// page height.
+fn toc_fits_one_page(
+    doc: &Document,
+    list: &hwp_render::display::DisplayList,
+    map: &hwp_render::segment_map::SegmentMap,
+    table_paragraph: usize,
+    switch: &str,
+) -> anyhow::Result<()> {
+    let Some(para) = doc
+        .sections
+        .first()
+        .and_then(|s| s.paragraphs.get(table_paragraph))
+    else {
+        return Ok(());
+    };
+    let Some((ci, hwp_model::Control::Table(table))) = para
+        .controls
+        .iter()
+        .enumerate()
+        .find(|(_, c)| matches!(c, hwp_model::Control::Table(_)))
+    else {
+        return Ok(());
+    };
+    let table_path = hwp_render::segment_id::SegmentPath {
+        section: 0,
+        indices: vec![table_paragraph, ci],
+    };
+    let table_id = hwp_render::segment_id::table_id(&table_path, table);
+    let page = map
+        .rows
+        .iter()
+        .filter(|r| r.id == table_id)
+        .map(|r| r.page)
+        .min();
+    let rows = usize::from(table.rows);
+    let clipped = table.cells.iter().enumerate().any(|(k, cell)| {
+        let mut indices = table_path.indices.clone();
+        indices.push(k);
+        let id = hwp_render::segment_id::cell_id(
+            &hwp_render::segment_id::SegmentPath {
+                section: 0,
+                indices,
+            },
+            cell,
+        );
+        let mut placed = map.rows.iter().filter(|r| r.id == id);
+        match placed.next() {
+            None => true,
+            Some(row) => {
+                let height = list.pages.get(row.page).map_or(0.0, |p| p.height_pt);
+                Some(row.page) != page
+                    || placed.next().is_some()
+                    || row.bbox.is_some_and(|b| b.y1 > height)
+            }
+        }
+    });
+    if page.is_none() || clipped {
+        anyhow::bail!(
+            "{switch}: 목차 항목이 한 쪽을 넘습니다 (항목 {rows}개). 목차 표는 쪽을 넘겨 나뉘지 않아 넘친 항목이 잘립니다\n해결: 목차에 넣을 제목(`##`·`###`, 개요 2·개요 3)을 줄이거나 {switch}를 끄고 생성한 뒤 한글에서 목차를 넣으세요"
+        );
+    }
+    Ok(())
+}
+
 /// Fills `plan`'s TOC in `doc` with each heading's displayed body page. Body pages count from 1
 /// on the first body page (the page after the TOC), which is where `insert_toc` restarts the
 /// page number. The first body paragraph's physical page is the offset.
@@ -141,7 +212,12 @@ pub fn backfill(
     let mut previous: Option<Vec<u32>> = None;
     let mut fallbacks = 0;
     for pass in 1..=MAX_PASSES {
-        let (physical, fb) = paragraph_pages(&published(doc)?, layout, &targets)?;
+        let (physical, fb) = paragraph_pages(
+            &published(doc)?,
+            layout,
+            &targets,
+            Some(plan.table_paragraph),
+        )?;
         fallbacks = fallbacks.max(fb);
         let (body, headings) = physical.split_last().expect("body_start is a target");
         let pages: Vec<u32> = headings
@@ -181,7 +257,7 @@ mod tests {
             fonts: TocFonts::Isolated(&[]),
             switch: "--toc",
         };
-        let (pages, fallbacks) = paragraph_pages(&doc, &layout, &[0]).expect("layout");
+        let (pages, fallbacks) = paragraph_pages(&doc, &layout, &[0], None).expect("layout");
         assert_eq!(pages, [0]);
         assert!(fallbacks > 0, "fallbacks = {fallbacks}");
     }

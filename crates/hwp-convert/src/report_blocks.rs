@@ -262,7 +262,9 @@ pub fn apply_section_strips(doc: &mut Document) -> usize {
     for si in 0..doc.sections.len() {
         for pi in 0..doc.sections[si].paragraphs.len() {
             let para = &doc.sections[si].paragraphs[pi];
-            if heading_level(doc, para) != Some(3) || !para.controls.is_empty() {
+            if heading_level(doc, para) != Some(3)
+                || !para.controls.iter().all(is_strip_neutral_control)
+            {
                 continue;
             }
             let text = para.own_text();
@@ -293,7 +295,12 @@ pub fn apply_section_strips(doc: &mut Document) -> usize {
                     text_paragraph(&title, s.title_text, style),
                 ),
             ];
-            doc.sections[si].paragraphs[pi] = table_paragraph(table(1, 3, cells), style);
+            let mut strip = table_paragraph(table(1, 3, cells), style);
+            // A first-block heading carries the section/column definitions: keep them first.
+            let old = &mut doc.sections[si].paragraphs[pi];
+            strip.header.break_type = old.header.break_type;
+            move_leading_definitions(old, &mut strip);
+            doc.sections[si].paragraphs[pi] = strip;
             count += 1;
         }
     }
@@ -349,7 +356,9 @@ pub struct TocPlan {
     /// Top-level paragraph index (section 0) where the body starts: the first paragraph with
     /// content after the TOC, which carries the page break and the page-number restart.
     pub body_start: usize,
-    /// How many paragraphs [`insert_toc`] put in front of the body.
+    /// How many paragraphs [`insert_toc`] inserted (the TOC title and table). The section's
+    /// paragraph count grows by this minus one when the old first paragraph held only the
+    /// definitions and was dropped.
     pub front_paragraphs: usize,
 }
 
@@ -606,6 +615,12 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
         body_start,
         front_paragraphs,
     })
+}
+
+/// Controls a strip paragraph may hold besides its table without changing what it shows: the
+/// section/column definitions of a first block and the TOC's page-number restart.
+pub fn is_strip_neutral_control(control: &Control) -> bool {
+    matches!(control, Control::SectionDef(_)) || matches!(&control.ctrl_id(), b"cold" | b"nwno")
 }
 
 /// Whether the layout gives `para` a segment of its own: any text, or any control other than

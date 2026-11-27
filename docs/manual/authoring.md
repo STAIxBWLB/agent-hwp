@@ -106,10 +106,13 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   otherwise a warning reports the substitutions and Hangul may break pages differently.
 - In DocumentSpec v2: `"report_blocks": {"toc": true, "section_strips": true}`. Headings are
   paragraphs whose style is named `개요 2` or `개요 3`.
-- Limits: only the first section's headings are listed. A DocumentSpec `page_number.start` other
+- Limits: the TOC must fit on one page (an inline table never splits); a longer one is refused
+  with a next step. Only the first section's headings are listed. A DocumentSpec `page_number.start` other
   than 1 conflicts with the TOC's restart at 1, so leave it unset with `toc`. For `.hwp` output the
   writer synthesizes line caches from `HWP_FONT_DIR` only; `--font-dir` reaches the TOC layout
-  pass but not that synthesis, so set `HWP_FONT_DIR` for `.hwp`.
+  pass but not that synthesis, so set `HWP_FONT_DIR` for `.hwp`. `cat --format markdown` reads
+  any 1x3 table of that shape under a `개요 3` paragraph back as `### N. Title`, whether or not it
+  came from `--section-strips`.
 
 ## Regenerate a document from the JSON IR
 

@@ -403,3 +403,69 @@ fn compose_report_blocks_match_the_published_layout() {
         }
     }
 }
+
+/// A TOC taller than its page is refused with a next step instead of being clipped: the
+/// inline TOC table never splits. The 16-entry report elsewhere in this file fits.
+#[test]
+fn a_toc_taller_than_one_page_is_refused() {
+    let mut md = String::from("# 보고서\n\n");
+    for i in 1..=60 {
+        md.push_str(&format!("## {i}장\n\n본문.\n\n"));
+    }
+    let src = tmp("long.md");
+    std::fs::write(&src, md).unwrap();
+    for ext in ["hwpx", "hwp"] {
+        let out = tmp(&format!("long.{ext}"));
+        let result = run(&[
+            "new".as_ref(),
+            "-o".as_ref(),
+            out.as_os_str(),
+            "--from".as_ref(),
+            src.as_os_str(),
+            "--toc".as_ref(),
+        ]);
+        assert!(!result.status.success(), "{ext}");
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            err.contains("목차 항목이 한 쪽을 넘습니다") && err.contains("해결:"),
+            "{ext}: {err}"
+        );
+        assert!(!out.exists(), "{ext}");
+    }
+}
+
+/// A numbered heading that is the document's first block (its paragraph carries the section
+/// definitions) still becomes a strip, and with `--toc` the strip that starts the body (and so
+/// carries the page-number restart) still reads back as its heading.
+#[test]
+fn a_first_block_strip_survives_definitions_and_the_page_restart() {
+    let src = tmp("first.md");
+    std::fs::write(&src, "### 1. 첫 절\n\n본문.\n\n### 2. 둘째 절\n\n본문.\n").unwrap();
+    for (flags, label) in [
+        (&["--section-strips"][..], "strips"),
+        (&["--section-strips", "--toc"][..], "strips+toc"),
+    ] {
+        for ext in ["hwpx", "hwp"] {
+            let out = tmp(&format!("first-{}.{ext}", label.replace('+', "-")));
+            let mut args: Vec<&std::ffi::OsStr> = vec![
+                "new".as_ref(),
+                "-o".as_ref(),
+                out.as_os_str(),
+                "--from".as_ref(),
+                src.as_os_str(),
+            ];
+            args.extend(flags.iter().map(std::ffi::OsStr::new));
+            ok(&run(&args));
+            let md = ok(&run(&[
+                "cat".as_ref(),
+                "--format".as_ref(),
+                "markdown".as_ref(),
+                out.as_os_str(),
+            ]));
+            assert!(
+                md.lines().any(|l| l == "### 1. 첫 절"),
+                "{label} {ext}\n{md}"
+            );
+        }
+    }
+}
