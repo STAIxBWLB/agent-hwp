@@ -81,6 +81,24 @@ v0.10.0부터 `--preset`과 문서 틀 플래그는 거부되지 않고 템플�
 **표 서식** `ahwp edit --style-tables <preset>`은 해당 프로파일의 표 모양을 적용한다. 단일 열 표는
 건너뛰며, 두 번 적용해도 바이트가 동일한 결과가 나온다.
 
+## 보고서 블록: 목차와 절 띠
+
+둘 다 선택 기능이며 지정하지 않으면 출력이 바뀌지 않는다. `ahwp new`의 markdown 입력과
+DocumentSpec v2(`report_blocks`)에 적용된다.
+
+```bash
+ahwp new report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
+```
+
+- `--section-strips`는 `### N. 제목` 제목을 1x3 절 띠 표(음영 번호 칸, 여백 칸, 아래 테두리 제목
+  칸)로 바꾼다. `cat --format markdown`에서는 같은 제목으로 읽힌다.
+- `--toc`는 1·2수준 제목을 나열한 앞쪽 목차를 넣고, 본문 쪽 번호는 그 다음 쪽에서 1부터 다시
+  시작한다. 쪽 번호는 기록된 파일을 레이아웃 계산해 얻으며, 값이 바뀌지 않을 때까지 반복한다.
+  쪽 나눔은 글꼴에 따라 달라지므로 `--font-dir` 또는 `HWP_FONT_DIR`로 문서 글꼴을 지정한다.
+  지정하지 않으면 대체 글꼴 경고가 나오고 한글과 쪽 나눔이 다를 수 있다.
+- DocumentSpec v2에서는 `"report_blocks": {"toc": true, "section_strips": true}`. 제목은 스타일
+  이름이 `개요 N`인 문단이다.
+
 ## JSON IR로 문서 재생성하기
 
 기존 문서를 편집하지 않고 처음부터 똑같이 신규 생성할 수 있다.

@@ -12,6 +12,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Opt-in report blocks: `new --toc` (and DocumentSpec v2 `report_blocks.toc`) inserts a front
+  table of contents whose page numbers are backfilled from a layout pass of the written file, with
+  body pages restarting at 1. `new --section-strips` (`report_blocks.section_strips`) renders
+  numbered level-3 headings as 1x3 strip tables that read back as the same heading. Output without
+  them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)).
+
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
   render those charts, including Hancom switch-wrapped charts, and preserve the source wrappers
   and fallback parts during HWPX edits. Emit package-path references for Hancom. Give line and

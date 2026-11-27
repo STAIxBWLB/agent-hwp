@@ -88,6 +88,25 @@ a warning. The command is advisory and exits 0 unless `--strict` is given.
 **Table styling** `ahwp edit --style-tables <preset>` applies the profile's table look. Single-column
 tables are skipped, and applying it twice produces byte-identical output.
 
+## Report blocks: table of contents and section strips
+
+Both are opt-in and leave the output unchanged when absent. They apply to markdown input to
+`ahwp new` and to DocumentSpec v2 (`report_blocks`).
+
+```bash
+ahwp new report.md -o report.hwpx --preset report --toc --section-strips --font-dir ./fonts
+```
+
+- `--section-strips` turns each `### N. Title` heading into a 1x3 strip table (shaded number,
+  spacer, bottom-bordered title). `cat --format markdown` reads it back as the same heading.
+- `--toc` inserts a front table of contents over the level-1 and level-2 headings. The body page
+  number restarts at 1 after it. Page numbers come from a layout pass on the written file, repeated
+  until they stop changing. Pagination depends on fonts: give the document's fonts with
+  `--font-dir` or `HWP_FONT_DIR`, otherwise a warning reports the substitutions and Hangul may
+  break pages differently.
+- In DocumentSpec v2: `"report_blocks": {"toc": true, "section_strips": true}`. Headings are
+  paragraphs whose style is named `개요 N`.
+
 ## Regenerate a document from the JSON IR
 
 A document can be recreated from scratch rather than edited in place.

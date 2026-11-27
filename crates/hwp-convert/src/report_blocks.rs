@@ -467,7 +467,9 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
         .enumerate()
         .filter_map(|(i, p)| {
             let level = heading_level(doc, p)?;
-            (2..=3).contains(&level).then(|| (i, level, heading_title(doc, p)))
+            (2..=3)
+                .contains(&level)
+                .then(|| (i, level, heading_title(doc, p)))
         })
         .filter(|(_, _, t)| !t.is_empty())
         .collect();
@@ -511,7 +513,9 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
     let rows = u16::try_from(listed.len()).ok()?;
     let toc_table = table(rows, 2, cells);
     let mut toc_title = text_paragraph(TOC_TITLE, title_shape, StyleId(0));
-    toc_title.chars.push(HwpChar::CharCtrl(ctrl_char::PARA_BREAK));
+    toc_title
+        .chars
+        .push(HwpChar::CharCtrl(ctrl_char::PARA_BREAK));
     move_leading_definitions(&mut doc.sections[0].paragraphs[0], &mut toc_title);
     // A first paragraph that held only the definitions (DocumentSpec output) is now empty:
     // drop it, so the body starts at a paragraph with content of its own.
@@ -638,21 +642,30 @@ mod tests {
         let mut d = doc("# 제목\n\n## Ⅰ. 개요\n\n본문\n\n### 1. 세부\n\n## Ⅱ. 계획\n\n본문\n");
         let before = d.sections[0].paragraphs.len();
         let plan = insert_toc(&mut d).expect("headings exist");
-        assert_eq!(d.sections[0].paragraphs.len(), before + plan.front_paragraphs);
+        assert_eq!(
+            d.sections[0].paragraphs.len(),
+            before + plan.front_paragraphs
+        );
         let titles: Vec<&str> = plan.entries.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles.len(), 3, "{titles:?}");
-        assert!(!titles.contains(&"제목"), "the level-1 title is not listed: {titles:?}");
+        assert!(
+            !titles.contains(&"제목"),
+            "the level-1 title is not listed: {titles:?}"
+        );
         // The section definition moved to the section's (new) first paragraph.
         let first = &d.sections[0].paragraphs[0];
         assert!(
-            first.controls.iter().any(|c| matches!(c, Control::SectionDef(_))),
+            first
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::SectionDef(_))),
             "section definition left the first paragraph"
         );
-        assert!(
-            d.sections[0].paragraphs[1..]
+        assert!(d.sections[0].paragraphs[1..].iter().all(|p| {
+            !p.controls
                 .iter()
-                .all(|p| !p.controls.iter().any(|c| matches!(c, Control::SectionDef(_))))
-        );
+                .any(|c| matches!(c, Control::SectionDef(_)))
+        }));
         for e in &plan.entries {
             let p = &d.sections[0].paragraphs[e.paragraph];
             assert_eq!(heading_title(&d, p), e.title);

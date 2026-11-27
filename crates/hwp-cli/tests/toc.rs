@@ -79,7 +79,10 @@ fn toc_rows(doc: &Path) -> Vec<(String, u32)> {
         .take_while(|l| l.matches('|').count() == 3)
         .map(|l| {
             let cells: Vec<&str> = l.trim_matches('|').split('|').map(str::trim).collect();
-            (cells[0].to_string(), cells[1].parse().expect("numeric page"))
+            (
+                cells[0].to_string(),
+                cells[1].parse().expect("numeric page"),
+            )
         })
         .collect()
 }
@@ -109,7 +112,10 @@ fn layout_pages(doc: &Path, titles: &[String]) -> Vec<u32> {
         "{}.layout.json",
         doc.file_name().unwrap().to_string_lossy()
     ));
-    let svg = tmp(&format!("{}.svg", doc.file_name().unwrap().to_string_lossy()));
+    let svg = tmp(&format!(
+        "{}.svg",
+        doc.file_name().unwrap().to_string_lossy()
+    ));
     ok(&run(&[
         "render".as_ref(),
         doc.as_os_str(),
@@ -167,7 +173,10 @@ fn toc_pages_match_the_published_layout() {
         assert_eq!(pages, layout_pages(&out, &titles), "{ext}: {rows:?}");
         assert_eq!(pages[0], 1, "{ext}: body pages restart at 1");
         assert!(pages.windows(2).all(|w| w[0] <= w[1]), "{ext}: {pages:?}");
-        assert!(pages.last().unwrap() > &1, "{ext}: the report spans one page");
+        assert!(
+            pages.last().unwrap() > &1,
+            "{ext}: the report spans one page"
+        );
     }
 }
 
@@ -197,8 +206,7 @@ fn section_strips_are_tables_that_read_back_as_headings() {
             "-o".as_ref(),
             json.as_os_str(),
         ]));
-        let ir: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+        let ir: serde_json::Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
         let strips = ir["sections"][0]["paragraphs"]
             .as_array()
             .unwrap()
@@ -251,7 +259,10 @@ fn toc_and_strips_refuse_json_input() {
         ]);
         assert!(!result.status.success(), "{flag}");
         let err = String::from_utf8_lossy(&result.stderr);
-        assert!(err.contains("markdown") && err.contains("해결:"), "{flag}: {err}");
+        assert!(
+            err.contains("markdown") && err.contains("해결:"),
+            "{flag}: {err}"
+        );
         assert!(!out.exists(), "{flag}");
     }
 }
@@ -261,9 +272,7 @@ fn toc_and_strips_refuse_json_input() {
 #[test]
 fn compose_report_blocks_match_the_published_layout() {
     let mut blocks = Vec::new();
-    let para = |style: &str, text: String| {
-        serde_json::json!({"type": "paragraph", "style": style, "runs": [{"type": "text", "text": text}]})
-    };
+    let para = |style: &str, text: String| serde_json::json!({"type": "paragraph", "style": style, "runs": [{"type": "text", "text": text}]});
     for c in 1..=3 {
         blocks.push(para("개요 2", format!("{c}장 제목")));
         for s in 1..=2 {

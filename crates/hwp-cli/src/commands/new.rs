@@ -140,10 +140,7 @@ pub(crate) fn published_round_trip(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let ext = if write_hwp { "hwp" } else { "hwpx" };
-    let path = std::env::temp_dir().join(format!(
-        "ahwp-toc-{}-{nanos}.{ext}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("ahwp-toc-{}-{nanos}.{ext}", std::process::id()));
     let result = (|| {
         if write_hwp {
             crate::commands::convert::write_hwp(doc, &path, false)?;

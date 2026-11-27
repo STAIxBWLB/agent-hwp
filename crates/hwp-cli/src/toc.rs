@@ -105,9 +105,7 @@ pub fn backfill(
         let (body, headings) = physical.split_last().expect("body_start is a target");
         let pages: Vec<u32> = headings
             .iter()
-            .map(|&p| {
-                u32::try_from(p.saturating_sub(*body) + 1).unwrap_or(u32::MAX)
-            })
+            .map(|&p| u32::try_from(p.saturating_sub(*body) + 1).unwrap_or(u32::MAX))
             .collect();
         if previous.as_ref() == Some(&pages) {
             return Ok(TocBackfill {
