@@ -293,6 +293,12 @@ fn resolve_charts(
     for section in sections {
         visit(&mut section.paragraphs, &mut |id| {
             let href = match hrefs.get(id) {
+                _ if id
+                    .get(..6)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("chart/")) =>
+                {
+                    std::borrow::Cow::Borrowed(id)
+                }
                 Some(&href) => std::borrow::Cow::Borrowed(href),
                 None if !id.is_empty()
                     && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>

@@ -68,7 +68,7 @@ fn compose_render_and_edit_native_hwpx_charts() {
     let section = String::from_utf8(entry(&input, "Contents/section0.xml")).unwrap();
     for (n, tag) in [(1, "barChart"), (2, "lineChart"), (3, "pieChart")] {
         assert!(manifest.contains(&format!(r#"id="chart{n}" href="Chart/chart{n}.xml""#)));
-        assert!(section.contains(&format!(r#"chartIDRef="chart{n}""#)));
+        assert!(section.contains(&format!(r#"chartIDRef="Chart/chart{n}.xml""#)));
         let xml = String::from_utf8(entry(&input, &format!("Chart/chart{n}.xml"))).unwrap();
         assert!(xml.contains(&format!("<c:{tag}>")));
         assert!(xml.contains("Series &amp; data"));
@@ -241,15 +241,38 @@ fn foreign_chart_in_cell_and_href_alias_survive_both_rewrite_paths() {
         );
     let rels =
         br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
-    let manifest = String::from_utf8(entry(&authored, "Contents/content.hpf"))
-        .unwrap()
-        .replace(
-            r#"id="chart2" href="Chart/chart2.xml""#,
-            r#"id="chart2" href="Chart/chart1.xml""#,
-        );
+    let ole_name = "BinData/ole1.ole";
+    let ole = b"opaque synthetic fallback";
+    let manifest = String::from_utf8(entry(&authored, "Contents/content.hpf")).unwrap();
+    let (before_chart, chart_item) = manifest.split_once(r#"<opf:item id="chart1""#).unwrap();
+    let (_, after_chart) = chart_item.split_once("/>").unwrap();
+    let manifest = format!(
+        r#"{before_chart}<opf:item id="ole1" href="{ole_name}" media-type="application/ole" isEmbeded="0"/>{after_chart}"#
+    )
+    .replace(
+        r#"id="chart2" href="Chart/chart2.xml""#,
+        r#"id="chart2" href="Chart/chart1.xml""#,
+    );
     let section = String::from_utf8(entry(&authored, "Contents/section0.xml"))
         .unwrap()
-        .replace("<hp:chart ", "<hp:chart  ");
+        .replace(r#"chartIDRef="Chart/chart2.xml""#, r#"chartIDRef="chart2""#)
+        .replace(r#"chartIDRef="chart1""#, r#"chartIDRef="Chart/chart1.xml""#);
+    let chart_start = section.find("<hp:chart ").unwrap();
+    let chart_end = section[chart_start..].find("</hp:chart>").unwrap() + chart_start;
+    let switch = format!(
+        concat!(
+            r#"<hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/ooxmlchart">"#,
+            r#"{}<hp:outMargin/></hp:chart></hp:case>"#,
+            "\n  ",
+            r#"<hp:default><hp:ole binaryItemIDRef="ole1" /></hp:default></hp:switch>"#,
+        ),
+        &section[chart_start..chart_end],
+    );
+    let section = format!(
+        "{}{switch}{}",
+        &section[..chart_start],
+        &section[chart_end + "</hp:chart>".len()..],
+    );
     let foreign = dir.join("foreign.hwpx");
     repackage(
         &authored,
@@ -257,6 +280,7 @@ fn foreign_chart_in_cell_and_href_alias_survive_both_rewrite_paths() {
         &[
             (part_name, part.as_bytes()),
             (rel_name, rels),
+            (ole_name, ole),
             ("Contents/content.hpf", manifest.as_bytes()),
             ("Contents/section0.xml", section.as_bytes()),
         ],
@@ -332,14 +356,34 @@ fn foreign_chart_in_cell_and_href_alias_survive_both_rewrite_paths() {
         assert_eq!(entry(output, part_name), part.as_bytes());
         assert_eq!(entry(output, rel_name), rels);
         let output_section = String::from_utf8(entry(output, "Contents/section0.xml")).unwrap();
-        let wrappers = |xml: &str| -> Vec<String> {
-            xml.split("<hp:chart  ")
-                .skip(1)
-                .map(|s| s.split("</hp:chart>").next().unwrap().to_owned())
-                .collect()
-        };
-        assert_eq!(wrappers(&section).len(), 2);
-        assert_eq!(wrappers(&output_section), wrappers(&section));
+        assert_eq!(entry(output, ole_name), ole);
+        assert!(output_section.contains(&switch));
+        assert!(output_section.contains(r#"chartIDRef="chart2""#));
+    }
+
+    let unmanifested = dir.join("unmanifested.hwpx");
+    let (before_alias, alias_item) = manifest.split_once(r#"<opf:item id="chart2""#).unwrap();
+    let (_, after_alias) = alias_item.split_once("/>").unwrap();
+    let manifest_without_charts = format!("{before_alias}{after_alias}");
+    let section_path_only =
+        section.replace(r#"chartIDRef="chart2""#, r#"chartIDRef="Chart/chart1.xml""#);
+    repackage(
+        &foreign,
+        &unmanifested,
+        &[
+            ("Contents/content.hpf", manifest_without_charts.as_bytes()),
+            ("Contents/section0.xml", section_path_only.as_bytes()),
+        ],
+    );
+    for read in [
+        hwpx::read_document(&unmanifested),
+        hwpx::read_structure(&unmanifested),
+    ] {
+        let doc = read.unwrap().document;
+        assert_eq!(
+            chart_data(&doc.sections[0].paragraphs).series[0].values,
+            [1.0, 2.0]
+        );
     }
 
     let broken = dir.join("malformed.hwpx");

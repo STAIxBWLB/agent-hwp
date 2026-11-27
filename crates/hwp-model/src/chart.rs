@@ -7,7 +7,7 @@ use crate::GsoPlacement;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chart {
     pub placement: GsoPlacement,
-    /// Original manifest reference. Raw package bytes and wrapper are retained separately.
+    /// Original package path or manifest ID. Raw package bytes and wrapper are retained separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_id: Option<String>,
     /// Absent when an original chart has an unsupported or unreadable chart part.

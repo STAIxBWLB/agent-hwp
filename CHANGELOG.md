@@ -13,7 +13,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Added**
 
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
-  render those charts and preserve source chart parts and wrappers during HWPX edits. Report `chart_control_unrepresentable` on HWP5 conversion
+  render those charts, including Hancom switch-wrapped charts, and preserve the source wrappers
+  and fallback parts during HWPX edits. Emit package-path references for Hancom. Report
+  `chart_control_unrepresentable` on HWP5 conversion
   ([#618](https://github.com/STAIxBWLB/agent-hwp/issues/618)).
 
 - Native HWP5 edits can update saved text boxes, headers, footers, footnotes and endnotes,

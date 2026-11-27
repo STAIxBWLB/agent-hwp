@@ -320,6 +320,15 @@ fn parse_paragraph(
                             // the original reader's subtree.
 
                             let raw = capture_element(reader, e, empty)?;
+                            if name == b"switch" && !empty {
+                                let len = remaining.len() - reader.get_ref().len();
+                                let original = String::from_utf8_lossy(&remaining[..len]);
+                                if let Some(chart) = parse_chart_switch(original.trim_start())? {
+                                    push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"chrt");
+                                    para.controls.push(Control::Generic(chart));
+                                    continue;
+                                }
+                            }
                             if !empty {
                                 let mut raw_reader = Reader::from_str(&raw);
                                 // Consume the capture's first event, the container start tag.
@@ -1683,6 +1692,44 @@ fn collect_shape(
         });
     }
     Ok(())
+}
+
+/// Projects the direct chart in Hancom's OOXML chart case. The complete switch,
+/// including the fallback OLE, remains the wrapper used for rewrites.
+fn parse_chart_switch(raw: &str) -> Result<Option<GenericControl>> {
+    let mut reader = Reader::from_str(raw);
+    let _ = next_event(&mut reader)?;
+    let mut in_chart_case = false;
+    loop {
+        let remaining = *reader.get_ref();
+        match next_event(&mut reader)? {
+            Event::Start(tag)
+                if tag.local_name().as_ref().as_bytes() == b"case"
+                    && attr(&tag, "required-namespace").as_deref()
+                        == Some("http://www.hancom.co.kr/hwpml/2016/ooxmlchart") =>
+            {
+                in_chart_case = true;
+            }
+            ref event @ (Event::Start(ref tag) | Event::Empty(ref tag)) => {
+                let name = tag.local_name();
+                let name = name.as_ref().as_bytes();
+                let empty = matches!(event, Event::Empty(_));
+                if in_chart_case && name == b"chart" {
+                    let mut chart = parse_chart_control(&mut reader, tag, empty, remaining)?;
+                    chart.hwpx_raw_xml = Some(raw.to_owned());
+                    return Ok(Some(chart));
+                }
+                if !empty {
+                    skip_subtree(&mut reader, name)?;
+                }
+            }
+            Event::End(tag) if tag.local_name().as_ref().as_bytes() == b"case" => {
+                in_chart_case = false;
+            }
+            Event::End(_) | Event::Eof => return Ok(None),
+            _ => {}
+        }
+    }
 }
 
 /// Captures placement and the exact wrapper bytes for an HWPX chart.

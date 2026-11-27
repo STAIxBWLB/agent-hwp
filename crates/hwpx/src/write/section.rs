@@ -500,7 +500,11 @@ fn write_paragraph(
                             .as_deref()
                             .and_then(|data| bins.register_chart(doc, data))
                         {
-                            out.push_str(&chart_wrapper(chart, &key, ids.next()));
+                            out.push_str(&chart_wrapper(
+                                chart,
+                                &format!("Chart/{key}.xml"),
+                                ids.next(),
+                            ));
                         } else {
                             report.loss(
                                 PreservationCode::OpaqueControlUnrepresentable,
@@ -1163,7 +1167,11 @@ fn margin_attr(value: u16) -> u32 {
 /// Recognizes exactly the wrapper and chart payload emitted by our writer.
 pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> Option<&'a str> {
     let chart = control.chart.as_deref()?;
-    let part = chart.part_id.as_deref()?;
+    let reference = chart.part_id.as_deref()?;
+    let part = reference
+        .strip_prefix("Chart/")
+        .and_then(|path| path.strip_suffix(".xml"))
+        .unwrap_or(reference);
     let suffix = part.strip_prefix("chart")?;
     if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -1174,7 +1182,7 @@ pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> 
         return None;
     };
     let id = crate::read::xml::attr_u32(&tag, "id")?;
-    if xml != chart_wrapper(chart, part, id) {
+    if xml != chart_wrapper(chart, reference, id) {
         return None;
     }
     let href = format!("Chart/{part}.xml");
@@ -1195,9 +1203,8 @@ pub fn generated_chart_part<'a>(doc: &Document, control: &'a GenericControl) -> 
     }
 }
 
-/// The common shape wrapper and the Chart/ spelling are provisional until
-/// a Hancom-saved chart or an AC4 open receipt is available. See GB-1.
-fn chart_wrapper(chart: &hwp_model::Chart, part_id: &str, id: u32) -> String {
+/// Hancom macOS reads the chart data from the package path in chartIDRef.
+fn chart_wrapper(chart: &hwp_model::Chart, reference: &str, id: u32) -> String {
     let placement = &chart.placement;
     let (treat, flow) = (
         u8::from(placement.treat_as_char),
@@ -1205,7 +1212,7 @@ fn chart_wrapper(chart: &hwp_model::Chart, part_id: &str, id: u32) -> String {
     );
     format!(
         r#"<hp:chart id="{id}" chartIDRef="{}" zOrder="{}" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None"><hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{}" horzRelTo="{}" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/></hp:chart>"#,
-        esc(part_id),
+        esc(reference),
         placement.z_order,
         placement.width,
         placement.height,
