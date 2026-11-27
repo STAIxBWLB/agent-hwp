@@ -12,6 +12,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Native HWP5 edits can update saved text boxes, headers, footers, footnotes and endnotes,
+  including their table cells. The writer preserves enclosing records and refuses unsupported
+  nested controls before publishing
+  ([#624](https://github.com/STAIxBWLB/agent-hwp/issues/624)).
+
+- `fill` writes table cells in supported saved HWP5 lists and reports `raw_backed_edit`
+  with recovery steps when a changed list cannot be written.
+
 - `ahwp redact` and the MCP tool `hwp_redact` (#617, GM-10): format-preserving masking of seven
   PII categories (`rrn`, `phone`, `email`, `card`, `account`, `passport`, `driver`, selectable with
   `--only`/`--exclude`) in `.hwp` and `.hwpx`. Character counts, separators, character-shape runs

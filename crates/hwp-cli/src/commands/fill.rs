@@ -1052,6 +1052,9 @@ fn write_table_fill(
             if source.is_some_and(|(_, original)| original.meta.source_format == "hwp5") =>
         {
             let (source, original) = source.expect("guarded source");
+            if let Some(refusal) = crate::commands::edit::raw_backed_edit_refusal(original, doc) {
+                anyhow::bail!("{}: {refusal}", hwp_cli::refusal::RAW_BACKED_EDIT);
+            }
             crate::commands::convert::write_hwp_preserving_source(
                 source,
                 original,

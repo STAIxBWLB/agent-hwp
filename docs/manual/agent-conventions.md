@@ -440,7 +440,7 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 | `preservation_loss` | `events` (`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | none; failed `ops` entries name the misses |
 | `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm` or `signature` |
-| `raw_backed_edit` | `controls`: `{kind, count}` per control kind (`footnote`, `endnote`, `header`, `footer`, `shape_or_text_box`, `other`) whose text the edit changed |
+| `raw_backed_edit` | `controls`: `{kind, count}` per control kind (`footnote`, `endnote`, `header`, `footer`, `shape_or_text_box`, `other`) whose edited list cannot be written to HWP5 |
 | `verify_mismatch` | `counts`: the differing count invariants, each `{name, expected, actual}`; an empty list means only the canonical digest differs |
 | `unclassified` | none; any refusal not listed above |
 
@@ -448,17 +448,16 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 
 `verify_mismatch` (1.3) is what `--verify` reports when the re-read output differs from the edited document. Nothing is published. `counts` names only count invariants (`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`) and never document content. Before 1.3 this refusal was `unclassified`.
 
-### An edit inside a control the HWP5 writer does not rewrite
+### Native edits inside saved HWP5 controls
 
-The HWP5 writer writes a text box or other shape, a footnote, an endnote, a header or a footer
-that was read from a saved HWP5 file from its saved records, not from the paragraphs the edit
-changes. Before 1.5 an `--replace`, `--set-cell` or typed op whose target lay inside one exited
-0 and the output kept the old text, with or without `--verify`. It now refuses before anything is
-written, as `raw_backed_edit` with `values.controls` naming the kinds and counts, and publishes
-nothing. Write the output as `.hwpx`, which is written from the edited paragraphs and keeps the
-edit, or edit that control in Hangul. The check is for an HWP5 input written as `.hwp` only, it
-applies to every op, and edits elsewhere in the same document are not refused. It finds the changed control wherever the plan left it: controls are matched by their saved records, not by position, so inserting, deleting or moving paragraphs in the same plan neither hides an edit to a note nor causes a refusal of an edit that never touched one. Writing the
-edited text back into the saved records is not done: there is no saved-file evidence for it.
+When both input and output are `.hwp`, edits can update text or table cells inside a saved
+text box, header, footer, footnote or endnote. The writer preserves the enclosing control
+records and rewrites its affected paragraph list. Use `--verify` to check the edited content
+after the file is read back.
+
+An unsupported list layout or opaque nested control causes an atomic `raw_backed_edit`
+refusal. The report names the affected control kinds and counts in `values.controls`.
+For a refused edit, use `.hwpx` output or edit the control in Hangul.
 
 ### Losses of a cross-format edit
 
