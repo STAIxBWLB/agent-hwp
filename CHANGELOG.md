@@ -17,7 +17,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   numbers are backfilled from a layout pass of the file as its own writer publishes it, with
   body pages restarting at 1. `new --section-strips` (`report_blocks.section_strips`) renders
   numbered level-3 headings as 1x3 strip tables that read back as the same heading. Output without
-  them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)).
+  them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)). The TOC page
+  numbers follow ahwp's own layout, and Hancom can paginate differently: on the measured sample,
+  1 of 16 `.hwp` entries and 11 of 16 `.hwpx` entries were off by 1-2 pages
+  ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643),
+  [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). Check the TOC in Hancom before
+  distributing.
 
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
   render those charts, including Hancom switch-wrapped charts, and preserve the source wrappers

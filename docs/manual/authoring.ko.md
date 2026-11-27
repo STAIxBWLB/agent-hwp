@@ -105,6 +105,13 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   줄 배치 캐시는 `HWP_FONT_DIR`만으로 합성되며, `--font-dir`는 목차 레이아웃 계산에만 쓰이므로
   `.hwp`에서는 `HWP_FONT_DIR`를 지정한다. `cat --format markdown`은 `개요 3` 문단 아래 같은 모양의
   1x3 표를 `--section-strips`로 만든 것이 아니어도 `### N. 제목`으로 읽는다.
+- 한글과의 쪽 나눔 차이: 목차 쪽 번호는 ahwp 자체 레이아웃 계산에서 나오며, 한글은 쪽을 다르게 나눌
+  수 있다. 측정한 16항목 표본 기준(일반적인 상한이 아님)으로 `.hwp`는 16항목 중 15항목이 한글과
+  같았고, 어긋난 1항목은 쪽 아래쪽에서 1쪽 차이였다(쪽 채움 규칙,
+  [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). `.hwpx`는 16항목 중 5항목만 같고 나머지는
+  1~2쪽 어긋났다. `.hwpx`에는 줄 배치 캐시가 없어 한글이 줄을 다시 나누며, 한 줄에 ahwp보다 더 많은
+  글자를 넣기 때문이다([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). 배포 전에 한글에서
+  목차를 확인한다.
 
 ## JSON IR로 문서 재생성하기
 
