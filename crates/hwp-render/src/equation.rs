@@ -95,6 +95,7 @@ enum Node {
 struct Parser {
     toks: Vec<Tok>,
     i: usize,
+    remaining_fraction_links: usize,
 }
 
 impl Parser {
@@ -247,8 +248,15 @@ impl Parser {
             // Hancom's infix fractions bind to the adjacent atoms.
             if self.at_keyword("over") || self.at_keyword("atop") {
                 // Bound left-deep infix trees as well as explicit nesting.
-                if depth + chained_fractions >= Self::MAX_DEPTH {
+                if depth >= Self::MAX_DEPTH {
                     break;
+                }
+                if chained_fractions != 0 {
+                    // Extra links accumulate across nested groups, so share one budget.
+                    let Some(remaining) = self.remaining_fraction_links.checked_sub(1) else {
+                        break;
+                    };
+                    self.remaining_fraction_links = remaining;
                 }
                 chained_fractions += 1;
                 let bar = self.at_keyword("over");
@@ -290,6 +298,7 @@ fn parse(script: &str) -> Node {
     Parser {
         toks: tokenize(script),
         i: 0,
+        remaining_fraction_links: Parser::MAX_DEPTH,
     }
     .stack(0, false)
 }
@@ -684,7 +693,7 @@ pub(crate) fn typeset_equation(
         let probe = typesetter.layout(&tree, 12.0);
         (12.0 * height / (probe.ascent + probe.descent).max(1.0)).clamp(6.0, 18.0)
     } else {
-        equation.base_unit as f32 / 100.0
+        (equation.base_unit as f32 / 100.0).clamp(1.0, 144.0)
     };
     let mut result = typesetter.layout(&tree, size);
     result.color = equation.text_color;
@@ -833,6 +842,37 @@ mod tests {
         };
         assert_eq!(*top, -tall.ascent);
         assert_eq!(*bottom, tall.descent);
+    }
+
+    #[test]
+    fn nested_fraction_chains_and_extreme_font_sizes_are_bounded() {
+        let mut script = "x".to_owned();
+        for _ in 0..40 {
+            script = format!("{{{script}{}}}", " over x".repeat(40));
+        }
+        let doc = Document::default();
+        let mut fonts = FontStore::new_isolated();
+        let expression = Equation {
+            script,
+            base_unit: u32::MAX,
+            ..Equation::authored()
+        };
+        let result = typeset_equation(&mut fonts, &doc, &expression, 20.0);
+        assert!(result.ascent.is_finite() && result.descent.is_finite());
+        let size = |base_unit, fonts: &mut FontStore| {
+            typeset_equation(
+                fonts,
+                &doc,
+                &Equation {
+                    script: "~".into(),
+                    base_unit,
+                    ..Equation::authored()
+                },
+                20.0,
+            )
+            .width
+        };
+        assert_eq!(size(u32::MAX, &mut fonts), size(14_400, &mut fonts));
     }
 
     #[test]

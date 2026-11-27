@@ -489,6 +489,20 @@ pub struct Equation {
     pub raw_props: Vec<String>,
 }
 
+impl Equation {
+    /// Defaults for a newly authored equation. The paired Hancom fixtures
+    /// record these values for the single-line equation.
+    pub fn authored() -> Self {
+        Self {
+            base_unit: 1000,
+            baseline: 86,
+            version: Some("Equation Version 60".into()),
+            font_name: Some("HancomEQN".into()),
+            ..Self::default()
+        }
+    }
+}
+
 /// 도형 종류 (hwpx 그리기 개체).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeKind {

@@ -914,13 +914,16 @@ fn find_eqedit(children: &[RecordNode]) -> Option<Equation> {
     for child in children {
         if child.tag == tag::EQEDIT {
             let mut data = ByteReader::new(&child.data);
-            if let (Ok(props), Ok(script)) = (data.read_u32(), data.read_hwp_string()) {
+            if let (Ok(props), Ok(script_len)) = (data.read_u32(), data.read_u16()) {
+                let script_units = usize::from(script_len).min(data.remaining() / 2);
+                let script =
+                    String::from_utf16_lossy(&data.read_wchars(script_units).unwrap_or_default());
                 // HWP 5.0 §4.3.9.3, table 105. Saved equation-ampersand-groundtruth.hwp
                 // has a zero WORD after baseline, followed by two length-prefixed strings.
                 let base_unit = data.read_u32().unwrap_or(0);
                 let text_color = data.read_u32().unwrap_or(0);
                 let baseline = data.read_u16().unwrap_or(0) as i16;
-                let (version, font_name) = if data.read_u16().ok() == Some(0) {
+                let (version, font_name) = if data.read_u16().is_ok() {
                     (
                         data.read_hwp_string()
                             .ok()

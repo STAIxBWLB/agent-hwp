@@ -649,11 +649,25 @@ fn equation_with_an_unmodeled_child_still_refuses_publication() {
         "equation setup: {}",
         String::from_utf8_lossy(&composed.stderr)
     );
-    let document = hwpx::read_document(&input).unwrap().document;
-    assert!(document.sections.iter().flat_map(|section| &section.paragraphs)
-        .flat_map(|paragraph| &paragraph.controls).any(|control| {
-            matches!(control, hwp_model::Control::Generic(generic) if generic.equation.as_ref().is_some_and(|equation| equation.script == "\"&\""))
-        }), "public source must retain the equation before the edit");
+    fn assert_equation_defaults(document: &hwp_model::Document) {
+        let equation = document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Generic(generic) => generic.equation.as_deref(),
+                _ => None,
+            })
+            .expect("equation");
+        let defaults = hwp_model::Equation::authored();
+        assert_eq!(equation.script, "\"&\"");
+        assert_eq!(equation.base_unit, 1000);
+        assert_eq!(equation.baseline, 86);
+        assert_eq!(equation.version, defaults.version);
+        assert_eq!(equation.font_name, defaults.font_name);
+    }
+    assert_equation_defaults(&hwpx::read_document(&input).unwrap().document);
     let supported = dir.join("supported.hwp");
     let converted = metadata_edit(&input, &supported);
     assert!(
@@ -661,7 +675,36 @@ fn equation_with_an_unmodeled_child_still_refuses_publication() {
         "{}",
         String::from_utf8_lossy(&converted.stderr)
     );
-    assert!(supported.exists());
+    assert_equation_defaults(&hwp5::read_document(&supported).unwrap().document);
+
+    for (name, original, replacement) in [
+        ("floating", r#"treatAsChar="1""#, r#"treatAsChar="0""#),
+        ("overlap", r#"allowOverlap="0""#, r#"allowOverlap="1""#),
+        ("wrap", "TOP_AND_BOTTOM", "IN_FRONT_OF_TEXT"),
+        ("color", "#000000", "none"),
+    ] {
+        let source = dir.join(format!("{name}.hwpx"));
+        rewrite_public_entry(&input, &source, "Contents/section0.xml", |xml| {
+            let start = xml.find("<hp:equation").unwrap();
+            let end = start + xml[start..].find("</hp:equation>").unwrap();
+            assert!(xml[start..end].contains(original));
+            format!(
+                "{}{}{}",
+                &xml[..start],
+                xml[start..end].replacen(original, replacement, 1),
+                &xml[end..]
+            )
+        });
+        let output = dir.join(format!("{name}.hwp"));
+        let result = metadata_edit(&source, &output);
+        assert!(!result.status.success(), "{name}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists());
+    }
 
     let opaque = dir.join("opaque.hwpx");
     rewrite_public_entry(&input, &opaque, "Contents/section0.xml", |xml| {

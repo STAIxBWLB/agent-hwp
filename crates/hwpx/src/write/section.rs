@@ -1113,9 +1113,9 @@ fn margin_attr(value: u16) -> u32 {
 /// Reconstruct equation attributes from the IR when there is no original HWPX
 /// start tag. Source EQEDIT values feed the same attributes as native HWPX values.
 fn generated_equation_attrs(g: &GenericControl, eq: &Equation) -> String {
-    // Keep the existing wrapping choices for inline and floating synthesis.
+    // The paired inline equation fixtures use this XML wrapping value.
     let wrap = if eq.inline {
-        "SQUARE"
+        "TOP_AND_BOTTOM"
     } else {
         "IN_FRONT_OF_TEXT"
     };

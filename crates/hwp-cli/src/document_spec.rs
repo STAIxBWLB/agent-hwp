@@ -2406,7 +2406,7 @@ impl<'a> BlockCompiler<'a> {
                     inline,
                     x: 0,
                     y: 0,
-                    ..Default::default()
+                    ..hwp_model::Equation::authored()
                 })),
                 column_def: None,
                 caption: None,

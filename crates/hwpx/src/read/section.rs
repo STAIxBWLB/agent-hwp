@@ -1684,6 +1684,7 @@ fn parse_equation(
     let mut script = attr(start, "script").unwrap_or_default();
     let (mut width, mut height, mut x, mut y) = (0i32, 0i32, 0i32, 0i32);
     let mut inline = true;
+    let mut saw_position = false;
     let mut placement = hwp_model::GsoPlacement {
         z_order: attr_i32(start, "zOrder").unwrap_or(0),
         ..Default::default()
@@ -1709,10 +1710,7 @@ fn parse_equation(
         )
     }) || [
         ("numberingType", &["EQUATION"][..]),
-        (
-            "textWrap",
-            &["TOP_AND_BOTTOM", "SQUARE", "IN_FRONT_OF_TEXT"][..],
-        ),
+        ("textWrap", &["TOP_AND_BOTTOM"][..]),
         ("textFlow", &["BOTH_SIDES"][..]),
         ("lock", &["0"][..]),
         ("dropcapstyle", &["None"][..]),
@@ -1740,6 +1738,7 @@ fn parse_equation(
                             raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
                         b"pos" => {
+                            saw_position = true;
                             inline = attr(e, "treatAsChar").as_deref() == Some("1");
                             x = attr_offset_i32(e, "horzOffset").unwrap_or(0);
                             y = attr_offset_i32(e, "vertOffset").unwrap_or(0);
@@ -1755,8 +1754,11 @@ fn parse_equation(
                             placement.horz_align = align_code(attr(e, "horzAlign").as_deref());
                             hwpx_only |=
                                 attr(e, "holdAnchorAndSO").is_some_and(|value| value != "0");
-                            hwpx_only |= attr(e, "allowOverlap")
-                                .is_some_and(|value| value == if inline { "1" } else { "0" });
+                            hwpx_only |= attr(e, "allowOverlap").as_deref() != Some("0")
+                                || attr(e, "vertRelTo").as_deref() != Some("PARA")
+                                || attr(e, "horzRelTo").as_deref() != Some("PARA")
+                                || attr(e, "vertAlign").as_deref() != Some("TOP")
+                                || attr(e, "horzAlign").as_deref() != Some("LEFT");
                             raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
                         b"outMargin" => {
@@ -1791,6 +1793,20 @@ fn parse_equation(
     placement.treat_as_char = inline;
     placement.horz_offset = x;
     placement.vert_offset = y;
+    // Only the inline, flowing placement was measured in the paired fixtures.
+    hwpx_only |= !saw_position
+        || !inline
+        || !placement.flow_with_text
+        || placement.affect_line_spacing
+        || attr(start, "textWrap").as_deref() != Some("TOP_AND_BOTTOM");
+    let color = attr(start, "textColor").map_or(0, |value| {
+        if value.starts_with('#') {
+            parse_color(&value)
+        } else {
+            u32::MAX
+        }
+    });
+    hwpx_only |= color == u32::MAX;
     Ok(Equation {
         script: script.trim().to_string(),
         width,
@@ -1800,7 +1816,7 @@ fn parse_equation(
         y,
         props: u32::from(attr(start, "lineMode").as_deref() == Some("LINE")),
         base_unit: attr_u32(start, "baseUnit").unwrap_or(0),
-        text_color: attr(start, "textColor").map_or(0, |value| parse_color(&value)),
+        text_color: if color == u32::MAX { 0 } else { color },
         baseline: attr(start, "baseLine")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0),
