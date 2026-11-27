@@ -198,24 +198,13 @@ enum OpenField {
 fn reserve_memo_ids(paragraphs: &[Paragraph], reserved: &mut std::collections::BTreeSet<u32>) {
     for para in paragraphs {
         for control in &para.controls {
-            match control {
-                Control::Generic(g) => {
-                    if let Some((id, fieldid)) = hwp_convert::memo_raw_ids(g) {
-                        reserved.extend([id, fieldid].iter().filter_map(|v| v.parse::<u32>().ok()));
-                    }
-                    for list in &g.paragraph_lists {
-                        reserve_memo_ids(&list.paragraphs, reserved);
-                    }
-                }
-                Control::Table(t) => {
-                    for cell in &t.cells {
-                        reserve_memo_ids(&cell.paragraphs, reserved);
-                    }
-                    if let Some(c) = &t.caption {
-                        reserve_memo_ids(&c.paragraphs, reserved);
-                    }
-                }
-                _ => {}
+            if let Control::Generic(g) = control
+                && let Some((id, fieldid)) = hwp_convert::memo_raw_ids(g)
+            {
+                reserved.extend([id, fieldid].iter().filter_map(|v| v.parse::<u32>().ok()));
+            }
+            for list in hwp_model::memo::nested_paragraph_lists(control) {
+                reserve_memo_ids(list, reserved);
             }
         }
     }

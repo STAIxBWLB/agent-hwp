@@ -308,24 +308,39 @@ fn collect_paragraph(
         }
     }
     for control in &para.controls {
-        let lists: &[crate::control::ParagraphList] = match control {
-            Control::Table(t) => {
-                for cell in &t.cells {
-                    for p in &cell.paragraphs {
-                        collect_paragraph(si, p, bodies, out);
-                    }
-                }
-                continue;
-            }
-            Control::Generic(g) if memo_command_of(control).is_none() => &g.paragraph_lists,
-            _ => continue,
-        };
-        for list in lists {
-            for p in &list.paragraphs {
+        for list in nested_paragraph_lists(control) {
+            for p in list {
                 collect_paragraph(si, p, bodies, out);
             }
         }
     }
+}
+
+/// Every paragraph list nested in `control` that can anchor a memo: table cells, the caption
+/// of a table, picture or generic object, and a generic control's paragraph lists. A memo
+/// anchor's own lists are its body, not document content, and are left out. Each memo
+/// traversal (reading here, id reservation in the HWPX writer) walks through this one helper,
+/// so a container kind cannot be covered by one and missed by another.
+pub fn nested_paragraph_lists(control: &Control) -> Vec<&[Paragraph]> {
+    let mut lists: Vec<&[Paragraph]> = Vec::new();
+    let caption = match control {
+        Control::Table(t) => {
+            lists.extend(t.cells.iter().map(|c| c.paragraphs.as_slice()));
+            t.caption.as_ref()
+        }
+        Control::Picture(p) => p.caption.as_ref(),
+        Control::Generic(g) => {
+            if memo_command_of(control).is_none() {
+                lists.extend(g.paragraph_lists.iter().map(|l| l.paragraphs.as_slice()));
+            }
+            g.caption.as_ref()
+        }
+        _ => None,
+    };
+    if let Some(c) = caption {
+        lists.push(c.paragraphs.as_slice());
+    }
+    lists
 }
 
 #[cfg(test)]

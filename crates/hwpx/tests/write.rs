@@ -3460,3 +3460,87 @@ fn memo_around_hyperlink_closes_each_field_with_its_own_ids() {
         memos[0].anchor_text
     );
 }
+
+/// A memo anchored in a table caption is read by `memo::memos` and its saved id is reserved,
+/// so a fresh field id elsewhere never reuses it. Both walk the shared nested-list helper,
+/// which descends into captions. Synthetic, so no fixture is needed.
+#[test]
+fn caption_memo_is_read_and_its_id_reserved() {
+    use hwp_model::{Caption, CaptionDirection, CaptionSide, Control, GenericControl, HwpChar};
+    let memo_xml = r#"<hp:fieldBegin id="1" type="MEMO" name="" editable="1" dirty="0" zorder="-1" fieldid="1"><hp:parameters cnt="1" name=""><hp:stringParam name="Command">MEMO/65535/1/0/0/x/\;;</hp:stringParam></hp:parameters><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>캡션 메모</hp:t></hp:run></hp:p></hp:subList></hp:fieldBegin>"#;
+    let memo = GenericControl {
+        ctrl_id: *b"%unk",
+        data: hwp_convert::field::make_field_command_data(b"%unk", "MEMO/65535/1/0/0/x/\\;;"),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: Some(memo_xml.to_string()),
+        chart: None,
+        container_box: None,
+    };
+    let mut caption_para = hwp_model::Paragraph {
+        chars: vec![
+            HwpChar::ExtCtrl {
+                code: 3,
+                ctrl_id: *b"%unk",
+                payload: vec![0; 12],
+                ctrl_index: Some(0),
+            },
+            HwpChar::Text('표'),
+            HwpChar::InlineCtrl {
+                code: 4,
+                payload: vec![0; 12],
+            },
+        ],
+        controls: vec![Control::Generic(memo)],
+        ..hwp_model::Paragraph::default()
+    };
+    hwp_convert::field::relink_ctrl_index(&mut caption_para);
+    let mut doc = hwp_convert::from_markdown("문서: 참고\n\n| A |\n| --- |\n| B |\n");
+    // The body hyperlink would get id 1 unless the caption memo's id is reserved.
+    assert!(
+        hwp_convert::create_hyperlink(&mut doc, "문서:", "https://example.com/a", "여기").unwrap()
+    );
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("generated table");
+    table.caption = Some(Caption {
+        side: CaptionSide::Bottom,
+        direction: CaptionDirection::Horizontal,
+        gap: 850,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![caption_para],
+    });
+
+    let memos = hwp_model::memo::memos(&doc);
+    assert_eq!(memos.len(), 1, "caption memo not read: {memos:?}");
+    assert_eq!(memos[0].anchor_text, "표");
+
+    let out = tmp("memo-caption.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    let hyperlink_begin = xml.find(r#"type="HYPERLINK""#).unwrap();
+    let begin_tag = &xml[xml[..hyperlink_begin].rfind('<').unwrap()..hyperlink_begin];
+    assert!(
+        !begin_tag.contains(r#"id="1""#),
+        "fresh id reused the caption memo's: {begin_tag}"
+    );
+    let back = hwpx::read_document(&out).unwrap().document;
+    assert_eq!(hwp_model::memo::memos(&back).len(), 1);
+}

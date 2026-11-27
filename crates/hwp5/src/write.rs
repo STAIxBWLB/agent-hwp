@@ -2169,11 +2169,10 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
 // either kind of content for strip_unwritable_pictures to remove. Correct per-kind synthesis from
 // genuine templates remains follow-up work requiring repeated owner hardware checks.
 
-/// Removes the FIELD_END (inline code 4) that closes each removed FIELD_START, matching LIFO so
-/// nested fields keep their own ends. Runs before `removed` controls' ExtCtrls are dropped.
-fn drop_field_ends_of(para: &mut Paragraph, removed: &[u32]) {
+/// Marks the FIELD_END (inline code 4) that closes each removed FIELD_START, matching LIFO so
+/// nested fields keep their own ends.
+fn mark_field_ends_of(para: &Paragraph, removed: &[u32], drop: &mut [bool]) {
     let mut stack: Vec<bool> = Vec::new(); // true = the open field is being removed
-    let mut drop = vec![false; para.chars.len()];
     for (k, ch) in para.chars.iter().enumerate() {
         match ch {
             HwpChar::ExtCtrl {
@@ -2188,6 +2187,50 @@ fn drop_field_ends_of(para: &mut Paragraph, removed: &[u32]) {
             }
             _ => {}
         }
+    }
+}
+
+/// Removes the chars marked in `drop` and rebases every WCHAR position after them:
+/// `char_shape_runs` starts and `line_segs` text starts. A position inside a removed char moves
+/// to the removal point. Runs that collapse onto one position keep the last one, which is the
+/// shape in effect at the first surviving char.
+fn remove_chars_rebasing(para: &mut Paragraph, drop: &[bool]) {
+    // (start position, width) of each removed char, in order.
+    let mut cuts: Vec<(u32, u32)> = Vec::new();
+    let mut pos = 0u32;
+    for (ch, &d) in para.chars.iter().zip(drop) {
+        let w = ch.wchar_width();
+        if d {
+            cuts.push((pos, w));
+        }
+        pos += w;
+    }
+    if cuts.is_empty() {
+        return;
+    }
+    let rebase = |p: u32| -> u32 {
+        let mut shift = 0;
+        for &(start, w) in &cuts {
+            if p >= start + w {
+                shift += w;
+            } else if p > start {
+                shift += p - start;
+            }
+        }
+        p - shift
+    };
+    let mut runs: Vec<(u32, hwp_model::CharShapeId)> =
+        Vec::with_capacity(para.char_shape_runs.len());
+    for &(p, shape) in &para.char_shape_runs {
+        let p = rebase(p);
+        match runs.last_mut() {
+            Some(last) if last.0 == p => last.1 = shape,
+            _ => runs.push((p, shape)),
+        }
+    }
+    para.char_shape_runs = runs;
+    for seg in &mut para.line_segs {
+        seg.text_start = rebase(seg.text_start);
     }
     let mut k = 0;
     para.chars.retain(|_| {
@@ -2982,16 +3025,21 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     if removed.is_empty() {
         return;
     }
+    let mut drop = vec![false; para.chars.len()];
     if removed_memo {
-        drop_field_ends_of(para, &removed);
+        mark_field_ends_of(para, &removed, &mut drop);
     }
-    para.chars.retain(|ch| match ch {
-        HwpChar::ExtCtrl {
+    for (k, ch) in para.chars.iter().enumerate() {
+        if let HwpChar::ExtCtrl {
             ctrl_index: Some(i),
             ..
-        } => !removed.contains(i),
-        _ => true,
-    });
+        } = ch
+            && removed.contains(i)
+        {
+            drop[k] = true;
+        }
+    }
+    remove_chars_rebasing(para, &drop);
     for ch in &mut para.chars {
         if let HwpChar::ExtCtrl {
             ctrl_index: Some(i),
@@ -4796,6 +4844,89 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping a non-original memo field removes its FIELD_START and FIELD_END (8 WCHARs
+    /// each), so every char-shape run and line start after them moves back by those widths.
+    /// Paragraph: "ab" [memo start] "cd" [memo end] "ef", with a bold run on "cd" and "ef".
+    #[test]
+    fn dropping_a_memo_field_rebases_char_shape_runs_and_line_starts() {
+        use hwp_model::{CharShapeId, GenericControl, LineSeg};
+        let memo = GenericControl {
+            ctrl_id: *b"%unk",
+            data: hwp_convert::field::make_field_command_data(b"%unk", "MEMO/65535/1/0/0/x/\\;;"),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            chart: None,
+            container_box: None,
+        };
+        let seg = |text_start| LineSeg {
+            text_start,
+            v_pos: 0,
+            line_height: 0,
+            text_height: 0,
+            baseline_gap: 0,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 0,
+            flags: 0,
+        };
+        let text = |c| HwpChar::Text(c);
+        let mut para = Paragraph {
+            chars: vec![
+                text('a'),
+                text('b'),
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_id: *b"%unk",
+                    payload: vec![0; 12],
+                    ctrl_index: Some(0),
+                },
+                text('c'),
+                text('d'),
+                HwpChar::InlineCtrl {
+                    code: 4,
+                    payload: vec![0; 12],
+                },
+                text('e'),
+                text('f'),
+            ],
+            controls: vec![Control::Generic(memo)],
+            // "cd" starts at 2 + 8 = 10, "ef" at 10 + 2 + 8 = 20.
+            char_shape_runs: vec![
+                (0, CharShapeId(0)),
+                (10, CharShapeId(1)),
+                (20, CharShapeId(2)),
+            ],
+            line_segs: vec![seg(0), seg(20)],
+            ..Paragraph::default()
+        };
+        strip_unwritable_pictures(&mut para, &mut WriteReport::new());
+        assert_eq!(
+            para.chars,
+            "abcdef".chars().map(HwpChar::Text).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            para.char_shape_runs,
+            vec![
+                (0, CharShapeId(0)),
+                (2, CharShapeId(1)),
+                (4, CharShapeId(2))
+            ]
+        );
+        assert_eq!(
+            para.line_segs
+                .iter()
+                .map(|s| s.text_start)
+                .collect::<Vec<_>>(),
+            vec![0, 4]
+        );
+    }
 
     /// Raw bits 7 are representable and decode as semantic level 8, though K1 observed no
     /// genuine sample. Preserve their original record bytes rather than invent an encoding.
