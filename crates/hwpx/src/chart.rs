@@ -327,24 +327,14 @@ pub(crate) fn write(data: &ChartData) -> Vec<u8> {
         {
             let fill = format!(r#"<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>"#);
             match data.kind {
-                // The #618 Hancom check drew a bare c:ser/c:spPr/a:ln fill in
-                // Hancom's default color. The width and dash below are
-                // unverified on Hancom Office; the element is
-                // c:ser/c:spPr/a:ln (ECMA-376 Part 1 §21.2).
-                Line => {
+                // Measured on Hancom Office macOS at 59f1ee13: this pen colors a
+                // line and a scatter stroke, and this point style colors the
+                // markers; each kind was missing the other half. Unverified there:
+                // whether the exact width, dash and symbol values are required.
+                Line | Scatter => {
                     let _ = write!(
                         out,
-                        r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr>"#
-                    );
-                }
-                // The #618 Hancom check drew a marker-style scatter series with
-                // only the series fill in Hancom's default marker color. The
-                // point style lives in c:ser/c:marker/c:spPr (ECMA-376 Part 1
-                // §21.2); unverified on Hancom Office.
-                Scatter => {
-                    let _ = write!(
-                        out,
-                        r#"<c:spPr>{fill}</c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
+                        r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
                     );
                 }
                 _ => {
@@ -527,20 +517,13 @@ mod tests {
             y_label: String::new(),
         };
         let fill = r#"<a:solidFill><a:srgbClr val="173F73"/></a:solidFill>"#;
-        let line = String::from_utf8(write(&chart(ChartKind::Line))).unwrap();
-        assert!(
-            line.contains(&format!(
-                r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr>"#
-            )),
-            "{line}"
+        let block = format!(
+            r#"<c:spPr><a:ln w="28575" cap="flat" cmpd="sng" algn="ctr">{fill}<a:prstDash val="solid"/><a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
         );
-        let scatter = String::from_utf8(write(&chart(ChartKind::Scatter))).unwrap();
-        assert!(
-            scatter.contains(&format!(
-                r#"<c:spPr>{fill}</c:spPr><c:marker><c:symbol val="circle"/><c:size val="7"/><c:spPr>{fill}<a:ln w="28575">{fill}</a:ln></c:spPr></c:marker>"#
-            )),
-            "{scatter}"
-        );
+        for kind in [ChartKind::Line, ChartKind::Scatter] {
+            let xml = String::from_utf8(write(&chart(kind))).unwrap();
+            assert!(xml.contains(&block), "{xml}");
+        }
         let area = String::from_utf8(write(&chart(ChartKind::Area))).unwrap();
         assert!(area.contains(&format!("<c:spPr>{fill}</c:spPr>")), "{area}");
         assert!(!area.contains("<a:ln"), "{area}");
