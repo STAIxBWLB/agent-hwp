@@ -3437,6 +3437,7 @@ fn hwpx_memo_text_content(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '\t' => out.push_str(r#"<hp:tab width="4000" leader="0" type="1"/>"#),
             '\n' => out.push_str("<hp:lineBreak/>"),
+            '￾' | '￿' => {}
             c if c < ' ' => {}
             c => out.push(c),
         }
@@ -5279,7 +5280,7 @@ mod tests {
     fn hwpx_memo_rewrite_uses_inline_tab_and_line_break_elements() {
         let raw = "<hp:fieldBegin><hp:subList><hp:p/></hp:subList></hp:fieldBegin>";
         let template = Paragraph::default();
-        let body = memo_body_paragraphs(Some(&template), &["앞<&\t중간\n뒤".into()]);
+        let body = memo_body_paragraphs(Some(&template), &["앞<&\t중간￾￿\n뒤".into()]);
         let rewritten = rewrite_hwpx_memo_sub_list(raw, &body, &template).unwrap();
         assert!(
             rewritten.contains(
@@ -5287,7 +5288,7 @@ mod tests {
             ),
             "{rewritten}"
         );
-        assert!(!rewritten.contains(['\t', '\n']));
+        assert!(!rewritten.contains(['\t', '\n', '￾', '￿']));
     }
 
     #[test]
