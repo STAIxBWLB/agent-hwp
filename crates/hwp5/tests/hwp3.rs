@@ -163,3 +163,49 @@ fn fixed_line_and_paragraph_spacing_keep_their_lengths() {
     assert!(header.contains(r#"<hh:lineSpacing type="FIXED" value="1600" unit="HWPUNIT"/>"#));
     assert!(header.contains(r#"<hc:next value="300" unit="HWPUNIT"/>"#));
 }
+
+#[test]
+fn keeps_legacy_hyphen_and_spaces_as_controls() {
+    use hwp_model::{HwpChar, ctrl_char};
+
+    let mut bytes = prefix(false);
+    shapes(&mut bytes);
+    text_list(&mut bytes, &[24, 0, 24, 30, 30, 31, 31]);
+    let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+    assert_eq!(
+        read.document.sections[0].paragraphs[1].chars,
+        [
+            HwpChar::CharCtrl(ctrl_char::HYPHEN),
+            HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+            HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+        ]
+    );
+}
+
+#[test]
+fn empty_paragraph_keeps_its_representative_character_shape() {
+    use hwp_model::CharShapeId;
+
+    let mut bytes = prefix(false);
+    shapes(&mut bytes);
+    text_list(&mut bytes, &[0xd065]);
+    bytes.truncate(bytes.len() - 43); // Replace the list terminator with another paragraph.
+    let empty_header = bytes.len();
+    text_list(&mut bytes, &[]);
+    // The representative character shape starts after the 12-byte header prefix.
+    word_at(&mut bytes, empty_header + 12, 500);
+
+    let read = hwp5::hwp3::read_bytes(&bytes).unwrap();
+    let paragraphs = &read.document.sections[0].paragraphs;
+    assert!(paragraphs[2].chars.is_empty());
+    assert_eq!(paragraphs[2].char_shape_runs, [(0, CharShapeId(1))]);
+    assert_eq!(read.document.header.char_shapes[1].base_size, 2000);
+
+    let output = std::env::temp_dir().join(format!("ahwp-hwp3-empty-{}.hwpx", std::process::id()));
+    hwpx::write_document(&read.document, &output).unwrap();
+    let reread = hwpx::read_document(&output).unwrap();
+    std::fs::remove_file(output).unwrap();
+    let empty = reread.document.sections[0].paragraphs.last().unwrap();
+    assert!(empty.chars.is_empty());
+    assert_eq!(empty.char_shape_runs, [(0, CharShapeId(1))]);
+}

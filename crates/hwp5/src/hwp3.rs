@@ -496,6 +496,9 @@ impl<'a> Parser<'a> {
                     .map(HwpChar::wchar_width)
                     .sum::<u32>();
             }
+            if para.char_shape_runs.is_empty() {
+                para.char_shape_runs.push((0, representative));
+            }
             paragraphs.push(para);
         }
         Ok(paragraphs)
@@ -531,11 +534,10 @@ impl<'a> Parser<'a> {
                 }
                 Ok(4)
             }
-            24 | 30 | 31 => {
-                let width = if code == 24 { 3 } else { 2 };
+            ctrl_char::HYPHEN | ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => {
+                let width = if code == ctrl_char::HYPHEN { 3 } else { 2 };
                 self.marker(code, width)?;
-                para.chars
-                    .push(HwpChar::Text(if code == 24 { '-' } else { ' ' }));
+                para.chars.push(HwpChar::CharCtrl(code));
                 Ok(width)
             }
             15..=17 => {
