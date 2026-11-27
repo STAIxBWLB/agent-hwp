@@ -4380,12 +4380,24 @@ fn emit_paragraph(
             children: Vec::new(),
         });
     }
+    // Hancom writes the memo body groups after all paragraph controls (07 L7). On an edit,
+    // new controls can outnumber the saved Control slots. Defer the memo suffix so those
+    // controls cannot fall after it. Identity writes still replay the saved child order.
+    let memo_start = if synthesize {
+        para.extras
+            .iter()
+            .position(|record| record.tag == tag::MEMO_LIST)
+            .unwrap_or(para.extras.len())
+    } else {
+        para.extras.len()
+    };
+    let (extras, memo_bodies) = para.extras.split_at(memo_start);
     let mut next_extra = 0;
     let mut next_control = 0;
     for kind in &para.header.hwp5_child_order {
         match kind {
             hwp_model::Hwp5ParagraphChild::Extra => {
-                if let Some(extra) = para.extras.get(next_extra) {
+                if let Some(extra) = extras.get(next_extra) {
                     children.push(opaque_to_node(extra));
                     next_extra += 1;
                 }
@@ -4404,7 +4416,7 @@ fn emit_paragraph(
             }
         }
     }
-    children.extend(para.extras[next_extra..].iter().map(opaque_to_node));
+    children.extend(extras[next_extra..].iter().map(opaque_to_node));
     for control in &para.controls[next_control..] {
         children.push(emit_control(
             control,
@@ -4414,6 +4426,7 @@ fn emit_paragraph(
             warnings,
         ));
     }
+    children.extend(memo_bodies.iter().map(opaque_to_node));
 
     RecordNode {
         tag: tag::PARA_HEADER,

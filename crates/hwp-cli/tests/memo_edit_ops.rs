@@ -114,6 +114,71 @@ fn hwp5_add_memo_writes_its_memo_list_body() {
     assert_eq!(kept.created_filetime, original.created_filetime);
 }
 
+/// Hancom saves the last paragraph's CTRL_HEADER siblings before the memo body suffix (07 L7).
+#[test]
+fn hwp5_added_memo_bodies_follow_all_anchor_headers() {
+    use hwp5::container::Hwp5Container;
+    use hwp5::record::{ScanMode, scan_stream, tag};
+
+    fn last_paragraph_order(file: &Path) -> Vec<u16> {
+        let stream = Hwp5Container::open(file)
+            .unwrap()
+            .read_record_stream("/BodyText/Section0")
+            .unwrap();
+        let roots = scan_stream(&stream, ScanMode::Strict).unwrap().roots;
+        roots
+            .last()
+            .unwrap()
+            .children
+            .iter()
+            .filter_map(|record| match record.tag {
+                tag::CTRL_HEADER | tag::MEMO_LIST => Some(record.tag),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let original = fixtures().join("hwp5/memo1.hwp");
+    let genuine = fixtures().join("hwp5/memo2.hwp");
+    if fixture_skip::fixture_missing(&original) || fixture_skip::fixture_missing(&genuine) {
+        return;
+    }
+    let reference = last_paragraph_order(&genuine);
+    assert_eq!(
+        reference,
+        [tag::CTRL_HEADER, tag::MEMO_LIST, tag::MEMO_LIST]
+    );
+
+    let dir = test_dir("hwp5-memo-order");
+    let empty = dir.join("empty.hwp");
+    run_ops(
+        &dir,
+        &original,
+        &empty,
+        r#"[{"op":"memo_remove","section":0,"number":1}]"#,
+    );
+    for (source, expected) in [
+        (
+            &original,
+            [vec![tag::CTRL_HEADER], reference.clone()].concat(),
+        ),
+        (&empty, reference[..2].to_vec()),
+    ] {
+        let output = dir.join("out.hwp");
+        run_ops(
+            &dir,
+            source,
+            &output,
+            r#"[{"op":"memo_add","section":0,"anchor":{"para":1,"start":0,"end":2},"author":"Tester","body":["Added memo","Second line"]}]"#,
+        );
+        assert_eq!(
+            last_paragraph_order(&output),
+            expected,
+            "all anchor headers must precede the first memo body group for {source:?}",
+        );
+    }
+}
+
 /// 07 B4: nchars bit31 marks the last paragraph of a list, so a two-line memo body carries it on
 /// the final line only. ORing the anchor template's own flag (the anchor paragraph is usually the
 /// section's last, so it holds bit31) would mark every line as the end of the list.
