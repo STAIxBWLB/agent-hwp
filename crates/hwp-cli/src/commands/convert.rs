@@ -1338,6 +1338,7 @@ fn write_hwp_impl(
                 }
             }
         }
+        hwp5::write::stage_raw_paragraph_lists(&mut d, doc, &mut report)?;
         warns.absorb(store.issues.finish());
         report
             .warnings

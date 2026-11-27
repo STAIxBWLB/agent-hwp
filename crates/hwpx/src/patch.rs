@@ -850,6 +850,56 @@ pub fn replace_texts_with_limits(
     Ok(counts)
 }
 
+/// Which preview entries [`replace_previews`] found and rewrote.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PreviewRewrite {
+    pub text: bool,
+    pub image: bool,
+}
+
+/// Rewrites `Preview/PrvText.txt` to `text` (cut to the first 1000 characters, as the writer
+/// does) keeping the entry's encoding (UTF-8 when the original decodes as UTF-8, UTF-16LE
+/// otherwise), and `Preview/PrvImage.png` to `image` when given. Every other entry is
+/// raw-copied. Returns which of the two entries the package had and were rewritten; an image
+/// entry with `image = None` is copied unchanged and reported as not rewritten.
+///
+/// The package-surgical rewrite raw-copies `Preview/`, so a caller that changed body text the
+/// previews must not keep (PII redaction) regenerates them with this pass.
+pub fn replace_previews(
+    input: &Path,
+    output: &Path,
+    text: &str,
+    image: Option<&[u8]>,
+) -> Result<PreviewRewrite> {
+    let cut = text
+        .char_indices()
+        .nth(1000)
+        .map_or(text.len(), |(index, _)| index);
+    let text = &text[..cut];
+    let mut done = PreviewRewrite::default();
+    process_package(
+        input,
+        output,
+        &PackageLimits::default(),
+        |name| name == "Preview/PrvText.txt" || (image.is_some() && name == "Preview/PrvImage.png"),
+        |name, data| {
+            if name == "Preview/PrvImage.png" {
+                done.image = true;
+                return Ok(image.map(<[u8]>::to_vec));
+            }
+            done.text = true;
+            if String::from_utf8(data).is_ok() {
+                Ok(Some(text.as_bytes().to_vec()))
+            } else {
+                Ok(Some(
+                    text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                ))
+            }
+        },
+    )?;
+    Ok(done)
+}
+
 /// Converts a UTF-8 decode failure into an I/O error.
 fn invalid_data(e: std::string::FromUtf8Error) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, e)

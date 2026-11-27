@@ -679,7 +679,7 @@ fn refusing_cross_format_events(
 
 /// #577: an edit changed paragraphs the HWP5 writer will not write.
 #[derive(Debug)]
-struct RawBackedEditRefusal {
+pub(crate) struct RawBackedEditRefusal {
     /// `(kind, count)`: how many controls of each kind hold a changed paragraph.
     controls: Vec<(&'static str, usize)>,
 }
@@ -714,22 +714,9 @@ fn raw_backed_kind(ctrl_id: &[u8; 4]) -> &'static str {
     }
 }
 
-/// #577: the raw-backed controls whose mirrored paragraphs the edit changed, or `None`.
-///
-/// A raw-backed control (`raw_children` non-empty) is written from its source records, never
-/// from `paragraph_lists`, which only mirror it for reading and for text edits.
-///
-/// Controls are matched by identity, not by position. An edit plan can add, remove and move
-/// body paragraphs (`insert_blocks`, `add_table`, `delete_para`, `move_para`, ...), so the
-/// paragraph that held a note before the plan is not at the same index after it, and pairing by
-/// position either compared a changed note with a paragraph that holds none (the edit was
-/// dropped silently) or compared two different notes (a body-only edit was refused). No edit
-/// rewrites `raw_children`: the only places that clear them (`canonicalize_hwp_generic`,
-/// `project_hwp5_paragraphs`) run later, on copies, to build the `--verify` signature. So the
-/// records are the control's identity: every control of the edited document is matched to the
-/// first still-unmatched control of the original with equal records, and one whose
-/// `paragraph_lists` then differs is reported.
-fn raw_backed_edit_refusal(
+/// Refuse unsupported changes to mirrored native lists. Match by the saved
+/// records so structural edits in the same batch can move the containing paragraph.
+pub(crate) fn raw_backed_edit_refusal(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
 ) -> Option<RawBackedEditRefusal> {
@@ -748,13 +735,24 @@ fn raw_backed_edit_refusal(
                         for list in &generic.paragraph_lists {
                             collect(&list.paragraphs, out);
                         }
+                        if let Some(caption) = &generic.caption {
+                            collect(&caption.paragraphs, out);
+                        }
                     }
                     hwp_model::Control::Table(table) => {
                         for cell in &table.cells {
                             collect(&cell.paragraphs, out);
                         }
+                        if let Some(caption) = &table.caption {
+                            collect(&caption.paragraphs, out);
+                        }
                     }
-                    _ => {}
+                    hwp_model::Control::Picture(picture) => {
+                        if let Some(caption) = &picture.caption {
+                            collect(&caption.paragraphs, out);
+                        }
+                    }
+                    hwp_model::Control::SectionDef(_) => {}
                 }
             }
         }
@@ -781,7 +779,10 @@ fn raw_backed_edit_refusal(
             continue;
         };
         used[index] = true;
-        if candidate.paragraph_lists != control.paragraph_lists {
+        if candidate.caption != control.caption
+            || (candidate.paragraph_lists != control.paragraph_lists
+                && !hwp5::write::can_rewrite_raw_paragraph_lists(candidate, control))
+        {
             *counts.entry(raw_backed_kind(&control.ctrl_id)).or_default() += 1;
         }
     }
@@ -2440,10 +2441,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         .into());
     }
 
-    // #577: the HWP5 writer emits a raw-backed control from its source records, so an edit that
-    // changed the paragraphs mirrored from one is dropped. Refuse it here, before anything is
-    // written, with or without `--verify`. A `.hwpx` output emits from the edited paragraphs and
-    // keeps the edit, so only an HWP5 output is refused.
+    // Refuse edits to unsupported native subtrees before staging any output.
     if output_format == OutputFormat::Hwp
         && original_doc.meta.source_format == "hwp5"
         && let Some(refusal) = raw_backed_edit_refusal(&original_doc, &doc)
@@ -5349,7 +5347,9 @@ fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
             .extras
             .retain(|extra| !generic.raw_children.contains(extra));
     }
-    if hwp5::write::note_has_redundant_raw_children(generic) {
+    if !hwp5::write::project_raw_paragraph_list(generic)
+        && hwp5::write::note_has_redundant_raw_children(generic)
+    {
         generic.raw_children.clear();
     }
     if matches!(&generic.ctrl_id, b"fn  " | b"en  ") {
@@ -6631,7 +6631,10 @@ fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSign
 }
 
 /// Self-verify by rereading after writing and checking the request's key semantic invariants.
-fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyhow::Result<()> {
+pub(crate) fn verify_output(
+    output: &Path,
+    expected: Option<&hwp_model::Document>,
+) -> anyhow::Result<()> {
     verify_output_with_success_log(output, expected, true)
 }
 
@@ -8631,7 +8634,8 @@ mod tests {
         let mut edited = original.clone();
         hwp_convert::set_cell(&mut edited, 0, 0, 0, "ZZ").expect("the table is reachable");
         assert_ne!(original, edited, "set_cell changed the mirrored table");
-        let refusal = raw_backed_edit_refusal(&original, &edited).expect("the edit is dropped");
+        let refusal =
+            raw_backed_edit_refusal(&original, &edited).expect("this unsupported list is detected");
         assert_eq!(refusal.controls, vec![("shape_or_text_box", 1)]);
 
         let modeled = document_with_a_table_in_a_text_box(false);
