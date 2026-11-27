@@ -202,8 +202,9 @@ fn execute_spec_v2_with_source(
                 let filled = hwp_cli::toc::backfill(&mut document, &plan, &font_dirs, |doc| {
                     crate::commands::new::published_round_trip(doc, write_hwp)
                 })?;
-                // Validate the write against the published form the pages were measured on.
-                document = crate::commands::new::published_round_trip(&document, write_hwp)?;
+                // Write `document` itself: backfill measured exactly `write(document)`. Writing
+                // a re-read copy instead can paginate differently (the HWP5 writer keeps a
+                // re-read file's line caches rather than synthesizing them).
                 if filled.font_fallbacks > 0 {
                     toc_warnings.push(format!(
                         "report_blocks.toc: 레이아웃 글꼴 {}건을 대체 글꼴로 맞췄습니다. 한글의 쪽 나눔과 다를 수 있으니 HWP_FONT_DIR로 문서 글꼴을 지정하세요",

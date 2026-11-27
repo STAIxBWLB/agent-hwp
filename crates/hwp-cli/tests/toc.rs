@@ -61,7 +61,7 @@ fn new_doc(out: &Path, flags: &[&str]) -> Output {
         "--preset".as_ref(),
         "report".as_ref(),
     ];
-    args.extend(flags.iter().map(|f| std::ffi::OsStr::new(f)));
+    args.extend(flags.iter().map(std::ffi::OsStr::new));
     run(&args)
 }
 
