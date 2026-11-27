@@ -317,8 +317,10 @@ fn run_multi_inner(
                 let Some(target) = to else {
                     anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
                 };
-                let doc =
-                    load_document_with_options(&inputs[0], options).map_err(anyhow::Error::new)?;
+                let (doc, legacy_losses) = load_with_legacy_losses(&inputs[0], options)?;
+                if strict {
+                    crate::commands::reject_preservation_loss("convert", &legacy_losses)?;
+                }
                 print_text_output(&doc, target, embed_bin, md_opts)?;
                 return Ok(());
             }
@@ -619,6 +621,34 @@ pub fn execute_with_options(
     )
 }
 
+/// Loads a conversion source. A legacy (HWPML, HWP 3.x) reader's warnings each report content
+/// it did not lower, so they become one typed `legacy_content_omitted` loss that every convert
+/// path (file output and stdout) checks under `--strict` and records in `--loss-report`.
+/// Native inputs return an empty report; their losses come from the write-side inspections.
+fn load_with_legacy_losses(
+    input: &Path,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<(hwp_model::Document, hwp_model::PreservationReport)> {
+    let mut losses = hwp_model::PreservationReport::new();
+    let Some(legacy) = crate::format::detect_legacy(input)? else {
+        let doc = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+        return Ok((doc, losses));
+    };
+    let (doc, warnings) = crate::commands::cat::read_legacy(input, legacy)?;
+    for w in &warnings {
+        eprintln!("경고: {w}");
+    }
+    if !warnings.is_empty() {
+        losses.record(hwp_model::PreservationEvent::new(
+            hwp_model::PreservationCode::LegacyContentOmitted,
+            hwp_model::PreservationResourceKind::Control,
+            hwp_model::PreservationDisposition::Removed,
+            warnings.len(),
+        ));
+    }
+    Ok((doc, losses))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_with_preloaded_document(
     input: &Path,
@@ -655,32 +685,16 @@ fn execute_with_preloaded_document(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let mut legacy_losses = hwp_model::PreservationReport::new();
-    let (doc, preloaded_source_sha256) = match preloaded {
-        Some(preloaded) => (preloaded.document, Some(preloaded.source_sha256)),
-        None => match crate::format::detect_legacy(input)? {
-            // Legacy readers report what they could not lower; carry it as a typed loss so
-            // --strict and --loss-report see it for every target, not only native ones.
-            Some(legacy) => {
-                let (doc, warnings) = crate::commands::cat::read_legacy(input, legacy)?;
-                for w in &warnings {
-                    eprintln!("경고: {w}");
-                }
-                if !warnings.is_empty() {
-                    legacy_losses.record(hwp_model::PreservationEvent::new(
-                        hwp_model::PreservationCode::LegacyContentOmitted,
-                        hwp_model::PreservationResourceKind::Control,
-                        hwp_model::PreservationDisposition::Removed,
-                        warnings.len(),
-                    ));
-                }
-                (doc, None)
-            }
-            None => (
-                load_document_with_options(input, options).map_err(anyhow::Error::new)?,
-                None,
-            ),
-        },
+    let (doc, preloaded_source_sha256, legacy_losses) = match preloaded {
+        Some(preloaded) => (
+            preloaded.document,
+            Some(preloaded.source_sha256),
+            hwp_model::PreservationReport::new(),
+        ),
+        None => {
+            let (doc, losses) = load_with_legacy_losses(input, options)?;
+            (doc, None, losses)
+        }
     };
     if strict && !legacy_losses.is_lossless() {
         // Refuse before any output exists, leaving the ledger as decision evidence.

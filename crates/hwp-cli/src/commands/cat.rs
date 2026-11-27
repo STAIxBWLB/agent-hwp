@@ -287,7 +287,7 @@ pub(crate) fn read_legacy(
         }
         LegacyFormat::Hwp3 => {
             // The reader bounds its own input (64 MiB, read with take(limit + 1)) and refuses
-            // a password-protected document before touching the body.
+            // a password-protected document before decoding the body.
             let result = hwp5::hwp3::read_document(path).map_err(|e| match e {
                 hwp5::Hwp5Error::LegacyPasswordProtected => {
                     anyhow::anyhow!("{}: {e}", path.display())

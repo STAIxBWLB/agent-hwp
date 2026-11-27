@@ -55,7 +55,7 @@ The full feature list, implementation status, known limitations and roadmap, for
 | MCP server (24 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HWPML (`.hml`) | Read-only: text, tables with merged cells, embedded pictures and summary metadata convert to every output format; character/paragraph shapes are not carried over and other objects are skipped with a warning (unverified against Hancom-saved files) |
-| HWP 3.x and earlier | HWP 3.00 is read-only: `cat`, `info`, `grep`, `convert` and `render` read it, editing asks for `convert` first, and a password-protected file is refused. Other 3.x revisions, HWP 1.x/2.x and truncated signatures are refused with their own message |
+| HWP 3.x and earlier | HWP 3.00 is read-only: `cat`, `info`, `grep`, `convert` and `render` read it, editing asks for `convert` first, and a password-protected file is refused (verified on synthetic inputs only, not against Hancom-saved files). Other 3.x revisions, HWP 1.x/2.x and truncated signatures are refused with their own message |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
 | Charts, OLE | Not supported |

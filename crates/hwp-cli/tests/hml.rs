@@ -547,3 +547,47 @@ fn edit_refuses_legacy_input_for_every_output_format() {
         assert!(!output.exists(), "{ext}");
     }
 }
+
+/// The stdout path (`-o -`) runs the same legacy-loss gate as file output: `--strict` refuses a
+/// lossy legacy read and prints nothing, and without `--strict` the text is still printed.
+#[test]
+fn stdout_convert_runs_the_legacy_loss_gate() {
+    let input = tmp("lossy-stdout.hml");
+    std::fs::write(
+        &input,
+        synthetic_hml().replace("<SECDEF/>", "<SECDEF/><EQUATION/>"),
+    )
+    .unwrap();
+    for to in ["md", "txt", "json"] {
+        let strict = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            "-".as_ref(),
+            "--to".as_ref(),
+            to.as_ref(),
+            "--strict".as_ref(),
+        ]);
+        assert!(
+            !strict.status.success(),
+            "{to}: strict stdout published a lossy read"
+        );
+        assert!(
+            stderr(&strict).contains("legacy_content_omitted"),
+            "{to}: {}",
+            stderr(&strict)
+        );
+        assert!(strict.stdout.is_empty(), "{to}: printed before refusing");
+
+        let lenient = run(&[
+            "convert".as_ref(),
+            input.as_os_str(),
+            "-o".as_ref(),
+            "-".as_ref(),
+            "--to".as_ref(),
+            to.as_ref(),
+        ]);
+        assert!(lenient.status.success(), "{to}: {}", stderr(&lenient));
+        assert!(!lenient.stdout.is_empty(), "{to}");
+    }
+}
