@@ -1452,6 +1452,28 @@ mod tests {
     use super::*;
     use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
 
+    /// Emulate a saved inline table with the affect-line-spacing flag set.
+    fn set_strip_affect_line_spacing(doc: &mut Document) -> usize {
+        doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, para)| {
+                para.controls.iter_mut().find_map(|control| {
+                    let Control::Table(table) = control else {
+                        return None;
+                    };
+                    table
+                        .placement
+                        .as_mut()
+                        .expect("strip placement")
+                        .affect_line_spacing = true;
+                    Some(index)
+                })
+            })
+            .expect("the strip paragraph")
+    }
+
     /// Rule B11 (#644): a table-only inline anchor's saved line is as tall as the table object
     /// block and keeps its line spacing, and the next paragraph starts after both. Built from the
     /// `--section-strips` transform (a 1x3 inline strip at 160% spacing, the #620 T4 shape) with
@@ -1464,14 +1486,11 @@ mod tests {
             hwp_convert::report_blocks::apply_section_strips(&mut doc),
             1
         );
+        let strip = set_strip_affect_line_spacing(&mut doc);
         let mut store = FontStore::new_isolated();
         let mut warnings = RenderIssueAccumulator::new();
         synthesize_linesegs(&mut doc, &mut store, &mut warnings);
         let paras = &doc.sections[0].paragraphs;
-        let strip = paras
-            .iter()
-            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
-            .expect("the strip paragraph");
         let block = inline_table_line_height(&paras[strip]).expect("a table-only inline anchor");
         let Some(Control::Table(table)) = paras[strip].controls.first() else {
             panic!("strip table first");
@@ -1481,7 +1500,7 @@ mod tests {
         let line = paras[strip].line_segs[0];
         assert_eq!(line.line_height, block, "the anchor line spans the table");
         assert_eq!(line.text_height, block);
-        // The strip sets affect-line-spacing, so the percentage scales the table line itself.
+        // The saved flag makes the percentage scale the table line itself.
         let spacing = paragraph_advance(&doc, &paras[strip], block) - block;
         assert!(spacing > 0, "the strip paragraph has percentage spacing");
         assert_eq!(
@@ -1560,17 +1579,13 @@ mod tests {
     fn affect_line_spacing_scales_the_table_line_spacing() {
         let mut doc = hwp_convert::from_markdown("### 1. 절 제목\n\n뒷 문단\n");
         hwp_convert::report_blocks::apply_section_strips(&mut doc);
-        let strip = doc.sections[0]
-            .paragraphs
-            .iter()
-            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
-            .expect("the strip paragraph");
+        let strip = set_strip_affect_line_spacing(&mut doc);
         let para = &doc.sections[0].paragraphs[strip];
         let block = inline_table_line_height(para).expect("inline anchor");
         let expected = paragraph_advance(&doc, para, block) - block;
         assert!(
             inline_table_affected_spacing(&doc, para, block) == Some(expected),
-            "the strip sets affect_line_spacing"
+            "the set affect-line-spacing flag scales the table line"
         );
         assert_eq!(
             inline_table_line_advance(&doc, para),
