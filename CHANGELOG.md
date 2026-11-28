@@ -109,6 +109,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Use the measured Hancom body width and paragraph margins for synthesized single-column HWP5
+  line widths and wrapping ([#652](https://github.com/STAIxBWLB/agent-hwp/issues/652)).
 - Use font-based line spacing after authored TOC, section-strip and DocumentSpec
   inline tables ([#649](https://github.com/STAIxBWLB/agent-hwp/issues/649)).
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
