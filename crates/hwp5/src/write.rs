@@ -3186,28 +3186,6 @@ fn drop_cross_paragraph_memo_ends(paragraphs: &mut [Paragraph]) {
     }
 }
 
-/// Pairs the field blocks within one paragraph, in field-end order.
-fn local_field_pairs(para: &Paragraph) -> Vec<(u32, usize, usize)> {
-    let mut open = Vec::new();
-    let mut pairs = Vec::new();
-    for (index, ch) in para.chars.iter().enumerate() {
-        match ch {
-            HwpChar::ExtCtrl {
-                code: 3,
-                ctrl_index,
-                ..
-            } => open.push((*ctrl_index, index)),
-            HwpChar::InlineCtrl { code: 4, .. } => {
-                if let Some((Some(control), start)) = open.pop() {
-                    pairs.push((control, start, index));
-                }
-            }
-            _ => {}
-        }
-    }
-    pairs
-}
-
 /// Takes each writable anchor's portable body, leaving its paragraph lists empty.
 /// The walk reaches cells, captions and nested lists without treating a memo body as an anchor.
 fn collect_pure_ir_memos(
@@ -3220,7 +3198,7 @@ fn collect_pure_ir_memos(
     }
     for para in paras {
         let pairs = if from_hwpx {
-            local_field_pairs(para)
+            hwp_model::memo::local_field_pairs(para)
         } else {
             Vec::new()
         };
@@ -3242,10 +3220,13 @@ fn collect_pure_ir_memos(
                             .all(|p| {
                                 p.controls.is_empty()
                                     && p.extras.is_empty()
-                                    && !p
-                                        .chars
-                                        .iter()
-                                        .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+                                    && p.chars.iter().all(|ch| match ch {
+                                        HwpChar::ExtCtrl { .. } => false,
+                                        HwpChar::InlineCtrl { code, .. } => {
+                                            *code == hwp_model::ctrl_char::TAB
+                                        }
+                                        _ => true,
+                                    })
                             })
                 } else {
                     g.hwpx_raw_xml.is_none()
@@ -5186,7 +5167,7 @@ fn emit_picture(
 mod tests {
     use super::*;
 
-    fn hwpx_memo_document(cross_paragraph: bool) -> Document {
+    fn hwpx_memo_document(cross_paragraph: bool, body_suffix: &str) -> Document {
         let end_prefix = if cross_paragraph {
             r#"</hp:run></hp:p><hp:p><hp:run charPrIDRef="0">"#
         } else {
@@ -5196,7 +5177,7 @@ mod tests {
             r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
             <hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="1" fieldid="623209829" type="MEMO">
             <hp:parameters><hp:stringParam name="Command">MEMO/65535/1/1/0/Test/</hp:stringParam></hp:parameters>
-            <hp:subList><hp:p><hp:run charPrIDRef="0"><hp:t>Original body</hp:t></hp:run></hp:p></hp:subList>
+            <hp:subList><hp:p><hp:run charPrIDRef="0"><hp:t>Original body</hp:t>{body_suffix}</hp:run></hp:p></hp:subList>
             </hp:fieldBegin></hp:ctrl><hp:t>Anchor</hp:t>{end_prefix}
             <hp:ctrl><hp:fieldEnd beginIDRef="1" fieldid="623209829"/></hp:ctrl></hp:run></hp:p></hs:sec>"#
         );
@@ -5220,7 +5201,7 @@ mod tests {
 
     #[test]
     fn edited_hwpx_memo_reencodes_both_hwp5_field_blocks() {
-        let mut doc = hwpx_memo_document(false);
+        let mut doc = hwpx_memo_document(false, "");
         assert_eq!(
             hwp_convert::edit::replace_text(&mut doc, "Original body", "Edited body", false)
                 .unwrap(),
@@ -5251,7 +5232,7 @@ mod tests {
 
     #[test]
     fn cross_paragraph_hwpx_memo_drops_both_ends_and_the_body() {
-        let roots = synthesized_memo_section(&hwpx_memo_document(true));
+        let roots = synthesized_memo_section(&hwpx_memo_document(true, ""));
         for para in &roots {
             for child in &para.children {
                 assert_ne!(child.tag, tag::MEMO_LIST);
@@ -5271,6 +5252,37 @@ mod tests {
     }
 
     #[test]
+    fn hwp5_projection_drops_a_hwpx_memo_with_an_orphan_body_field_end() {
+        let doc = hwpx_memo_document(
+            false,
+            r#"<hp:ctrl><hp:fieldEnd beginIDRef="99" fieldid="623209829"/></hp:ctrl>"#,
+        );
+        let Control::Generic(memo) = &doc.sections[0].paragraphs[0].controls[0] else {
+            panic!("expected a memo");
+        };
+        assert!(
+            memo.paragraph_lists[0].paragraphs[0]
+                .chars
+                .iter()
+                .any(|ch| matches!(ch, HwpChar::InlineCtrl { code: 4, .. }))
+        );
+        let roots = synthesized_memo_section(&doc);
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .all(|node| node.tag != tag::MEMO_LIST),
+            "an unmatched body field end cannot be emitted by HWP5",
+        );
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .all(|node| { node.tag != tag::CTRL_HEADER || !node.data.starts_with(b"knu%") })
+        );
+    }
+
+    #[test]
     fn empty_memo_body_still_has_one_character_shape_record() {
         let paragraph = memo_body_record(&Paragraph::default(), true, true);
         let shape = paragraph
@@ -5286,7 +5298,7 @@ mod tests {
 
     #[test]
     fn a_memo_body_exceeding_the_native_count_is_dropped() {
-        let mut doc = hwpx_memo_document(false);
+        let mut doc = hwpx_memo_document(false, "");
         let Control::Generic(memo) = &mut doc.sections[0].paragraphs[0].controls[0] else {
             panic!("expected a memo");
         };

@@ -385,6 +385,29 @@ fn hwp5_bodies(section: &Section) -> Vec<(u32, Vec<String>)> {
         .collect()
 }
 
+/// Pairs the field blocks within one paragraph, in field-end order. Each tuple contains
+/// the control index and the character indices of the start and end.
+pub fn local_field_pairs(para: &Paragraph) -> Vec<(u32, usize, usize)> {
+    let mut open = Vec::new();
+    let mut pairs = Vec::new();
+    for (index, ch) in para.chars.iter().enumerate() {
+        match ch {
+            HwpChar::ExtCtrl {
+                code: 3,
+                ctrl_index,
+                ..
+            } => open.push((*ctrl_index, index)),
+            HwpChar::InlineCtrl { code: 4, .. } => {
+                if let Some((Some(control), start)) = open.pop() {
+                    pairs.push((control, start, index));
+                }
+            }
+            _ => {}
+        }
+    }
+    pairs
+}
+
 /// Every memo in the document, in the order its anchor sits in the text.
 ///
 /// A paragraph is walked character by character, and a control is entered where its block sits,

@@ -31,7 +31,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `memo_remove` in `ahwp edit --ops` and `schemas/edit-ops-v1.schema.json`. An added memo is
   written as the measured `MEMO_LIST` body on the section's last paragraph in HWP5, or a
   `fieldBegin type="MEMO"` with its inline `subList` in HWPX, while an existing memo keeps its
-  anchor, author and creation time. A memo read from the other container stays a typed drop
+  anchor, author and creation time
   ([#619](https://github.com/STAIxBWLB/agent-hwp/issues/619)).
 
 - Compose seven native HWPX DrawingML chart kinds using a DocumentSpec `chart` block. Read and
