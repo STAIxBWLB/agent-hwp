@@ -199,11 +199,15 @@ fn inline_table_object_extent(table: &Table) -> Option<(i32, i32, i32)> {
         let height = if placement.height > 0 {
             placement.height
         } else {
-            table
-                .cells
-                .iter()
-                .filter(|c| c.col == 0 && c.row_span == 1)
-                .fold(0i32, |sum, c| sum.saturating_add(c.height.0))
+            // The HWP5 writer's grid rule (`table_grid_totals`): the per-row maximum over
+            // every single-row cell, summed, so a merged column-0 cell cannot under-count.
+            let mut rows = vec![0i32; usize::from(table.rows.max(1))];
+            for c in table.cells.iter().filter(|c| c.row_span == 1) {
+                if let Some(h) = rows.get_mut(usize::from(c.row)) {
+                    *h = (*h).max(c.height.0);
+                }
+            }
+            rows.iter().fold(0i32, |sum, h| sum.saturating_add(*h))
         };
         return Some((
             height,
@@ -258,16 +262,22 @@ pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32>
     // table under a 5100 HU line in the #462 fixture). Resuming at the smaller of the two would
     // start the next paragraph inside the line the output keeps (#509).
     let line_bottom = last.v_pos.saturating_add(last.line_height);
-    // A table-only inline anchor (rule B11, #644) advances by its line height plus line spacing
-    // when that ends below the measured table block.
-    let inline_bottom = if inline_table_line_height(paragraph).is_some() {
-        line_cursor
-    } else {
-        line_bottom
-    };
+    // A table-only inline anchor (rule B11, #644) advances by its line height plus line spacing;
+    // the measured block counts only when the cell grid outgrew the object (an edited cell),
+    // exactly as the synthesizer decides it.
+    if let Some(block) = inline_table_line_height(paragraph) {
+        let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
+        let table_total = if grid > block { table_total } else { 0 };
+        return Some(body_cursor(
+            entry.v_pos,
+            line_cursor,
+            table_total.max(line_cursor.saturating_sub(entry.v_pos)),
+            space_after,
+        ));
+    }
     Some(
         body_cursor(entry.v_pos, line_cursor, table_total, space_after)
-            .max(inline_bottom.saturating_add(space_after)),
+            .max(line_bottom.saturating_add(space_after)),
     )
 }
 
@@ -749,11 +759,19 @@ fn synthesize_linesegs_inner(
             if floating_source.is_some() {
                 table_total = 0;
             }
+            // Rule B11 (#644): a table-only inline anchor's saved line is the object block, which
+            // can be taller than the measured grid (fixed rows, a stored object height). Rule A
+            // fits that line height at the body bottom, so test the larger of the two.
+            let inline_fit = floating_source
+                .is_none()
+                .then(|| inline_table_line_height(&doc.sections[si].paragraphs[pi]))
+                .flatten();
+            let fit_total = inline_fit.map_or(table_total, |block| table_total.max(block));
             // Other table blocks retain the existing whole-table page-fit fallback.
             if section_anchors.is_none()
-                && table_total > 0
+                && fit_total > 0
                 && v_pos > 0
-                && v_pos.saturating_add(table_total) > content_h
+                && v_pos.saturating_add(fit_total) > content_h
             {
                 v_pos = 0;
             }
@@ -803,7 +821,10 @@ fn synthesize_linesegs_inner(
             {
                 line.line_height = block;
                 line.text_height = block;
-                line.baseline_gap = (i64::from(block) * 85 + 50) as i32 / 100;
+                // Baseline at 85% of the line, rounded half up (`paragraph_metrics` truncates).
+                // Evidence: the #620 T4 strip and TOC anchors and the #644 inline-table sample
+                // matched Hangul's re-saved caches byte-for-byte, text height and baseline included.
+                line.baseline_gap = ((i64::from(block) * 85 + 50) / 100) as i32;
                 if let Some(advance) = inline_table_line_advance(&snap, src) {
                     line.line_spacing = advance.saturating_sub(block);
                 }
@@ -811,9 +832,15 @@ fn synthesize_linesegs_inner(
                     .v_pos
                     .saturating_add(block)
                     .saturating_add(line.line_spacing);
-                // Cells grown past the stored object height (an edit) still push the flow down:
-                // `body_cursor` keeps the larger of the two readings, as `saved_body_cursor` does.
-                table_total = table_total.max(line_cursor.saturating_sub(anchor_v));
+                // The line advance replaces the measured block (whose 566 padding the anchor line
+                // does not carry), except when the cell grid itself outgrew the object (an edited
+                // cell): then the flow still clears the grown table, as `saved_body_cursor` does.
+                let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
+                table_total = if grid > block {
+                    table_total.max(line_cursor.saturating_sub(anchor_v))
+                } else {
+                    0
+                };
             }
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
@@ -1446,6 +1473,62 @@ mod tests {
             paras[strip + 1].line_segs[0].v_pos,
             line.v_pos + block + spacing + gap,
             "the next paragraph starts after the table line and its spacing"
+        );
+    }
+
+    /// Rule A at the body bottom with rule B11's line (#644): when the object block is taller
+    /// than the measured grid (here a stored object height), the anchor line must still fit the
+    /// body or move whole to the next page; fitting only the grid leaves the saved line ending
+    /// below the body.
+    #[test]
+    fn an_inline_table_anchor_line_taller_than_its_grid_fits_the_body() {
+        let mut checked = false;
+        for filler in 20..60 {
+            let mut md = String::new();
+            for i in 0..filler {
+                md.push_str(&format!("본문 {i}\n\n"));
+            }
+            md.push_str("### 1. 절 제목\n\n뒷 문단\n");
+            let mut doc = hwp_convert::from_markdown(&md);
+            hwp_convert::report_blocks::apply_section_strips(&mut doc);
+            let strip = doc.sections[0]
+                .paragraphs
+                .iter()
+                .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+                .expect("strip");
+            for c in &mut doc.sections[0].paragraphs[strip].controls {
+                if let Control::Table(t) = c {
+                    t.placement.as_mut().expect("placement").height = 9000;
+                }
+            }
+            let content_h = {
+                let pg = doc.sections[0]
+                    .section_def()
+                    .and_then(|d| d.page.as_ref())
+                    .expect("page def");
+                body_box(pg, pg.height.0).height_hu
+            };
+            let mut store = FontStore::new_isolated();
+            let mut warnings = RenderIssueAccumulator::new();
+            synthesize_linesegs(&mut doc, &mut store, &mut warnings);
+            let line = doc.sections[0].paragraphs[strip].line_segs[0];
+            assert_eq!(line.line_height, 9000);
+            assert!(
+                line.v_pos + line.line_height <= content_h,
+                "filler={filler}: the anchor line ends at {} below the body ({content_h})",
+                line.v_pos + line.line_height
+            );
+            let grid_fits = {
+                let prev = &doc.sections[0].paragraphs[strip - 1];
+                let last = prev.line_segs.last().expect("prev line");
+                let cursor = last.v_pos + last.line_height + last.line_spacing;
+                cursor > 0 && cursor + 9000 > content_h && cursor + 2268 + 566 <= content_h
+            };
+            checked |= grid_fits && line.v_pos == 0;
+        }
+        assert!(
+            checked,
+            "no filler count put the grid inside and the line outside the body"
         );
     }
 

@@ -704,6 +704,35 @@ mod tests {
         }
     }
 
+    /// A TOC row holds its one line plus the cell's top and bottom margins: Hangul grows a
+    /// shorter row on reflow (the #620 T4 re-save: 1700-high rows laid out at 1500 + 141 + 141),
+    /// so the object height and the anchor line (rule B11, #644) follow the grown rows.
+    #[test]
+    fn toc_rows_hold_their_line_and_cell_margins() {
+        let mut d = doc("## Ⅰ. 개요\n\n본문\n\n### 1. 절\n");
+        let line = 1777;
+        d.header.char_shapes[0].base_size = line;
+        let plan = insert_toc(&mut d).expect("headings exist");
+        let para = &d.sections[0].paragraphs[plan.table_paragraph];
+        let Some(Control::Table(table)) = para
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::Table(_)))
+        else {
+            panic!("TOC table");
+        };
+        assert!(!table.cells.is_empty());
+        for cell in &table.cells {
+            assert_eq!(
+                cell.height.0,
+                line + i32::from(cell.margins[2]) + i32::from(cell.margins[3]),
+                "row {} col {}",
+                cell.row,
+                cell.col
+            );
+        }
+    }
+
     /// The section/column break bits move with the definitions to the TOC title, and the
     /// body paragraph is a plain page break (0x04), never 0x07.
     #[test]

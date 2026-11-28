@@ -1539,7 +1539,7 @@ fn layout_document_pages(
                 // Whatever the band did not hand to an earlier page belongs to the page the
                 // paragraph ended on.
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
-                let (objects_bottom, objects_split) = layout_para_objects(
+                let (objects_bottom, objects_split, objects_moved_whole) = layout_para_objects(
                     doc,
                     store,
                     &mut page,
@@ -1570,10 +1570,16 @@ fn layout_document_pages(
                 content_bottom = objects_bottom;
                 // Rule B11 (#644), cacheless reading: a table-only inline anchor occupies one line as
                 // tall as the table object block plus the paragraph's line spacing, then its
-                // space-after, exactly as the synthesized cache records it.
-                if !objects_split
-                    && !para_split
-                    && let Some(top) = para_top
+                // space-after, exactly as the synthesized cache records it. At a page bottom the
+                // anchor moves whole to the next page, either as its one (empty) text line
+                // (`para_split`, which already set `para_top` to the new body top) or as a table
+                // moved by `layout_table`; the line then starts at the new body top.
+                let line_top = if objects_split {
+                    objects_moved_whole.then_some(body_top)
+                } else {
+                    para_top
+                };
+                if let Some(top) = line_top
                     && let Some(advance) = crate::lineseg::inline_table_line_advance(doc, para)
                 {
                     let line_end = top + advance as f32 / 100.0;
@@ -1787,7 +1793,7 @@ fn layout_document_pages(
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
             }
 
-            let (objects_bottom, objects_split) = layout_para_objects(
+            let (objects_bottom, objects_split, _) = layout_para_objects(
                 doc,
                 store,
                 &mut page,
@@ -2844,11 +2850,13 @@ fn layout_para_objects(
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-) -> (f32, bool) {
+) -> (f32, bool, bool) {
     let mut bottom = content_bottom;
     let mut object_y = anchor_top;
     // After a split, the returned cursor is relative to the final page.
     let mut page_split = false;
+    // The split was a whole table moved to the next page as one fragment (no rows divided).
+    let mut moved_whole = false;
 
     for (control_index, control) in para.controls.iter().enumerate() {
         match control {
@@ -2876,7 +2884,7 @@ fn layout_para_objects(
                     });
                     object_y += h + gap;
                 }
-                let (end, table_split, final_fragment_top) = layout_table(
+                let (end, table_split, final_fragment_top, whole) = layout_table(
                     doc,
                     store,
                     page,
@@ -2895,6 +2903,7 @@ fn layout_para_objects(
                     // page's bottom; doing so would create a blank page.
                     bottom = end;
                     page_split = true;
+                    moved_whole = whole;
                 } else {
                     bottom = bottom.max(end);
                 }
@@ -2963,7 +2972,7 @@ fn layout_para_objects(
                             ) != crate::wmf::WmfOutcome::Fallback;
                         if !wmf_handled {
                             if !warnings.charge_display_items(1) {
-                                return (bottom, page_split);
+                                return (bottom, page_split, moved_whole);
                             }
                             page.items.push(Item::Image {
                                 x,
@@ -3434,7 +3443,7 @@ fn layout_para_objects(
             _ => {}
         }
     }
-    (bottom, page_split)
+    (bottom, page_split, moved_whole)
 }
 
 /// Cell margins in pt (left/right/top/bottom): cell override, table default, then Hangul
@@ -3513,7 +3522,7 @@ fn layout_table(
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-) -> (f32, bool, f32) {
+) -> (f32, bool, f32, bool) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
     let top_caption_extent = top_caption
@@ -3784,7 +3793,8 @@ fn layout_table(
             rec,
         )
     {
-        return result;
+        // Never an inline table (checked above), so never the moved-whole B11 case.
+        return (result.0, result.1, result.2, false);
     }
 
     // Fragment tuple: first row, exclusive end row, data top, replay header,
@@ -3978,7 +3988,12 @@ fn layout_table(
             format!("{rows} rows"),
         );
     }
-    (end_y, page_advanced, final_fragment_top)
+    (
+        end_y,
+        page_advanced,
+        final_fragment_top,
+        page_advanced && emitted_fragments == 1,
+    )
 }
 
 /// Maximum full vertical extent of cells starting at `row`.  A row-spanning
@@ -5243,7 +5258,7 @@ fn layout_box_para_iter<'a>(
         if render_objects {
             let before_objects = content_bottom;
             let mut disabled = SegmentRecorder::disabled();
-            let (objects_bottom, _no_split) = layout_para_objects(
+            let (objects_bottom, _no_split, _) = layout_para_objects(
                 doc,
                 store,
                 page,
@@ -8052,6 +8067,106 @@ mod empty_paragraph_advance_tests {
             after.v_pos - before.v_pos,
             1600,
             "the default body advance is 10pt at 160% line spacing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inline_table_anchor_cursor_tests {
+    use super::*;
+
+    /// `filler` body paragraphs, then a `--section-strips` strip (a table-only inline anchor),
+    /// then one more paragraph. Cacheless, as markdown import leaves it.
+    fn strip_document(filler: usize) -> (Document, usize) {
+        let mut md = String::new();
+        for i in 0..filler {
+            md.push_str(&format!("본문 {i}\n\n"));
+        }
+        md.push_str("### 1. 절 제목\n\n뒷 문단\n");
+        let mut doc = hwp_convert::from_markdown(&md);
+        assert_eq!(
+            hwp_convert::report_blocks::apply_section_strips(&mut doc),
+            1
+        );
+        let strip = doc.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+            .expect("the strip paragraph");
+        (doc, strip)
+    }
+
+    /// The step the cacheless cursor takes from the strip to the next paragraph, in HWPUNIT:
+    /// rule B11's line advance plus the strip's space-after and the next one's space-before.
+    fn b11_step(doc: &Document, strip: usize) -> i32 {
+        let paras = &doc.sections[0].paragraphs;
+        let advance = crate::lineseg::inline_table_line_advance(doc, &paras[strip])
+            .expect("a table-only inline anchor");
+        let gap = para_geometry(doc, &paras[strip]).spacing_bottom
+            + para_geometry(doc, &paras[strip + 1]).spacing_top;
+        advance + (gap * 100.0).round() as i32
+    }
+
+    fn anchors_of(doc: &Document) -> BodyAnchors {
+        let mut store = crate::FontStore::new_isolated();
+        let mut warnings = crate::RenderIssueAccumulator::new();
+        synthesized_body_anchors(doc, &mut store, &mut warnings)
+    }
+
+    /// Rule B11 (#644) on the cacheless layout cursor, for a strip that stays on its page: the
+    /// next paragraph starts one B11 line advance (plus paragraph spacing) below the strip.
+    #[test]
+    fn the_cursor_after_an_inline_table_anchor_takes_the_b11_line_advance() {
+        let (doc, strip) = strip_document(1);
+        let anchors = anchors_of(&doc);
+        let at = anchors.slot(0, strip).expect("strip anchor").v_pos;
+        let next = anchors.slot(0, strip + 1).expect("next anchor").v_pos;
+        assert_eq!(
+            next - at,
+            b11_step(&doc, strip),
+            "the B11 advance on the same page"
+        );
+    }
+
+    /// The page-bottom case: a strip that does not fit moves whole to the next page, and the
+    /// next paragraph must still start one B11 line advance below the new body top, not at the
+    /// table's bare bottom (which drops the line spacing).
+    #[test]
+    fn an_inline_table_anchor_moved_whole_to_the_next_page_keeps_the_b11_advance() {
+        let mut checked = false;
+        for filler in 20..80 {
+            let (doc, strip) = strip_document(filler);
+            let anchors = anchors_of(&doc);
+            let at = anchors.slot(0, strip).expect("strip anchor");
+            let next = anchors.slot(0, strip + 1).expect("next anchor");
+            // The strip moved whole to a new page: its anchor line opened that page.
+            if at.starts_page && at.v_pos == 0 {
+                let gap_top = (para_geometry(&doc, &doc.sections[0].paragraphs[strip + 1])
+                    .spacing_top
+                    * 100.0)
+                    .round() as i32;
+                let advance = crate::lineseg::inline_table_line_advance(
+                    &doc,
+                    &doc.sections[0].paragraphs[strip],
+                )
+                .expect("inline anchor");
+                let bottom = (para_geometry(&doc, &doc.sections[0].paragraphs[strip])
+                    .spacing_bottom
+                    * 100.0)
+                    .round() as i32;
+                assert_eq!(
+                    next.v_pos,
+                    advance + bottom + gap_top,
+                    "filler={filler}: after a whole-table move the next paragraph starts one B11 \
+                     line advance below the new body top"
+                );
+                checked = true;
+                break;
+            }
+        }
+        assert!(
+            checked,
+            "no filler count moved the strip whole to the next page"
         );
     }
 }
