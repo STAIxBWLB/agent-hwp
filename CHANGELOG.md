@@ -109,6 +109,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Right- and center-aligned cached lines ending in a forced line break use their visible
+  width, including in table cells. Ordinary trailing spaces before the break collapse
+  as on other non-final lines ([#656](https://github.com/STAIxBWLB/agent-hwp/issues/656)).
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
