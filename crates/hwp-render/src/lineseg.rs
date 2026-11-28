@@ -129,10 +129,14 @@ pub(crate) fn inline_table_line_height(para: &Paragraph) -> Option<i32> {
     });
     let table = tables.next()?;
     if tables.next().is_some()
-        || para
-            .chars
-            .iter()
-            .any(|c| matches!(c, hwp_model::HwpChar::Text(_)))
+        || para.chars.iter().any(|c| match c {
+            hwp_model::HwpChar::Text(_) => true,
+            // A line break or tab makes the paragraph more than one table line, which
+            // synthesis (one saved line) and layout must both leave to the ordinary path.
+            hwp_model::HwpChar::CharCtrl(code) => *code == hwp_model::ctrl_char::LINE_BREAK,
+            hwp_model::HwpChar::InlineCtrl { code, .. } => *code == hwp_model::ctrl_char::TAB,
+            _ => false,
+        })
         || para.controls.iter().any(|c| {
             !matches!(c, Control::Table(_) | Control::SectionDef(_))
                 && !matches!(&c.ctrl_id(), b"cold" | b"pgnp" | b"nwno")
@@ -281,10 +285,15 @@ fn saved_cursor(paragraph: &Paragraph, space_after: i32, body: bool) -> Option<i
     if body && let Some(block) = inline_table_line_height(paragraph) {
         let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
         let table_total = if grid > block { table_total } else { 0 };
+        // Floor at the block: an anchor ahwp saved before #644 kept the font line height, and
+        // the next paragraph must still clear its table. A no-op on genuine caches, whose line
+        // is at least the block (315 of 315).
         return Some(body_cursor(
             entry.v_pos,
             line_cursor,
-            table_total.max(line_cursor.saturating_sub(entry.v_pos)),
+            table_total
+                .max(block)
+                .max(line_cursor.saturating_sub(entry.v_pos)),
             space_after,
         ));
     }
@@ -1977,6 +1986,62 @@ mod tests {
             Some(4800),
             "the body reading takes the B11 line advance"
         );
+    }
+
+    /// A kept body anchor that ahwp saved before #644 still carries the font line height (1000)
+    /// under a taller inline table block (3000); an edit that continues the flow after it must
+    /// start below the table, never inside it.
+    #[test]
+    fn a_kept_pre_b11_anchor_line_still_clears_its_table() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let mut anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                line_spacing: 600,
+                ..seg(500, 1000)
+            }],
+            ..Default::default()
+        };
+        anchor.controls.push(Control::Table(inner));
+        assert!(
+            inline_table_line_height(&anchor).is_some(),
+            "a B11 anchor shape"
+        );
+        let cursor = saved_body_cursor(&anchor, 300).expect("cursor");
+        assert!(
+            cursor >= 500 + 3000 + 300,
+            "the next paragraph starts at {cursor}, inside the table that ends at 3500"
+        );
+    }
+
+    /// A line break or tab makes a table-only paragraph more than one line, so B11 (one saved
+    /// table line) does not apply on either the synthesis or the layout side.
+    #[test]
+    fn a_line_break_or_tab_takes_a_table_paragraph_off_b11() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let mut anchor = Paragraph::default();
+        anchor.controls.push(Control::Table(inner));
+        assert!(inline_table_line_height(&anchor).is_some());
+        let mut broken = anchor.clone();
+        broken.chars.push(hwp_model::HwpChar::CharCtrl(
+            hwp_model::ctrl_char::LINE_BREAK,
+        ));
+        assert_eq!(inline_table_line_height(&broken), None, "line break");
+        let mut tabbed = anchor;
+        tabbed.chars.push(hwp_model::HwpChar::InlineCtrl {
+            code: hwp_model::ctrl_char::TAB,
+            payload: vec![0; 12],
+        });
+        assert_eq!(inline_table_line_height(&tabbed), None, "tab");
     }
 }
 
