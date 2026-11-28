@@ -108,11 +108,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
   line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
-  advances the same way. `--toc` rows are now sized to their content line plus the cell margins (1282 under the
-  default preset, was a fixed 1700). On
-  the 16-entry `--toc` sample the page numbers match Hancom's on every entry (were 15 of 16) and
-  66 of 67 body line caches equal a Hancom re-save's
-  ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)).
+  advances the same way. `--toc` rows are now at least as tall as their content line plus the
+  cell margins, keeping the former 1700 as the minimum. On the 16-entry `--toc` sample the page
+  numbers match Hancom's on every entry (were 15 of 16) and 66 of 67 body line caches equal a
+  Hancom re-save's ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)).
 - HWPX memo bodies stay in the memo appendix and no longer produce orphan rows in render layout.
 
 ## [2.1.1]

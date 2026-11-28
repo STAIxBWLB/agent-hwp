@@ -495,6 +495,9 @@ fn move_controls(from: &mut Paragraph, to: &mut Paragraph, lead: usize) {
     }
 }
 
+/// The TOC rows' minimum height (the builder's original fixed row height).
+const TOC_MIN_ROW_HEIGHT: i32 = 1700;
+
 /// Builds a front TOC listing every level-2 and level-3 heading (strips included) of the first
 /// section and inserts it at the front, followed by a page break and a page-number restart on
 /// the first body paragraph. The section and column definitions move to the TOC's first
@@ -550,9 +553,11 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
             // A row must hold its one content line plus the cell's top and bottom margins:
             // Hangul grows an under-height row on reflow, so a shorter stored height leaves the
             // object height (and the anchor line, rule B11) short of what Hangul lays out (#644).
+            // A row height is a minimum, so the former fixed 1700 stays the floor.
             let line = doc.header.char_shapes.first().map_or(1000, |s| s.base_size);
             for c in [&mut left, &mut right] {
-                c.height = HwpUnit(line + i32::from(c.margins[2]) + i32::from(c.margins[3]));
+                let content = line + i32::from(c.margins[2]) + i32::from(c.margins[3]);
+                c.height = HwpUnit(content.max(TOC_MIN_ROW_HEIGHT));
             }
             [left, right]
         })
@@ -731,6 +736,19 @@ mod tests {
                 cell.col
             );
         }
+        // A row height is a minimum: a small base keeps the former 1700.
+        let mut d = doc("## Ⅰ. 개요\n\n본문\n");
+        d.header.char_shapes[0].base_size = 1000;
+        let plan = insert_toc(&mut d).expect("headings exist");
+        let para = &d.sections[0].paragraphs[plan.table_paragraph];
+        let Some(Control::Table(table)) = para
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::Table(_)))
+        else {
+            panic!("TOC table");
+        };
+        assert!(table.cells.iter().all(|c| c.height.0 == 1700));
     }
 
     /// The section/column break bits move with the definitions to the TOC title, and the

@@ -1549,6 +1549,7 @@ fn layout_document_pages(
                     content_bottom,
                     body_width,
                     (0.0, 0.0), // Top-level: a non-anchored shape's stored x/y is already page-absolute.
+                    true,
                     Some(&mut TableSplitCtx {
                         pages: &mut pages,
                         page_numbers: &mut page_numbers,
@@ -1584,6 +1585,17 @@ fn layout_document_pages(
                 {
                     let line_end = top + advance as f32 / 100.0;
                     content_bottom = content_bottom.max(line_end + geom.spacing_bottom);
+                    // The anchor's one line is the table (B11): when the table moved whole, the
+                    // line moved with it, so the prepass slot records the new page top too.
+                    if objects_split
+                        && objects_moved_whole
+                        && let Some(anchors) = anchors.as_deref_mut()
+                    {
+                        anchors[section_index][para_index] = Some(BodyAnchor {
+                            v_pos: 0,
+                            starts_page: true,
+                        });
+                    }
                 }
                 // A fallback paragraph is one slice with both borders. If an
                 // attached table split, approximate only its final-page slice.
@@ -1803,6 +1815,7 @@ fn layout_document_pages(
                 content_bottom,
                 body_width,
                 (0.0, 0.0), // Top-level: a non-anchored shape's stored x/y is already page-absolute.
+                false,
                 Some(&mut TableSplitCtx {
                     pages: &mut pages,
                     page_numbers: &mut page_numbers,
@@ -2847,6 +2860,9 @@ fn layout_para_objects(
     // child shapes are relative to the container's own origin",
     // `crates/hwp-model/src/control.rs`). Top-level call sites pass `(0.0, 0.0)`, a no-op.
     nested_origin: (f32, f32),
+    // Rule B11 (#644) applies: a cacheless top-level body paragraph. Cached bands keep Hangul's
+    // own geometry, and nested lists have no B11 evidence (#410).
+    b11: bool,
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
@@ -2893,7 +2909,9 @@ fn layout_para_objects(
                     object_y,
                     avail_width,
                     top_caption,
-                    crate::lineseg::inline_table_line_height(para).map(|h| h as f32 / 100.0),
+                    b11.then(|| crate::lineseg::inline_table_line_height(para))
+                        .flatten()
+                        .map(|h| h as f32 / 100.0),
                     split.as_deref_mut(),
                     warnings,
                     rec,
@@ -5278,6 +5296,7 @@ fn layout_box_para_iter<'a>(
                 content_bottom,
                 width,
                 (origin_x, origin_y), // Nested shapes are relative to this box's own origin.
+                false,                // No B11 in nested lists (#410).
                 None,                 // Nested objects inside a cell/text box do not cross pages.
                 warnings,
                 // A recorded paragraph's own tables, bookmarks and drawing objects nest under
@@ -8182,12 +8201,13 @@ mod inline_table_anchor_cursor_tests {
 
     /// Rule A on the cacheless path with an object block taller than the row grid (a stored
     /// object height, #644): the B11 line must fit the body, so a table whose rows would still
-    /// fit moves whole to the next page while the anchor's empty text line stays (the
-    /// `objects_split` branch). The next paragraph then starts one B11 advance below the new
-    /// body top; on the same page it starts one B11 advance below the anchor.
+    /// fit below the anchor's text line moves whole to the next page (the `objects_split`
+    /// branch), and the anchor's one B11 line moves with it: its slot opens the new page, and
+    /// the next paragraph starts one B11 advance below the new body top. On the same page the
+    /// next paragraph starts one B11 advance below the anchor.
     #[test]
     fn a_b11_line_taller_than_its_grid_moves_the_table_and_keeps_the_advance() {
-        let mut moved_with_text_kept = false;
+        let mut moved_by_the_table = false;
         for filler in 20..40 {
             let (mut doc, strip) = strip_document(filler);
             for c in &mut doc.sections[0].paragraphs[strip].controls {
@@ -8205,28 +8225,46 @@ mod inline_table_anchor_cursor_tests {
             let anchors = anchors_of(&doc);
             let at = anchors.slot(0, strip).expect("strip anchor");
             let next = anchors.slot(0, strip + 1).expect("next anchor");
+            let previous = anchors.slot(0, strip - 1).expect("previous anchor");
             let step = b11_step(&doc, strip);
-            if next.v_pos > at.v_pos {
+            // Where the anchor's text line lands on the old page: one body advance below the
+            // previous one-line paragraph (font-free: the metrics come from the shape tables).
+            let entry = previous.v_pos
+                + crate::lineseg::paragraph_metrics(&doc, &doc.sections[0].paragraphs[strip - 1])
+                    .advance
+                + ((para_geometry(&doc, &doc.sections[0].paragraphs[strip - 1]).spacing_bottom
+                    + para_geometry(&doc, &doc.sections[0].paragraphs[strip]).spacing_top)
+                    * 100.0)
+                    .round() as i32;
+            if !at.starts_page {
                 assert!(
                     at.v_pos + 9000 <= content_h,
                     "filler={filler}: the B11 line ends at {} below the body ({content_h})",
                     at.v_pos + 9000
                 );
-                assert_eq!(next.v_pos - at.v_pos, step, "filler={filler}: same page");
-            } else if !at.starts_page && at.v_pos > 0 && at.v_pos + 9000 > content_h {
-                // The B11 line does not fit below the anchor's text line, which stayed (the rows
-                // alone would have fit): the table moved whole to the next page.
+                // The next paragraph may open the next page itself (the B11 line fits, its
+                // advance does not).
+                if next.v_pos > at.v_pos {
+                    assert_eq!(next.v_pos - at.v_pos, step, "filler={filler}: same page");
+                }
+            } else if entry + 9000 > content_h && entry + 2268 + 1600 < content_h {
+                // The text line alone (and the bare rows) would have fit on the old page: the
+                // move came from the table, and the anchor line moved with it.
+                assert_eq!(
+                    at.v_pos, 0,
+                    "filler={filler}: the anchor opens the new page"
+                );
                 assert_eq!(
                     next.v_pos, step,
-                    "filler={filler}: after the table moved whole with its text line kept, the \
-                     next paragraph starts one B11 advance below the new body top"
+                    "filler={filler}: after the table moved whole, the next paragraph starts \
+                     one B11 advance below the new body top"
                 );
-                moved_with_text_kept = true;
+                moved_by_the_table = true;
             }
         }
         assert!(
-            moved_with_text_kept,
-            "no filler count moved the table while keeping the anchor's text line"
+            moved_by_the_table,
+            "no filler count moved the table whole while its text line would have fit"
         );
     }
 }

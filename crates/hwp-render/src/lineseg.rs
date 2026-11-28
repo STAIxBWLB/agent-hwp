@@ -242,7 +242,20 @@ fn inline_table_object_extent(table: &Table) -> Option<(i32, i32, i32)> {
 /// `v_pos + line_height + line_spacing` of the last line. That is the only reading a saved cache
 /// offers, and it is exact for every mode but FIXED spacing below the base line, which a genuine
 /// record cannot express without also losing the committed position (#509).
+///
+/// This is the body reading: a table-only inline anchor follows rule B11 (#644). Nested paragraph
+/// lists use [`saved_list_cursor`], since B11 was measured on body anchors only (#410).
 pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    saved_cursor(paragraph, space_after, true)
+}
+
+/// [`saved_body_cursor`] for a kept paragraph inside a nested list (a cell, caption or text
+/// box): the pre-#644 reading, with no B11 line advance.
+fn saved_list_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    saved_cursor(paragraph, space_after, false)
+}
+
+fn saved_cursor(paragraph: &Paragraph, space_after: i32, body: bool) -> Option<i32> {
     let entry = paragraph.line_segs.first()?;
     let table_total = paragraph
         .controls
@@ -265,7 +278,7 @@ pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32>
     // A table-only inline anchor (rule B11, #644) advances by its line height plus line spacing;
     // the measured block counts only when the cell grid outgrew the object (an edited cell),
     // exactly as the synthesizer decides it.
-    if let Some(block) = inline_table_line_height(paragraph) {
+    if body && let Some(block) = inline_table_line_height(paragraph) {
         let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
         let table_total = if grid > block { table_total } else { 0 };
         return Some(body_cursor(
@@ -1121,7 +1134,7 @@ fn fill_list(
             if caches == ListCaches::KeepMeasured {
                 // The retained prefix moves the cursor: the paragraph after it has to start below
                 // it, and that is the height the table is measured from.
-                if let Some(bottom) = saved_body_cursor(para, 0) {
+                if let Some(bottom) = saved_list_cursor(para, 0) {
                     v = bottom;
                 }
             }
@@ -1929,6 +1942,42 @@ mod tests {
         assert_eq!(saved_body_cursor(&plain, 300), Some(height + 300));
         assert!(height > 1300, "the table reaches below the text line");
     }
+
+    /// Rule B11 (#644) is a body rule: a kept table-only inline anchor inside a nested list
+    /// (a cell) keeps the pre-#644 reading, the larger of the measured table and the saved line
+    /// block, with no B11 line spacing, while the body reading takes the B11 line advance.
+    #[test]
+    fn b11_reads_body_anchors_only_never_nested_list_paragraphs() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let height = table_height(&inner);
+        let mut anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                line_spacing: 1800,
+                ..seg(0, 3000)
+            }],
+            ..Default::default()
+        };
+        anchor.controls.push(Control::Table(inner));
+        assert!(
+            inline_table_line_height(&anchor).is_some(),
+            "a B11 anchor shape"
+        );
+        assert_eq!(
+            saved_list_cursor(&anchor, 0),
+            Some(height.max(3000)),
+            "nested lists keep the pre-#644 reading"
+        );
+        assert_eq!(
+            saved_body_cursor(&anchor, 0),
+            Some(4800),
+            "the body reading takes the B11 line advance"
+        );
+    }
 }
 
 /// Regression coverage for #426: an anchor prepass that stops before it collected every
@@ -2046,6 +2095,57 @@ mod anchor_prepass_tests {
             synthesize_linesegs_with_prepass_page_limit(doc, &mut store, &mut warnings, page_limit)
                 .expect("a floating-table section runs the prepass");
         (anchors, warnings.finish())
+    }
+
+    /// Rule B11 (#644) in a floating-table section, which takes its anchors from the cacheless
+    /// prepass: a table-only inline anchor whose object block (here a stored 9000 height over a
+    /// one-row strip) does not fit below its entry moves whole to the next page, and its line
+    /// moves with it. The synthesized line must start that page, never end below the body.
+    #[test]
+    fn a_floating_section_moves_an_unfitting_b11_line_with_its_table() {
+        let mut moved = false;
+        for filler in 20..40 {
+            let mut md = String::new();
+            for i in 0..filler {
+                md.push_str(&format!("본문 {i}\n\n"));
+            }
+            md.push_str("### 1. 절 제목\n\n뒷 문단\n");
+            let mut doc = hwp_convert::from_markdown(&md);
+            hwp_convert::report_blocks::apply_section_strips(&mut doc);
+            doc.sections[0].paragraphs[0]
+                .controls
+                .push(Control::Table(floating_table(1, 1000)));
+            let strip = doc.sections[0]
+                .paragraphs
+                .iter()
+                .position(|p| inline_table_line_height(p).is_some())
+                .expect("strip");
+            for c in &mut doc.sections[0].paragraphs[strip].controls {
+                if let Control::Table(t) = c {
+                    t.placement.as_mut().expect("placement").height = 9000;
+                }
+            }
+            let content_h = {
+                let pg = doc.sections[0]
+                    .section_def()
+                    .and_then(|d| d.page.as_ref())
+                    .expect("page def");
+                body_box(pg, pg.height.0).height_hu
+            };
+            let (anchors, _) = synthesize_complete(&mut doc);
+            assert!(anchors.section_complete(0));
+            let line = doc.sections[0].paragraphs[strip].line_segs[0];
+            assert_eq!(line.line_height, 9000);
+            assert!(
+                line.v_pos + line.line_height <= content_h,
+                "filler={filler}: the B11 line ends at {} below the body ({content_h})",
+                line.v_pos + line.line_height
+            );
+            if line.v_pos == 0 && line.flags & 0x1 != 0 {
+                moved = true;
+            }
+        }
+        assert!(moved, "no filler count moved the B11 line to a new page");
     }
 
     /// Ordinary complete pass: measured anchors drive the section, including the page-top anchor
