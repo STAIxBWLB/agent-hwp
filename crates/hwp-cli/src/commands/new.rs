@@ -17,7 +17,8 @@ pub struct NewOptions {
     pub section_strips: bool,
     /// `--toc` (#620): a front table of contents with layout-verified page numbers.
     pub toc: bool,
-    /// Font directories for the `--toc` layout pass (`--font-dir`, else `HWP_FONT_DIR`).
+    /// Font directories for `--toc` (`--font-dir`, else `HWP_FONT_DIR`): the TOC layout pass
+    /// and, for `.hwp` output, the writer's line-cache synthesis and preview (#657).
     pub font_dirs: Vec<std::path::PathBuf>,
 }
 
