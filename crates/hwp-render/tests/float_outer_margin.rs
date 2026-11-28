@@ -231,6 +231,58 @@ fn grid_that_would_cross_the_column_keeps_the_anchor_origin() {
 }
 
 #[test]
+fn column_guard_uses_the_drawn_width_from_later_rows() {
+    // codex review of 56bc40e: row 0 is one narrow merged cell, but row 1's span-1 cells make the
+    // drawn grid full-width. The guard must use that width, so the grid keeps the anchor origin.
+    let layout = |out_margins: [u16; 4]| {
+        let mut table = floating_table(2, 0, out_margins);
+        table.rows = 2;
+        table.cols = 2;
+        table.row_cell_counts = vec![1, 2];
+        let base = table.cells[0].clone();
+        let cell = |col: u16, row: u16, col_span: u16, width: i32| Cell {
+            col,
+            row,
+            col_span,
+            width: HwpUnit(width),
+            ..base.clone()
+        };
+        // Row 0's stored width is narrow; row 1 defines 2 x 21260 = the full 42520 body.
+        table.cells = vec![
+            cell(0, 0, 2, 10000),
+            cell(0, 1, 1, 21260),
+            cell(1, 1, 1, 21260),
+        ];
+        let mut doc = hwp_convert::from_markdown("x\n");
+        doc.header.border_fills.push(hwp_model::BorderFill {
+            bg_color: Some(0x0000_ff00),
+            ..Default::default()
+        });
+        let red = BorderFillId(doc.header.border_fills.len() as u16);
+        for c in &mut table.cells {
+            c.border_fill = red;
+        }
+        let para = &mut doc.sections[0].paragraphs[0];
+        para.controls.push(Control::Table(table));
+        para.line_segs.clear();
+        let mut store = FontStore::new_isolated();
+        let mut warns = RenderIssueAccumulator::new();
+        let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+        let mut b = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+        for item in &list.pages[0].items {
+            if let Item::Rect { x, y, w, fill, .. } = item
+                && *fill == 0x0000_ff00
+            {
+                b = (b.0.min(*x), b.1.min(*y), b.2.max(*x + *w));
+            }
+        }
+        assert!(b.0.is_finite(), "the grid must draw");
+        b
+    };
+    assert_eq!(layout([567, 1134, 850, 283]), layout([0; 4]));
+}
+
+#[test]
 fn unmeasured_alignments_keep_the_anchor_origin() {
     let margins = [567, 1134, 850, 283];
     // Only top/left alignment is measured: a centered or bottom-aligned table keeps its origin.

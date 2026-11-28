@@ -2906,6 +2906,20 @@ fn floating_table_margin_shift(table: &Table, top_level: bool) -> (f32, f32) {
     }
 }
 
+/// Column widths in pt exactly as `layout_table` draws them: the widest span-1 cell of each
+/// column over every row, then `derive_col_widths` for columns only spans or nothing define.
+fn table_col_widths(table: &Table, cols: usize, avail_width: f32) -> Vec<f32> {
+    let mut col_w = vec![0.0f32; cols];
+    for cell in &table.cells {
+        let c = cell.col as usize;
+        if cell.col_span == 1 && c < cols {
+            col_w[c] = col_w[c].max(cell.width.to_pt() as f32);
+        }
+    }
+    derive_col_widths(&mut col_w, table, avail_width);
+    col_w
+}
+
 /// Lay out paragraph-attached block objects (tables/images), returning the updated content bottom.
 #[allow(clippy::too_many_arguments)]
 fn layout_para_objects(
@@ -2967,13 +2981,10 @@ fn layout_para_objects(
                 }
                 let (margin_dx, margin_dy) = floating_table_margin_shift(table, split.is_some());
                 // Fail closed when the shifted grid would cross the column's right edge: that
-                // case is unmeasured, and the old origin keeps the grid inside the column.
-                let grid_width: f32 = table
-                    .cells
-                    .iter()
-                    .filter(|c| c.row == 0)
-                    .map(|c| c.width.to_pt() as f32)
-                    .sum();
+                // case is unmeasured, and the old origin keeps the grid inside the column. The
+                // width is the one `layout_table` draws (every row's cells, derived widths).
+                let cols = table.cols.max(1) as usize;
+                let grid_width: f32 = table_col_widths(table, cols, avail_width).iter().sum();
                 let (margin_dx, margin_dy) = if grid_width + margin_dx > avail_width + 0.01 {
                     (0.0, 0.0)
                 } else {
@@ -3642,7 +3653,7 @@ fn layout_table(
         .map_or(0.0, |caption| caption.height + caption.gap);
 
     // Grid geometry: span=1 cells establish column widths and row heights; average unknown values.
-    let mut col_w = vec![0.0f32; cols];
+    let col_w = table_col_widths(table, cols, avail_width);
     let mut row_h = vec![0.0f32; rows];
     let mut row_covered = vec![false; rows];
     // Rows with a stored height carry Hangul's final calculated height;
@@ -3650,9 +3661,6 @@ fn layout_table(
     let mut row_stored = vec![false; rows];
     for cell in &table.cells {
         let (c, r) = (cell.col as usize, cell.row as usize);
-        if cell.col_span == 1 && c < cols {
-            col_w[c] = col_w[c].max(cell.width.to_pt() as f32);
-        }
         if cell.row_span == 1 && r < rows {
             row_h[r] = row_h[r].max(cell.height.to_pt() as f32);
             row_stored[r] = true;
@@ -3662,7 +3670,6 @@ fn layout_table(
             row_covered[r..span_end].fill(true);
         }
     }
-    derive_col_widths(&mut col_w, table, avail_width);
     fill_unknown(&mut row_h, 18.0);
     if row_covered.iter().any(|covered| !covered) {
         warnings.push_once(
