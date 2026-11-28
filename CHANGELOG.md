@@ -109,6 +109,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `new --toc --font-dir <dir>` writing an `.hwp` now synthesizes its line caches and preview with
+  the same font directories as the TOC layout pass. Before, the writer loaded only
+  `HWP_FONT_DIR` (else `fonts/`), so with `--font-dir` alone the body was shaped with substitute
+  fonts: the T4 report got 11 lines per body paragraph instead of 10 and a `font_substituted`
+  warning ([#657](https://github.com/STAIxBWLB/agent-hwp/issues/657)). Without `--font-dir`,
+  `HWP_FONT_DIR` keeps its role.
 - Right- and center-aligned cached lines ending in a forced line break use their visible
   width, including in table cells. Ordinary trailing spaces before the break collapse
   as on other non-final lines ([#656](https://github.com/STAIxBWLB/agent-hwp/issues/656)).

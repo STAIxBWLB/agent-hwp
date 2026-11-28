@@ -1298,8 +1298,72 @@ fn write_hwp_impl(
     isolated_font_files: Option<&[std::path::PathBuf]>,
     source: Option<(&std::path::Path, &hwp_model::Document)>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    let font_dir =
-        std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
+    write_hwp_impl_with_dirs(
+        doc,
+        output,
+        preserve_layout,
+        edited,
+        merged,
+        isolated_font_files,
+        source,
+        &[],
+    )
+}
+
+/// Write an HWP binary whose line-cache synthesis and preview render load `font_dirs`, the
+/// directories a command resolved from its own `--font-dir` (#657). An empty slice keeps the
+/// `HWP_FONT_DIR` (else `fonts/`) default, so the environment's precedence is unchanged.
+pub fn write_hwp_with_font_dirs(
+    doc: &hwp_model::Document,
+    output: &std::path::Path,
+    preserve_layout: bool,
+    font_dirs: &[std::path::PathBuf],
+) -> anyhow::Result<hwp_model::WriteReport> {
+    write_hwp_impl_with_dirs(
+        doc,
+        output,
+        preserve_layout,
+        false,
+        false,
+        None,
+        None,
+        font_dirs,
+    )
+}
+
+/// The font directories synthesis loads: the caller's explicit ones, else `HWP_FONT_DIR`
+/// (else `fonts/`).
+fn synthesis_font_dirs(given: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    resolve_font_dirs(given.to_vec())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam (#657): every directory a synthesis store loaded on this thread.
+    pub(crate) static SYNTHESIS_FONT_DIRS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn load_synthesis_dirs(store: &mut hwp_render::FontStore, dirs: &[std::path::PathBuf]) {
+    for dir in dirs {
+        store.load_dir(dir);
+        #[cfg(test)]
+        SYNTHESIS_FONT_DIRS.with(|seen| seen.borrow_mut().push(dir.clone()));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_hwp_impl_with_dirs(
+    doc: &hwp_model::Document,
+    output: &std::path::Path,
+    preserve_layout: bool,
+    edited: bool,
+    merged: bool,
+    isolated_font_files: Option<&[std::path::PathBuf]>,
+    source: Option<(&std::path::Path, &hwp_model::Document)>,
+    font_dirs: &[std::path::PathBuf],
+) -> anyhow::Result<hwp_model::WriteReport> {
+    let font_dirs = synthesis_font_dirs(font_dirs);
     let synthesize = doc.meta.source_format != "hwp5" || edited;
     let has_source_linesegs = doc
         .sections
@@ -1331,7 +1395,7 @@ fn write_hwp_impl(
                 })?;
             }
         } else {
-            store.load_dir(&font_dir);
+            load_synthesis_dirs(&mut store, &font_dirs);
         }
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         // The first changed body paragraph continues from its kept predecessor. After a neutral
@@ -1454,7 +1518,7 @@ fn write_hwp_impl(
                 })?;
             }
         } else {
-            store.load_dir(&font_dir);
+            load_synthesis_dirs(&mut store, &font_dirs);
         }
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         hwp_render::lineseg::synthesize_linesegs(&mut d, &mut store, &mut warns);
@@ -1471,7 +1535,7 @@ fn write_hwp_impl(
         font_dirs: if isolated_font_files.is_some() {
             Vec::new()
         } else {
-            vec![font_dir]
+            font_dirs
         },
     };
     let prv_image = if let Some(files) = isolated_font_files {
