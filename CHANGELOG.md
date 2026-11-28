@@ -109,6 +109,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
+  of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
+  margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
+  A fixed-width space (FW_SPACE) wraps and keeps its width as before. The Hangul line-break
+  setting is still not honored.
 - Use the measured Hancom body width and paragraph margins for synthesized single-column HWP5
   line widths and wrapping ([#652](https://github.com/STAIxBWLB/agent-hwp/issues/652)).
 - Use font-based line spacing after authored TOC, section-strip and DocumentSpec

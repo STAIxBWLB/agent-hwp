@@ -61,6 +61,10 @@ pub struct ShapedRun {
     pub text: String,
     /// 이 런의 첫 글자 WCHAR 위치 (줄바꿈 시 글리프→WCHAR 매핑용 — lineseg 합성).
     pub start_wchar: u32,
+    /// True for the run that carries a FW_SPACE (31) control. It is shaped from a literal space,
+    /// so its source text alone cannot tell it from an ordinary space (rule B12 covers only the
+    /// latter).
+    pub(crate) fw_space: bool,
 }
 
 impl ShapedRun {
@@ -128,6 +132,7 @@ impl ShapedRun {
             width_pt,
             text,
             start_wchar: self.start_wchar + wchar_offset,
+            fw_space: self.fw_space,
         }
     }
 }
@@ -157,6 +162,15 @@ pub(crate) fn glyph_source_sequences(run: &ShapedRun) -> Vec<String> {
 /// and synthesized-line-segment paths can suppress both adjacent wrap points.
 pub(crate) fn source_has_no_break_space(source: &str) -> bool {
     source.contains('\u{00a0}')
+}
+
+/// Returns true when a shaped source cluster of `run` is an ordinary space (U+0020 text, not a
+/// FW_SPACE control, which is shaped from a literal space too). Hancom-authored caches almost never
+/// start a line with one (0 of 100 genuine HWPX line starts, 14 of 504 HWP5, #643), and
+/// Hancom's PDF of the T4 HWPX keeps the overflowing space at the line end, so a space never
+/// opens a new line here.
+pub(crate) fn source_is_space(run: &ShapedRun, source: &str) -> bool {
+    !run.fw_space && !source.is_empty() && source.chars().all(|c| c == ' ')
 }
 
 fn sources_from_clusters(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
@@ -627,6 +641,7 @@ fn fw_space_run(
         g.x_advance = em;
     }
     run.width_pt = em * run.glyphs.len() as f32;
+    run.fw_space = true;
     Some(run)
 }
 
@@ -756,6 +771,7 @@ fn shape_with_font(
         width_pt: width,
         text: text.to_string(),
         start_wchar,
+        fw_space: false,
     })
 }
 
@@ -1000,6 +1016,7 @@ mod link_tests {
             glyphs,
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         }
     }
 
@@ -1080,6 +1097,7 @@ mod link_tests {
             width_pt: 0.0,
             text: String::new(),
             start_wchar: start,
+            fw_space: false,
         })
     }
 
@@ -1212,6 +1230,16 @@ mod link_tests {
             "FW_SPACE should be 1em ({em}); actual {}",
             runs_width(&fw)
         );
+        // #643 review: the FW_SPACE run is marked, so B12's ordinary-space rule skips it.
+        if let InlineItem::Run(r) = &fw[0] {
+            assert!(r.fw_space);
+            assert!(!source_is_space(r, " "));
+        }
+        let sp = shape_chars(&doc, &mut store, vec![HwpChar::Text(' ')]);
+        if let InlineItem::Run(r) = &sp[0] {
+            assert!(!r.fw_space);
+            assert!(source_is_space(r, " "));
+        }
     }
 
     #[test]

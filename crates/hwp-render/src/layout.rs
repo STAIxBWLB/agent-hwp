@@ -1717,6 +1717,9 @@ fn layout_document_pages(
                     warnings,
                 );
                 crate::shape::apply_link_style(&mut items, &links);
+                if i + 1 < para.line_segs.len() {
+                    trim_trailing_spaces(&mut items);
+                }
                 let natural_width: f32 = items_width(&items, &tabs);
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
@@ -5186,6 +5189,9 @@ fn layout_box_para_iter<'a>(
                     page_number,
                     warnings,
                 );
+                if i + 1 < line_segs.len() {
+                    trim_trailing_spaces(&mut items);
+                }
                 let natural_width = items_width(&items, &tabs);
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
@@ -5624,6 +5630,30 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
     }
 }
 
+/// Collapses the ordinary spaces that end a line to zero advance. Hangul keeps an overflowing
+/// space at the line end (rule B12, #643) where it is invisible, so alignment and drawing use the
+/// line without its width: otherwise right and center alignment push the visible text past the
+/// edge. The glyphs stay, so the line's source character range keeps covering the space.
+fn trim_trailing_spaces(items: &mut [InlineItem]) {
+    for item in items.iter_mut().rev() {
+        let InlineItem::Run(run) = item else {
+            return;
+        };
+        let sources = crate::shape::glyph_source_sequences(run);
+        let mut keep = run.glyphs.len();
+        while keep > 0 && crate::shape::source_is_space(run, &sources[keep - 1]) {
+            keep -= 1;
+        }
+        for g in &mut run.glyphs[keep..] {
+            g.x_advance = 0.0;
+        }
+        run.width_pt = run.glyphs.iter().map(|g| g.x_advance).sum();
+        if keep > 0 {
+            return;
+        }
+    }
+}
+
 fn items_width(items: &[InlineItem], tabs: &[TabStop]) -> f32 {
     let mut x = 0.0f32;
     let mut idx = 0usize;
@@ -6054,6 +6084,10 @@ fn place_wrapped(
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
     let mut previous_no_break = false;
+    // Set once an ordinary space overflowed and stayed on the line at zero advance (rule B12):
+    // the next allowed break starts a new line even if its glyph fits the width the space left,
+    // the same as `lineseg::compute_linesegs`.
+    let mut space_overflowed = false;
 
     if std::env::var_os("HWP_RENDER_TRACE").is_some() {
         let preview: String = items
@@ -6077,9 +6111,9 @@ fn place_wrapped(
     while idx < items.len() {
         let item = std::mem::replace(&mut items[idx], InlineItem::Tab);
         match item {
-            InlineItem::Run(run) => {
+            InlineItem::Run(mut run) => {
                 let sources = crate::shape::glyph_source_sequences(&run);
-                if max_width.is_infinite() || x + run.width_pt <= limit {
+                if !space_overflowed && (max_width.is_infinite() || x + run.width_pt <= limit) {
                     let w = run.width_pt;
                     previous_no_break = sources
                         .last()
@@ -6093,10 +6127,20 @@ fn place_wrapped(
                 let mut start = 0usize;
                 let mut piece_x = x;
                 let mut acc = 0.0f32;
-                for (i, g) in run.glyphs.iter().enumerate() {
-                    let over = piece_x + acc + g.x_advance > limit;
+                for i in 0..run.glyphs.len() {
+                    let g = run.glyphs[i];
+                    let is_space = crate::shape::source_is_space(&run, &sources[i]);
+                    let over = space_overflowed || piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
+                    // An overflowing space stays on the outgoing line (rule B12) with no advance,
+                    // so its underline or background never paints past the right edge.
+                    if over && line_has_content && is_space {
+                        run.glyphs[i].x_advance = 0.0;
+                        space_overflowed = true;
+                        previous_no_break = false;
+                        continue;
+                    }
                     let break_allowed = !previous_no_break && !current_no_break;
                     if over && line_has_content && break_allowed {
                         if i > start {
@@ -6110,6 +6154,7 @@ fn place_wrapped(
                         piece_x = x0;
                         acc = 0.0;
                         start = i;
+                        space_overflowed = false;
                     }
                     acc += g.x_advance;
                     previous_no_break = current_no_break;
@@ -6170,6 +6215,7 @@ fn place_wrapped(
                 }
                 x = next_x;
                 previous_no_break = false;
+                space_overflowed = false;
                 idx += 1;
             }
             InlineItem::LineBreak(_) => {
@@ -6179,6 +6225,7 @@ fn place_wrapped(
                 }
                 x = x0;
                 previous_no_break = false;
+                space_overflowed = false;
                 idx += 1;
             }
         }
@@ -6455,6 +6502,7 @@ mod justify_tests {
             width_pt: advs.iter().sum(),
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         })
     }
 
@@ -7097,7 +7145,7 @@ mod control_classification_tests {
 mod tab_width_tests {
     use std::sync::Arc;
 
-    use super::{LEADER_DASH_SCALE, items_width, place_wrapped};
+    use super::{LEADER_DASH_SCALE, items_width, place_wrapped, trim_trailing_spaces};
     use crate::display::{Item, PageList, PathCmd};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
@@ -7134,7 +7182,169 @@ mod tab_width_tests {
             width_pt,
             text: String::new(),
             start_wchar: 0,
+            fw_space: false,
         })
+    }
+
+    /// #643 review: a FW_SPACE control is shaped from a literal space but is not an ordinary
+    /// space. B12 must not move it: a line may break before it, and a trailing one keeps its
+    /// advance in the alignment trim.
+    fn fw_space_run_item() -> InlineItem {
+        let mut item = dummy_glyph_run(" ");
+        if let InlineItem::Run(run) = &mut item {
+            run.fw_space = true;
+        }
+        item
+    }
+
+    #[test]
+    fn fw_space_is_not_an_ordinary_space_for_b12() {
+        // Wrap: the overflowing FW_SPACE opens the next line, as before B12.
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run("a"), fw_space_run_item()],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+        let placed: Vec<(f32, f32)> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, run, .. } => Some((*y, run.width_pt)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(placed, [(100.0, 10.0), (116.0, 10.0)]);
+
+        // Trim: a trailing FW_SPACE keeps its advance; an ordinary space before it is not trimmed.
+        let mut items = vec![
+            dummy_glyph_run("a"),
+            dummy_glyph_run(" "),
+            fw_space_run_item(),
+        ];
+        trim_trailing_spaces(&mut items);
+        let widths: Vec<f32> = items
+            .iter()
+            .map(|i| match i {
+                InlineItem::Run(r) => r.width_pt,
+                _ => -1.0,
+            })
+            .collect();
+        assert_eq!(widths, [10.0, 10.0, 10.0]);
+
+        // An ordinary trailing space is still trimmed.
+        let mut items = vec![dummy_glyph_run("a"), dummy_glyph_run(" ")];
+        trim_trailing_spaces(&mut items);
+        assert!(matches!(&items[1], InlineItem::Run(r) if r.width_pt == 0.0));
+    }
+
+    /// #643 review: after an overflowing space stays on the line at zero advance, a following
+    /// glyph small enough to fit the freed width still opens a new line, the same as synthesis.
+    /// Line limit 15: "a" (10) + space (10) overflows; "i" (4) would fit at 10 + 4 = 14.
+    #[test]
+    fn small_glyph_after_overflowing_space_starts_a_new_line() {
+        for items in [
+            vec![
+                dummy_glyph_run("a"),
+                dummy_glyph_run(" "),
+                dummy_glyph_run_with_widths("i", &[4.0]),
+            ],
+            vec![dummy_glyph_run_with_widths("a i", &[10.0, 10.0, 4.0])],
+        ] {
+            let mut page = PageList {
+                width_pt: 600.0,
+                height_pt: 800.0,
+                items: Vec::new(),
+            };
+            let mut warns = RenderIssueAccumulator::new();
+            place_wrapped(
+                &mut page,
+                items,
+                0.0,
+                100.0,
+                15.0,
+                16.0,
+                &[],
+                0.0,
+                &[],
+                None,
+                &mut warns,
+            );
+            let last_y = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Glyphs { y, run, .. } if run.text.ends_with('i') => Some(*y),
+                    _ => None,
+                })
+                .next();
+            assert_eq!(last_y, Some(116.0));
+        }
+    }
+
+    #[test]
+    fn overflowing_space_keeps_both_nonbreaking_space_boundaries() {
+        for items in [
+            vec![dummy_glyph_run_with_widths(
+                "a  ib",
+                &[10.0, 10.0, 4.0, 4.0, 4.0],
+            )],
+            ["a", " ", " ", "i", "b"]
+                .into_iter()
+                .zip([10.0, 10.0, 4.0, 4.0, 4.0])
+                .map(|(text, width)| dummy_glyph_run_with_widths(text, &[width]))
+                .collect(),
+        ] {
+            let mut page = PageList {
+                width_pt: 600.0,
+                height_pt: 800.0,
+                items: Vec::new(),
+            };
+            place_wrapped(
+                &mut page,
+                items,
+                0.0,
+                100.0,
+                15.0,
+                16.0,
+                &[],
+                0.0,
+                &[],
+                None,
+                &mut RenderIssueAccumulator::new(),
+            );
+            let placements: Vec<_> = page
+                .items
+                .iter()
+                .flat_map(|item| match item {
+                    Item::Glyphs { y, run, .. } => run.text.chars().map(|ch| (ch, *y)).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            assert_eq!(
+                placements,
+                [
+                    ('a', 100.0),
+                    (' ', 100.0),
+                    (' ', 100.0),
+                    ('i', 100.0),
+                    ('b', 116.0)
+                ]
+            );
+        }
     }
 
     fn dummy_glyph_run(text: &str) -> InlineItem {
@@ -7296,6 +7506,95 @@ mod tab_width_tests {
             })
             .collect();
         assert_eq!(baselines, [100.0, 100.0, 100.0]);
+    }
+
+    /// #643: a space that overflows the line stays at its end. Before the fix it opened the
+    /// next line, so `b` landed on a third line instead of the second.
+    #[test]
+    fn overflowing_space_stays_at_line_end() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![
+                dummy_glyph_run("a"),
+                dummy_glyph_run(" "),
+                dummy_glyph_run("b"),
+            ],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+
+        let baselines: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, .. } => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(baselines, [100.0, 100.0, 116.0]);
+        // The space keeps no advance on the outgoing line, so its decoration ends at the edge.
+        let ends: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { x, run, .. } => Some(x + run.width_pt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends, [10.0, 10.0, 10.0]);
+    }
+
+    /// #643: the same with the space inside a run. The outgoing piece carries the space at zero
+    /// advance, so it ends at the limit, not past it.
+    #[test]
+    fn overflowing_space_inside_a_run_has_no_advance() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run_with_widths("a b", &[10.0, 10.0, 10.0])],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+        let placed: Vec<(f32, f32, String)> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { x, y, run, .. } => Some((*y, x + run.width_pt, run.text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (100.0, 10.0, "a ".to_string()),
+                (116.0, 10.0, "b".to_string())
+            ]
+        );
     }
 
     /// A tab landing on a leadered stop emits exactly one dashed `Item::Path` between the
@@ -7599,6 +7898,7 @@ mod decor_tests {
             glyphs,
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         }
     }
 
