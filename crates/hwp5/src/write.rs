@@ -82,25 +82,61 @@ pub fn write_document_with_report(
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
     let mut materialization = materialize_document(doc, opts, true, false)?;
-    terminate_written_paragraphs(&mut materialization, true)?;
+    let total = terminate_written_paragraphs(&mut materialization, true, None)?;
+    report_terminated_paragraphs(&mut materialization.report, total);
     write_materialized_document(path, &materialization)?;
     Ok(materialization.report)
 }
 
-/// Appends the paragraph end (char 13) to every written PARA_TEXT that lacks it, in the final
-/// body-section streams, and reports how many (#660).
+/// Appends the paragraph end (char 13) to every PARA_TEXT that lacks it in the materialized
+/// body-section streams (all of them, or only the indices in `only`), and returns how many it
+/// fixed (#660). The caller reports the count once it knows which repaired streams the output
+/// carries.
 ///
 /// Hancom rejects a paragraph with text but no paragraph end as damaged: the #660 probe changed
 /// only that character on an otherwise identical file, and only the file with it opened. Running
 /// on the serialized records (not the IR) covers every record the file actually carries: a
 /// source subtree kept by the surgical rewrite merge and the raw child records of footnotes,
-/// headers and text boxes alike, and the warning describes what is written. Every Hancom-saved
+/// headers and text boxes alike. The source rewrite also runs it on the sections it would copy
+/// from the source and then writes the ones it repaired, so the warning describes what is
+/// written. Every Hancom-saved
 /// paragraph with text already ends in 13 (0 of 18,073 in 242 local files lack it), so a genuine
 /// round trip finds nothing and its streams stay byte-identical.
 fn terminate_written_paragraphs(
     materialization: &mut HwpStreamMaterialization,
     compressed: bool,
-) -> Result<()> {
+    only: Option<&BTreeSet<usize>>,
+) -> Result<usize> {
+    let mut total = 0usize;
+    let paths: Vec<(usize, String)> = materialization
+        .streams
+        .keys()
+        .filter_map(|p| {
+            let index = p.strip_prefix("/BodyText/Section")?.parse::<usize>().ok()?;
+            Some((index, p.clone()))
+        })
+        .filter(|(index, _)| only.is_none_or(|set| set.contains(index)))
+        .collect();
+    for (_, path) in paths {
+        let stored = &materialization.streams[&path];
+        let decoded = if compressed {
+            decompress(stored, &path)?
+        } else {
+            stored.clone()
+        };
+        if let Some((repaired, fixed)) = terminate_section_records(&decoded)? {
+            total += fixed;
+            materialization
+                .streams
+                .insert(path, encode_compressed_stream(repaired, compressed));
+        }
+    }
+    Ok(total)
+}
+
+/// Repairs one decoded body-section stream: returns the re-serialized records and the number of
+/// paragraphs that received a paragraph end, or `None` when every paragraph already ends in 13.
+fn terminate_section_records(decoded: &[u8]) -> Result<Option<(Vec<u8>, usize)>> {
     fn visit(nodes: &mut [RecordNode], fixed: &mut usize) {
         for node in nodes {
             if node.tag == tag::PARA_HEADER && node.data.len() >= 4 {
@@ -123,38 +159,19 @@ fn terminate_written_paragraphs(
             visit(&mut node.children, fixed);
         }
     }
-    let mut total = 0usize;
-    let paths: Vec<String> = materialization
-        .streams
-        .keys()
-        .filter(|p| p.starts_with("/BodyText/Section"))
-        .cloned()
-        .collect();
-    for path in paths {
-        let stored = &materialization.streams[&path];
-        let decoded = if compressed {
-            decompress(stored, &path)?
-        } else {
-            stored.clone()
-        };
-        let mut roots = scan_stream(&decoded, ScanMode::Strict)?.roots;
-        let mut fixed = 0usize;
-        visit(&mut roots, &mut fixed);
-        if fixed > 0 {
-            total += fixed;
-            materialization.streams.insert(
-                path,
-                encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed),
-            );
-        }
-    }
+    let mut roots = scan_stream(decoded, ScanMode::Strict)?.roots;
+    let mut fixed = 0usize;
+    visit(&mut roots, &mut fixed);
+    Ok((fixed > 0).then(|| (RecordNode::serialize_forest(&roots), fixed)))
+}
+
+fn report_terminated_paragraphs(report: &mut WriteReport, total: usize) {
     if total > 0 {
-        materialization.report.warning(format!(
+        report.warning(format!(
             "문단 끝 문자(13)가 없는 문단 {total}개에 문단 끝을 붙여 저장했습니다 \
              (없으면 한글이 손상 파일로 판정)"
         ));
     }
-    Ok(())
 }
 
 /// Rewrites an HWP document by copying its immutable source container and
@@ -222,7 +239,32 @@ pub fn rewrite_document_with_report(
         &source_section_roots,
         &mut materialization,
     )?;
-    terminate_written_paragraphs(&mut materialization, compressed)?;
+    // Changed sections are written from the materialization: repair them there. Every other
+    // section is copied from the source, so repair the source records and write that section
+    // too; otherwise the warning would count a repair the output never carries.
+    let mut total = terminate_written_paragraphs(
+        &mut materialization,
+        compressed,
+        Some(&plan.changed_sections),
+    )?;
+    let mut plan = plan;
+    let mut source_container = crate::Hwp5Container::open(source)?;
+    for index in 0..original.sections.len().min(edited.sections.len()) {
+        if plan.changed_sections.contains(&index) {
+            continue;
+        }
+        let stream_path = format!("/BodyText/Section{index}");
+        let decoded = source_container.read_record_stream(&stream_path)?;
+        if let Some((repaired, fixed)) = terminate_section_records(&decoded)? {
+            total += fixed;
+            materialization
+                .streams
+                .insert(stream_path, encode_compressed_stream(repaired, compressed));
+            plan.changed_sections.insert(index);
+        }
+    }
+    drop(source_container);
+    report_terminated_paragraphs(&mut materialization.report, total);
     std::fs::copy(source, path)?;
     patch_source_container(path, &plan, &source_bin_paths, &materialization)?;
     Ok(materialization.report)

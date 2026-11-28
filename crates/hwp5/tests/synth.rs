@@ -1392,6 +1392,16 @@ fn hwp5_origin_paragraph_without_end_char_is_repaired() {
 /// (`depth` 0 = body, deeper = nested lists), so the source file itself carries the #660 defect.
 #[cfg(test)]
 fn strip_end_chars(path: &std::path::Path, pick: impl Fn(usize, usize) -> bool) -> usize {
+    strip_end_chars_in(path, 0, pick)
+}
+
+#[cfg(test)]
+fn strip_end_chars_in(
+    path: &std::path::Path,
+    section: usize,
+    pick: impl Fn(usize, usize) -> bool,
+) -> usize {
+    let stream = format!("/BodyText/Section{section}");
     use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
     use std::io::Write as _;
     fn visit(
@@ -1420,7 +1430,7 @@ fn strip_end_chars(path: &std::path::Path, pick: impl Fn(usize, usize) -> bool) 
     }
     let mut container = hwp5::Hwp5Container::open(path).unwrap();
     let compressed = container.file_header().is_compressed();
-    let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+    let bytes = container.read_record_stream(&stream).unwrap();
     drop(container);
     let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
     let (mut seen, mut stripped) = (0, 0);
@@ -1432,7 +1442,7 @@ fn strip_end_chars(path: &std::path::Path, pick: impl Fn(usize, usize) -> bool) 
         raw
     };
     let mut cfb = cfb::open_rw(path).unwrap();
-    cfb.create_stream("/BodyText/Section0")
+    cfb.create_stream(&stream)
         .unwrap()
         .write_all(&encoded)
         .unwrap();
@@ -1443,6 +1453,11 @@ fn strip_end_chars(path: &std::path::Path, pick: impl Fn(usize, usize) -> bool) 
 /// Every PARA_TEXT in the written file's body records, nested ones included, ends with char 13.
 #[cfg(test)]
 fn unterminated_records(path: &std::path::Path) -> usize {
+    unterminated_records_in(path, 0)
+}
+
+#[cfg(test)]
+fn unterminated_records_in(path: &std::path::Path, section: usize) -> usize {
     use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
     fn count(nodes: &[RecordNode]) -> usize {
         nodes
@@ -1459,7 +1474,9 @@ fn unterminated_records(path: &std::path::Path) -> usize {
             .sum()
     }
     let mut container = hwp5::Hwp5Container::open(path).unwrap();
-    let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+    let bytes = container
+        .read_record_stream(&format!("/BodyText/Section{section}"))
+        .unwrap();
     count(&scan_stream(&bytes, ScanMode::Strict).unwrap().roots)
 }
 
@@ -1549,6 +1566,63 @@ fn raw_backed_footnote_list_paragraph_is_repaired() {
             .warnings
             .iter()
             .any(|w| w.contains("문단 끝 문자(13)")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+/// #660 review (3): the rewrite copies unchanged sections from the source. A defect in a section
+/// the edit does not touch must still be repaired in the output, not only counted.
+#[test]
+fn rewrite_repairs_an_unterminated_paragraph_in_an_unedited_section() {
+    use hwp_model::HwpChar;
+    let root = tmp(&format!("rewrite-unedited-section-{}", std::process::id()));
+    std::fs::create_dir_all(&*root).unwrap();
+    let source = root.join("source.hwp");
+    let mut doc = hwp_convert::from_markdown("first section\n");
+    let mut second = doc.sections[0].clone();
+    second.paragraphs = hwp_convert::from_markdown("second section\n").sections[0]
+        .paragraphs
+        .clone();
+    doc.sections.push(second);
+    hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+    assert_eq!(
+        strip_end_chars_in(&source, 1, |depth, i| depth == 0 && i == 0),
+        1
+    );
+    assert_eq!(
+        unterminated_records_in(&source, 1),
+        1,
+        "fixture carries the defect"
+    );
+    let original = hwp5::read_document(&source).unwrap().document;
+    assert_eq!(original.sections.len(), 2);
+    let mut edited = original.clone();
+    let target = &mut edited.sections[0].paragraphs[0].chars;
+    let end = target.pop();
+    target.push(HwpChar::Text('!'));
+    target.extend(end);
+
+    let output = root.join("out.hwp");
+    let report = hwp5::rewrite_document_with_report(
+        &source,
+        &original,
+        &edited,
+        &output,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        unterminated_records_in(&output, 1),
+        0,
+        "the unedited section's paragraph must be repaired in the output"
+    );
+    assert_eq!(unterminated_records_in(&output, 0), 0);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("문단 끝 문자(13)") && w.contains("1개")),
         "{:?}",
         report.warnings
     );
