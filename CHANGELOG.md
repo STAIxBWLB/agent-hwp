@@ -22,9 +22,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   numbered level-3 headings as 1x3 strip tables that read back as the same heading. Output without
   them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)). The TOC page
   numbers follow ahwp's own layout, and Hancom can paginate differently: on the measured sample,
-  1 of 16 `.hwp` entries and 11 of 16 `.hwpx` entries were off by 1-2 pages
-  ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643),
-  [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). Check the TOC in Hancom before
+  all 16 `.hwp` entries match Hancom ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)),
+  while 11 of 16 `.hwpx` entries were off by 1-2 pages (measured before #644)
+  ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before
   distributing.
 
 - Memo edit ops for same-format HWP5 and HWPX documents: `memo_add`, `memo_set_text` and
@@ -109,6 +109,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
+  line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
+  advances the same way. `--toc` rows are now at least as tall as their content line plus the
+  cell margins, keeping the former 1700 as the minimum. On the 16-entry `--toc` sample the page
+  numbers match Hancom's on every entry (were 15 of 16) and 66 of 67 body line caches equal a
+  Hancom re-save's ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)).
 - HWPX memo bodies stay in the memo appendix and no longer produce orphan rows in render layout.
 
 ## [2.1.1]

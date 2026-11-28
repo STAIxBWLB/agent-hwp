@@ -115,11 +115,12 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   any 1x3 table of that shape under a `개요 3` paragraph back as `### N. Title`, whether or not it
   came from `--section-strips`.
 - Pagination against Hancom: the TOC page numbers come from ahwp's own layout pass, and Hancom
-  can paginate differently. On the measured 16-entry sample (not a general bound), `.hwp` matched
-  Hancom on 15 of 16 entries, the miss being 1 page near a page bottom (page-fill rule,
-  [#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). `.hwpx` matched on 5 of 16, the
-  others off by 1-2 pages, because the `.hwpx` carries no line layout cache, so Hancom re-wraps
-  the lines and fits more characters per line than ahwp
+  can paginate differently. On the measured 16-entry sample (not a general bound), `.hwp` matches
+  Hancom on all 16 entries since the table-anchor line rule
+  ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)): the written line caches equal a
+  Hancom re-save's in 66 of 67 body paragraphs, the last off by 1 HU. `.hwpx` matched on 5 of
+  16 (measured before #644), the others off by 1-2 pages, because the `.hwpx` carries no line
+  layout cache, so Hancom re-wraps the lines and fits more characters per line than ahwp
   ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before
   distributing the document.
 

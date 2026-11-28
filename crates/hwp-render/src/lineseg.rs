@@ -115,6 +115,129 @@ fn body_cursor(entry_v_pos: i32, line_cursor: i32, table_total: i32, space_after
     bottom.saturating_add(space_after)
 }
 
+/// The anchor line of a paragraph that holds nothing but one inline (treat-as-char) table, as
+/// Hangul saves it (#644, rule B11): the line is as tall as the table object plus its outer top and
+/// bottom margins, and keeps the paragraph's own line spacing, so the next paragraph starts at
+/// `v_pos + line_height + line_spacing` plus the paragraph spacing. Measured over 315 genuine
+/// table-only anchor paragraphs: the advance held in 315 of 315, the height in 300 (the rest are
+/// large multi-row tables whose saved line is taller than the object; unexplained). Returns the
+/// object block height, or `None` when the paragraph is not that shape.
+pub(crate) fn inline_table_line_height(para: &Paragraph) -> Option<i32> {
+    let mut tables = para.controls.iter().filter_map(|c| match c {
+        Control::Table(t) => Some(t),
+        _ => None,
+    });
+    let table = tables.next()?;
+    if tables.next().is_some()
+        || para.chars.iter().any(|c| match c {
+            hwp_model::HwpChar::Text(_) => true,
+            // A line break or tab makes the paragraph more than one table line, which
+            // synthesis (one saved line) and layout must both leave to the ordinary path.
+            hwp_model::HwpChar::CharCtrl(code) => *code == hwp_model::ctrl_char::LINE_BREAK,
+            hwp_model::HwpChar::InlineCtrl { code, .. } => *code == hwp_model::ctrl_char::TAB,
+            _ => false,
+        })
+        || para.controls.iter().any(|c| {
+            !matches!(c, Control::Table(_) | Control::SectionDef(_))
+                && !matches!(&c.ctrl_id(), b"cold" | b"pgnp" | b"nwno")
+        })
+    {
+        return None;
+    }
+    let (height, top, bottom) = inline_table_object_extent(table)?;
+    (height > 0).then(|| height.saturating_add(top).saturating_add(bottom))
+}
+
+/// The anchor line's spacing when the table's "affect line spacing" bit (object attr bit 2) is
+/// set: Hangul then applies the paragraph's percentage line spacing to the table line's own
+/// height rather than the font's (the Hangul re-save of the #620 T4 strip: block 2268 at 160%
+/// saved `line_spacing` 1360 = 2268 * 60 / 100). With the bit clear, which every genuine inline
+/// table in the local corpus has (315 HWP5, 451 HWPX), the font-based spacing stands. `None`
+/// leaves the synthesized spacing alone (bit clear, or not a percentage mode).
+fn inline_table_affected_spacing(doc: &Document, para: &Paragraph, block: i32) -> Option<i32> {
+    let table = para.controls.iter().find_map(|c| match c {
+        Control::Table(t) => Some(t),
+        _ => None,
+    })?;
+    let affects = match &table.placement {
+        Some(placement) => placement.affect_line_spacing,
+        None => table
+            .common_data
+            .get(0..4)
+            .is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) & 0b100 != 0),
+    };
+    if !affects {
+        return None;
+    }
+    let kind = doc
+        .header
+        .para_shapes
+        .get(para.para_shape.0 as usize)
+        .map_or(0, |p| p.line_spacing_type);
+    (kind == 0).then(|| {
+        paragraph_advance(doc, para, block)
+            .saturating_sub(block)
+            .max(0)
+    })
+}
+
+/// Height plus line spacing of a table-only inline anchor line (rule B11), as both the synthesized
+/// cache and the cacheless layout cursor advance it. `None` when the paragraph is not that shape.
+pub(crate) fn inline_table_line_advance(doc: &Document, para: &Paragraph) -> Option<i32> {
+    let block = inline_table_line_height(para)?;
+    let spacing = inline_table_affected_spacing(doc, para, block).unwrap_or_else(|| {
+        let metrics = paragraph_metrics(doc, para);
+        metrics.advance.saturating_sub(metrics.height).max(0)
+    });
+    Some(block.saturating_add(spacing))
+}
+
+/// `(height, outer top, outer bottom)` of an inline table's object box: the placement for
+/// HWPX/authored tables, the object-common payload (HWP 5.0 §4.3.9 table 69: attr, vertical and
+/// horizontal offset, width, height, z-order, outer margins left/right/top/bottom) for HWP5 ones.
+fn inline_table_object_extent(table: &Table) -> Option<(i32, i32, i32)> {
+    if let Some(placement) = &table.placement {
+        if !placement.treat_as_char {
+            return None;
+        }
+        let height = if placement.height > 0 {
+            placement.height
+        } else {
+            // The HWP5 writer's grid rule (`table_grid_totals`): the per-row maximum over
+            // every single-row cell, summed, so a merged column-0 cell cannot under-count.
+            let mut rows = vec![0i32; usize::from(table.rows.max(1))];
+            for c in table.cells.iter().filter(|c| c.row_span == 1) {
+                if let Some(h) = rows.get_mut(usize::from(c.row)) {
+                    *h = (*h).max(c.height.0);
+                }
+            }
+            rows.iter().fold(0i32, |sum, h| sum.saturating_add(*h))
+        };
+        return Some((
+            height,
+            i32::from(placement.out_margins[2]),
+            i32::from(placement.out_margins[3]),
+        ));
+    }
+    let data = &table.common_data;
+    let u32_at = |o: usize| {
+        data.get(o..o + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let u16_at = |o: usize| {
+        data.get(o..o + 2)
+            .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+    };
+    if u32_at(0)? & 1 == 0 {
+        return None;
+    }
+    Some((
+        u32_at(16)? as i32,
+        i32::from(u16_at(28)?),
+        i32::from(u16_at(30)?),
+    ))
+}
+
 /// [`body_cursor`] measured from a paragraph's saved record, for a caller continuing a flow from
 /// kept caches: the saved first line stands for the entry position, and the tables are measured
 /// from their saved nested caches, which is what the renderer draws for that kept paragraph.
@@ -123,7 +246,20 @@ fn body_cursor(entry_v_pos: i32, line_cursor: i32, table_total: i32, space_after
 /// `v_pos + line_height + line_spacing` of the last line. That is the only reading a saved cache
 /// offers, and it is exact for every mode but FIXED spacing below the base line, which a genuine
 /// record cannot express without also losing the committed position (#509).
+///
+/// This is the body reading: a table-only inline anchor follows rule B11 (#644). Nested paragraph
+/// lists use [`saved_list_cursor`], since B11 was measured on body anchors only (#410).
 pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    saved_cursor(paragraph, space_after, true)
+}
+
+/// [`saved_body_cursor`] for a kept paragraph inside a nested list (a cell, caption or text
+/// box): the pre-#644 reading, with no B11 line advance.
+fn saved_list_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    saved_cursor(paragraph, space_after, false)
+}
+
+fn saved_cursor(paragraph: &Paragraph, space_after: i32, body: bool) -> Option<i32> {
     let entry = paragraph.line_segs.first()?;
     let table_total = paragraph
         .controls
@@ -143,6 +279,24 @@ pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32>
     // table under a 5100 HU line in the #462 fixture). Resuming at the smaller of the two would
     // start the next paragraph inside the line the output keeps (#509).
     let line_bottom = last.v_pos.saturating_add(last.line_height);
+    // A table-only inline anchor (rule B11, #644) advances by its line height plus line spacing;
+    // the measured block counts only when the cell grid outgrew the object (an edited cell),
+    // exactly as the synthesizer decides it.
+    if body && let Some(block) = inline_table_line_height(paragraph) {
+        let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
+        let table_total = if grid > block { table_total } else { 0 };
+        // Floor at the block: an anchor ahwp saved before #644 kept the font line height, and
+        // the next paragraph must still clear its table. A no-op on genuine caches, whose line
+        // is at least the block (315 of 315).
+        return Some(body_cursor(
+            entry.v_pos,
+            line_cursor,
+            table_total
+                .max(block)
+                .max(line_cursor.saturating_sub(entry.v_pos)),
+            space_after,
+        ));
+    }
     Some(
         body_cursor(entry.v_pos, line_cursor, table_total, space_after)
             .max(line_bottom.saturating_add(space_after)),
@@ -627,11 +781,19 @@ fn synthesize_linesegs_inner(
             if floating_source.is_some() {
                 table_total = 0;
             }
+            // Rule B11 (#644): a table-only inline anchor's saved line is the object block, which
+            // can be taller than the measured grid (fixed rows, a stored object height). Rule A
+            // fits that line height at the body bottom, so test the larger of the two.
+            let inline_fit = floating_source
+                .is_none()
+                .then(|| inline_table_line_height(&doc.sections[si].paragraphs[pi]))
+                .flatten();
+            let fit_total = inline_fit.map_or(table_total, |block| table_total.max(block));
             // Other table blocks retain the existing whole-table page-fit fallback.
             if section_anchors.is_none()
-                && table_total > 0
+                && fit_total > 0
                 && v_pos > 0
-                && v_pos.saturating_add(table_total) > content_h
+                && v_pos.saturating_add(fit_total) > content_h
             {
                 v_pos = 0;
             }
@@ -666,7 +828,42 @@ fn synthesize_linesegs_inner(
             // compute_linesegs may advance less than its serialized cache can express: FIXED
             // spacing below the base (or 0) must not gain the cache's base-height floor (#509).
             // A translated floating host instead uses the stored line advance above (#590).
-            let line_cursor = v_pos;
+            let mut line_cursor = v_pos;
+            // Rule B11 (#644): a paragraph holding only an inline table saves one line as tall as
+            // the table object block, keeping the paragraph's line spacing, and the next paragraph
+            // starts after that line's height and spacing (315 of 315 genuine anchors). Without
+            // this the line kept the font height and the flow advanced by the table height alone,
+            // so every following line sat one line spacing (and the object/cell-grid difference)
+            // higher than in Hangul.
+            let inline_block = (floating_source.is_none() && segs.len() == 1)
+                .then(|| inline_table_line_height(src))
+                .flatten();
+            if let Some(block) = inline_block
+                && let Some(line) = segs.first_mut()
+            {
+                line.line_height = block;
+                line.text_height = block;
+                // Baseline at 85% of the line, rounded half up (`paragraph_metrics` truncates).
+                // Evidence: the #620 T4 strip and TOC anchors and the #644 inline-table sample
+                // matched Hangul's re-saved caches byte-for-byte, text height and baseline included.
+                line.baseline_gap = ((i64::from(block) * 85 + 50) / 100) as i32;
+                if let Some(advance) = inline_table_line_advance(&snap, src) {
+                    line.line_spacing = advance.saturating_sub(block);
+                }
+                line_cursor = line
+                    .v_pos
+                    .saturating_add(block)
+                    .saturating_add(line.line_spacing);
+                // The line advance replaces the measured block (whose 566 padding the anchor line
+                // does not carry), except when the cell grid itself outgrew the object (an edited
+                // cell): then the flow still clears the grown table, as `saved_body_cursor` does.
+                let grid = table_total.saturating_sub(TABLE_BLOCK_PADDING);
+                table_total = if grid > block {
+                    table_total.max(line_cursor.saturating_sub(anchor_v))
+                } else {
+                    0
+                };
+            }
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
             {
@@ -946,7 +1143,7 @@ fn fill_list(
             if caches == ListCaches::KeepMeasured {
                 // The retained prefix moves the cursor: the paragraph after it has to start below
                 // it, and that is the height the table is measured from.
-                if let Some(bottom) = saved_body_cursor(para, 0) {
+                if let Some(bottom) = saved_list_cursor(para, 0) {
                     v = bottom;
                 }
             }
@@ -1254,6 +1451,144 @@ mod advance_tests {
 mod tests {
     use super::*;
     use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
+
+    /// Rule B11 (#644): a table-only inline anchor's saved line is as tall as the table object
+    /// block and keeps its line spacing, and the next paragraph starts after both. Built from the
+    /// `--section-strips` transform (a 1x3 inline strip at 160% spacing, the #620 T4 shape) with
+    /// an isolated font store; every expectation comes from the IR's own fields, never from
+    /// glyph metrics.
+    #[test]
+    fn an_inline_table_anchor_line_spans_the_table_and_keeps_its_spacing() {
+        let mut doc = hwp_convert::from_markdown("첫 문단\n\n### 1. 절 제목\n\n뒷 문단\n");
+        assert_eq!(
+            hwp_convert::report_blocks::apply_section_strips(&mut doc),
+            1
+        );
+        let mut store = FontStore::new_isolated();
+        let mut warnings = RenderIssueAccumulator::new();
+        synthesize_linesegs(&mut doc, &mut store, &mut warnings);
+        let paras = &doc.sections[0].paragraphs;
+        let strip = paras
+            .iter()
+            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+            .expect("the strip paragraph");
+        let block = inline_table_line_height(&paras[strip]).expect("a table-only inline anchor");
+        let Some(Control::Table(table)) = paras[strip].controls.first() else {
+            panic!("strip table first");
+        };
+        let object_h = table.placement.as_ref().expect("strip placement").height;
+        assert_eq!(block, object_h, "no outer margins on the strip");
+        let line = paras[strip].line_segs[0];
+        assert_eq!(line.line_height, block, "the anchor line spans the table");
+        assert_eq!(line.text_height, block);
+        // The strip sets affect-line-spacing, so the percentage scales the table line itself.
+        let spacing = paragraph_advance(&doc, &paras[strip], block) - block;
+        assert!(spacing > 0, "the strip paragraph has percentage spacing");
+        assert_eq!(
+            line.line_spacing, spacing,
+            "the table line keeps its spacing"
+        );
+        let shape = |p: &Paragraph| &doc.header.para_shapes[p.para_shape.0 as usize];
+        let gap =
+            shape(&paras[strip]).spacing_bottom / 2 + shape(&paras[strip + 1]).spacing_top / 2;
+        assert_eq!(
+            paras[strip + 1].line_segs[0].v_pos,
+            line.v_pos + block + spacing + gap,
+            "the next paragraph starts after the table line and its spacing"
+        );
+    }
+
+    /// Rule A at the body bottom with rule B11's line (#644): when the object block is taller
+    /// than the measured grid (here a stored object height), the anchor line must still fit the
+    /// body or move whole to the next page; fitting only the grid leaves the saved line ending
+    /// below the body.
+    #[test]
+    fn an_inline_table_anchor_line_taller_than_its_grid_fits_the_body() {
+        let mut checked = false;
+        for filler in 20..60 {
+            let mut md = String::new();
+            for i in 0..filler {
+                md.push_str(&format!("본문 {i}\n\n"));
+            }
+            md.push_str("### 1. 절 제목\n\n뒷 문단\n");
+            let mut doc = hwp_convert::from_markdown(&md);
+            hwp_convert::report_blocks::apply_section_strips(&mut doc);
+            let strip = doc.sections[0]
+                .paragraphs
+                .iter()
+                .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+                .expect("strip");
+            for c in &mut doc.sections[0].paragraphs[strip].controls {
+                if let Control::Table(t) = c {
+                    t.placement.as_mut().expect("placement").height = 9000;
+                }
+            }
+            let content_h = {
+                let pg = doc.sections[0]
+                    .section_def()
+                    .and_then(|d| d.page.as_ref())
+                    .expect("page def");
+                body_box(pg, pg.height.0).height_hu
+            };
+            let mut store = FontStore::new_isolated();
+            let mut warnings = RenderIssueAccumulator::new();
+            synthesize_linesegs(&mut doc, &mut store, &mut warnings);
+            let line = doc.sections[0].paragraphs[strip].line_segs[0];
+            assert_eq!(line.line_height, 9000);
+            assert!(
+                line.v_pos + line.line_height <= content_h,
+                "filler={filler}: the anchor line ends at {} below the body ({content_h})",
+                line.v_pos + line.line_height
+            );
+            let grid_fits = {
+                let prev = &doc.sections[0].paragraphs[strip - 1];
+                let last = prev.line_segs.last().expect("prev line");
+                let cursor = last.v_pos + last.line_height + last.line_spacing;
+                cursor > 0 && cursor + 9000 > content_h && cursor + 2268 + 566 <= content_h
+            };
+            checked |= grid_fits && line.v_pos == 0;
+        }
+        assert!(
+            checked,
+            "no filler count put the grid inside and the line outside the body"
+        );
+    }
+
+    /// With the object's affect-line-spacing bit set, the percentage applies to the table line's
+    /// own height (Hangul's re-save of the T4 strip: 2268 at 160% -> 1360).
+    #[test]
+    fn affect_line_spacing_scales_the_table_line_spacing() {
+        let mut doc = hwp_convert::from_markdown("### 1. 절 제목\n\n뒷 문단\n");
+        hwp_convert::report_blocks::apply_section_strips(&mut doc);
+        let strip = doc.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+            .expect("the strip paragraph");
+        let para = &doc.sections[0].paragraphs[strip];
+        let block = inline_table_line_height(para).expect("inline anchor");
+        let expected = paragraph_advance(&doc, para, block) - block;
+        assert!(
+            inline_table_affected_spacing(&doc, para, block) == Some(expected),
+            "the strip sets affect_line_spacing"
+        );
+        assert_eq!(
+            inline_table_line_advance(&doc, para),
+            Some(block + expected)
+        );
+        let mut cleared = doc.clone();
+        for c in &mut cleared.sections[0].paragraphs[strip].controls {
+            if let Control::Table(t) = c {
+                t.placement.as_mut().expect("placement").affect_line_spacing = false;
+            }
+        }
+        let para = &cleared.sections[0].paragraphs[strip];
+        let metrics = paragraph_metrics(&cleared, para);
+        assert_eq!(
+            inline_table_line_advance(&cleared, para),
+            Some(block + metrics.advance - metrics.height)
+        );
+    }
 
     #[test]
     fn saved_generic_list_width_uses_container_geometry() {
@@ -1616,6 +1951,98 @@ mod tests {
         assert_eq!(saved_body_cursor(&plain, 300), Some(height + 300));
         assert!(height > 1300, "the table reaches below the text line");
     }
+
+    /// Rule B11 (#644) is a body rule: a kept table-only inline anchor inside a nested list
+    /// (a cell) keeps the pre-#644 reading, the larger of the measured table and the saved line
+    /// block, with no B11 line spacing, while the body reading takes the B11 line advance.
+    #[test]
+    fn b11_reads_body_anchors_only_never_nested_list_paragraphs() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let height = table_height(&inner);
+        let mut anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                line_spacing: 1800,
+                ..seg(0, 3000)
+            }],
+            ..Default::default()
+        };
+        anchor.controls.push(Control::Table(inner));
+        assert!(
+            inline_table_line_height(&anchor).is_some(),
+            "a B11 anchor shape"
+        );
+        assert_eq!(
+            saved_list_cursor(&anchor, 0),
+            Some(height.max(3000)),
+            "nested lists keep the pre-#644 reading"
+        );
+        assert_eq!(
+            saved_body_cursor(&anchor, 0),
+            Some(4800),
+            "the body reading takes the B11 line advance"
+        );
+    }
+
+    /// A kept body anchor that ahwp saved before #644 still carries the font line height (1000)
+    /// under a taller inline table block (3000); an edit that continues the flow after it must
+    /// start below the table, never inside it.
+    #[test]
+    fn a_kept_pre_b11_anchor_line_still_clears_its_table() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let mut anchor = Paragraph {
+            line_segs: vec![LineSeg {
+                line_spacing: 600,
+                ..seg(500, 1000)
+            }],
+            ..Default::default()
+        };
+        anchor.controls.push(Control::Table(inner));
+        assert!(
+            inline_table_line_height(&anchor).is_some(),
+            "a B11 anchor shape"
+        );
+        let cursor = saved_body_cursor(&anchor, 300).expect("cursor");
+        assert!(
+            cursor >= 500 + 3000 + 300,
+            "the next paragraph starts at {cursor}, inside the table that ends at 3500"
+        );
+    }
+
+    /// A line break or tab makes a table-only paragraph more than one line, so B11 (one saved
+    /// table line) does not apply on either the synthesis or the layout side.
+    #[test]
+    fn a_line_break_or_tab_takes_a_table_paragraph_off_b11() {
+        let mut inner = table_with(cell_with(&[0]));
+        inner.placement = Some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            height: 3000,
+            ..Default::default()
+        });
+        let mut anchor = Paragraph::default();
+        anchor.controls.push(Control::Table(inner));
+        assert!(inline_table_line_height(&anchor).is_some());
+        let mut broken = anchor.clone();
+        broken.chars.push(hwp_model::HwpChar::CharCtrl(
+            hwp_model::ctrl_char::LINE_BREAK,
+        ));
+        assert_eq!(inline_table_line_height(&broken), None, "line break");
+        let mut tabbed = anchor;
+        tabbed.chars.push(hwp_model::HwpChar::InlineCtrl {
+            code: hwp_model::ctrl_char::TAB,
+            payload: vec![0; 12],
+        });
+        assert_eq!(inline_table_line_height(&tabbed), None, "tab");
+    }
 }
 
 /// Regression coverage for #426: an anchor prepass that stops before it collected every
@@ -1733,6 +2160,57 @@ mod anchor_prepass_tests {
             synthesize_linesegs_with_prepass_page_limit(doc, &mut store, &mut warnings, page_limit)
                 .expect("a floating-table section runs the prepass");
         (anchors, warnings.finish())
+    }
+
+    /// Rule B11 (#644) in a floating-table section, which takes its anchors from the cacheless
+    /// prepass: a table-only inline anchor whose object block (here a stored 9000 height over a
+    /// one-row strip) does not fit below its entry moves whole to the next page, and its line
+    /// moves with it. The synthesized line must start that page, never end below the body.
+    #[test]
+    fn a_floating_section_moves_an_unfitting_b11_line_with_its_table() {
+        let mut moved = false;
+        for filler in 20..40 {
+            let mut md = String::new();
+            for i in 0..filler {
+                md.push_str(&format!("본문 {i}\n\n"));
+            }
+            md.push_str("### 1. 절 제목\n\n뒷 문단\n");
+            let mut doc = hwp_convert::from_markdown(&md);
+            hwp_convert::report_blocks::apply_section_strips(&mut doc);
+            doc.sections[0].paragraphs[0]
+                .controls
+                .push(Control::Table(floating_table(1, 1000)));
+            let strip = doc.sections[0]
+                .paragraphs
+                .iter()
+                .position(|p| inline_table_line_height(p).is_some())
+                .expect("strip");
+            for c in &mut doc.sections[0].paragraphs[strip].controls {
+                if let Control::Table(t) = c {
+                    t.placement.as_mut().expect("placement").height = 9000;
+                }
+            }
+            let content_h = {
+                let pg = doc.sections[0]
+                    .section_def()
+                    .and_then(|d| d.page.as_ref())
+                    .expect("page def");
+                body_box(pg, pg.height.0).height_hu
+            };
+            let (anchors, _) = synthesize_complete(&mut doc);
+            assert!(anchors.section_complete(0));
+            let line = doc.sections[0].paragraphs[strip].line_segs[0];
+            assert_eq!(line.line_height, 9000);
+            assert!(
+                line.v_pos + line.line_height <= content_h,
+                "filler={filler}: the B11 line ends at {} below the body ({content_h})",
+                line.v_pos + line.line_height
+            );
+            if line.v_pos == 0 && line.flags & 0x1 != 0 {
+                moved = true;
+            }
+        }
+        assert!(moved, "no filler count moved the B11 line to a new page");
     }
 
     /// Ordinary complete pass: measured anchors drive the section, including the page-top anchor
