@@ -3128,7 +3128,7 @@ fn crosses_field_pair(chars: &[HwpChar], range: std::ops::Range<usize>) -> bool 
 /// The memo is written as format-neutral IR: an HWP5 memo anchor control (`%unk` with a `MEMO/`
 /// Command string) whose body paragraphs sit in `paragraph_lists`. Each writer synthesizes its own
 /// container's body from that — HWP5's `MEMO_LIST` extras on the section's last paragraph, HWPX's
-/// `hp:subList` — and an op-created memo written to the other container stays a typed drop.
+/// `hp:subList`. Cross-format writes also use these native body representations.
 ///
 /// The number is one past the highest memo number in the document, and the anchor's field instance
 /// id is allocated by [`crate::field::next_memo_field_id`] (07 L5). A missing `created_filetime`
