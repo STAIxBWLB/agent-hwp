@@ -165,14 +165,47 @@ fn assert_resynthesized(label: &str, original: &Document, edited: &Document, fir
     }
 }
 
+/// Mark saved suffix caches so resynthesis remains observable even when it produces the
+/// same geometry as the genuine file. The prefix and its vertical cursor stay untouched.
+fn source_with_marked_suffix(name: &str) -> (PathBuf, Document) {
+    let mut document = input();
+    for paragraph in &mut document.sections[0].paragraphs[TABLE_PARAGRAPH..] {
+        for line in &mut paragraph.line_segs {
+            line.seg_width += 1;
+        }
+    }
+    let source = work_dir().join(name);
+    hwp5::write_document(
+        &document,
+        &source,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let saved = hwp5::read_document(&source).unwrap().document;
+    for (actual, expected) in body(&saved).iter().zip(body(&document)) {
+        assert_eq!(
+            actual.line_segs, expected.line_segs,
+            "the marked caches must survive the write"
+        );
+    }
+    (source, saved)
+}
+
 #[test]
 fn growing_table_edit_continues_the_kept_prefix() {
-    let original = input();
+    let (source, original) = source_with_marked_suffix("grow-source.hwp");
     let long = "대피 경로와 안전지점을 지도 한 장에 통합해 표시하고 상태 변화를 실시간으로 갱신한다. \
                 대피 경로와 안전지점을 지도 한 장에 통합해 표시하고 상태 변화를 실시간으로 갱신한다. \
                 대피 경로와 안전지점을 지도 한 장에 통합해 표시하고 상태 변화를 실시간으로 갱신한다. \
                 대피 경로와 안전지점을 지도 한 장에 통합해 표시하고 상태 변화를 실시간으로 갱신한다.";
-    let (_, edited) = edit("grow.hwp", &["--set-cell", &format!("1:2:2={long}")]);
+    let (_, edited) = edit_path(
+        &source,
+        "grow.hwp",
+        &["--set-cell", &format!("1:2:2={long}")],
+    );
 
     assert_prefix_restored("grow", &original, &edited, TABLE_PARAGRAPH);
     assert_flow_forward("grow", body(&edited));
@@ -196,8 +229,8 @@ fn growing_table_edit_continues_the_kept_prefix() {
 
 #[test]
 fn shrinking_table_edit_continues_the_kept_prefix() {
-    let original = input();
-    let (_, edited) = edit("shrink.hwp", &["--set-cell", "1:2:2=통합"]);
+    let (source, original) = source_with_marked_suffix("shrink-source.hwp");
+    let (_, edited) = edit_path(&source, "shrink.hwp", &["--set-cell", "1:2:2=통합"]);
 
     assert_prefix_restored("shrink", &original, &edited, TABLE_PARAGRAPH);
     assert_flow_forward("shrink", body(&edited));
