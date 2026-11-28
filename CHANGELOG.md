@@ -112,6 +112,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Right- and center-aligned cached lines ending in a forced line break use their visible
   width, including in table cells. Ordinary trailing spaces before the break collapse
   as on other non-final lines ([#656](https://github.com/STAIxBWLB/agent-hwp/issues/656)).
+- A top-level floating table anchored to the paragraph and column, aligned top and left, with zero
+  offsets now draws its grid one left and one top outer margin in from its anchor, as Hancom does;
+  a Hancom-authored table was drawn 2.83 pt high and left (rule B14,
+  [#655](https://github.com/STAIxBWLB/agent-hwp/issues/655)).
+  Other relations and alignments, non-zero offsets, nested tables and the right and bottom margins
+  are unchanged until measured. Text after the table starts below the moved grid, so nothing
+  overlaps it (a lower bound: Hancom places that text lower still), and a grid that would cross
+  the column edge keeps its old position.
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
