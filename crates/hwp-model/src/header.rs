@@ -314,7 +314,8 @@ impl ParaShape {
         }
     }
 
-    /// 한글 줄나눔 (bit7): true=KEEP_WORD(어절 단위), false=BREAK_WORD(글자 단위).
+    /// Serialized non-Latin break setting: bit 7 set is HWPX KEEP_WORD, clear is BREAK_WORD.
+    /// In the measured Hancom Hangul paragraphs, BREAK_WORD preferred a word boundary.
     pub fn break_non_latin_keep_word(&self) -> bool {
         (self.attr1 >> 7) & 1 != 0
     }

@@ -849,7 +849,13 @@ fn synthesize_linesegs_inner(
                         .saturating_sub(shape.margin_right.max(0) / 2)
                 });
                 compute_linesegs(
-                    store, &snap, src, line_width, content_h, &mut v_pos, warnings,
+                    store,
+                    &snap,
+                    src,
+                    line_width,
+                    Some(content_h),
+                    &mut v_pos,
+                    warnings,
                 )
             };
             // Capture the line cursor before applying table/source-offset flow. Ordinary
@@ -1326,7 +1332,7 @@ pub(crate) fn compute_box_linesegs(
     v: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
-    compute_linesegs(store, doc, para, width, i32::MAX, v, warnings)
+    compute_linesegs(store, doc, para, width, None, v, warnings)
 }
 
 /// Compute one paragraph's cache using a page-relative or cell-local cursor.
@@ -1336,9 +1342,21 @@ pub(crate) fn compute_linesegs(
     doc: &Document,
     para: &Paragraph,
     line_width: i32,
-    content_h: i32,
+    body_height: Option<i32>,
     v_pos: &mut i32,
     warnings: &mut RenderIssueAccumulator,
+) -> Vec<LineSeg> {
+    let items = shape_range(store, doc, para, (0, para.wchar_len()), warnings);
+    compute_linesegs_from_items(doc, para, line_width, body_height, v_pos, &items)
+}
+
+fn compute_linesegs_from_items(
+    doc: &Document,
+    para: &Paragraph,
+    line_width: i32,
+    body_height: Option<i32>,
+    v_pos: &mut i32,
+    items: &[InlineItem],
 ) -> Vec<LineSeg> {
     // Preserve the measured height/baseline formula and the paragraph's line spacing.
     let metrics = paragraph_metrics(doc, para);
@@ -1362,8 +1380,6 @@ pub(crate) fn compute_linesegs(
         };
         ((seg_width - indent).max(1)) as f32 / 100.0
     };
-    let total = para.wchar_len();
-
     let make = |start: u32, v: i32| LineSeg {
         text_start: start,
         v_pos: v,
@@ -1385,61 +1401,25 @@ pub(crate) fn compute_linesegs(
     // breaks a paragraph at the body bottom, so neither rule is established:
     // the cache keeps the block its own saved fields define (#423).
     let place = |segs: &mut Vec<LineSeg>, v_pos: &mut i32, start: u32| {
-        if *v_pos > 0 && (*v_pos).saturating_add(base) > content_h {
+        if let Some(height) = body_height
+            && *v_pos > 0
+            && (*v_pos).saturating_add(base) > height
+        {
             *v_pos = 0;
         }
         segs.push(make(start, *v_pos));
         *v_pos = (*v_pos).saturating_add(line_advance);
     };
 
-    // Shape fonts and wrap within the same available width recorded in each segment.
-    // Use the same glyph x_advance accumulation as place_wrapped in layout.rs.
-    let items = shape_range(store, doc, para, (0, total), warnings);
+    // Wrap within the available width recorded in each segment, as in place_wrapped.
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
-    let mut segs = Vec::new();
-    let mut line_start = 0u32;
-    let mut acc = 0.0f32;
-    let mut content = false;
-    let mut previous_no_break = false;
-    for item in &items {
-        match item {
-            InlineItem::Run(run) => {
-                let sources = glyph_source_sequences(run);
-                let mut wchar_offset = 0u32;
-                for (g, source) in run.glyphs.iter().zip(&sources) {
-                    let current_no_break = source_has_no_break_space(source);
-                    let break_allowed = !previous_no_break
-                        && !current_no_break
-                        && !crate::shape::source_is_space(run, source);
-                    if content && acc + g.x_advance > line_limit_pt(segs.len()) && break_allowed {
-                        place(&mut segs, v_pos, line_start);
-                        line_start = run.start_wchar.saturating_add(wchar_offset);
-                        acc = 0.0;
-                    }
-                    acc += g.x_advance;
-                    content = true;
-                    previous_no_break = current_no_break;
-                    wchar_offset = wchar_offset.saturating_add(source_wchar_len(source));
-                }
-            }
-            InlineItem::Tab => {
-                acc = crate::tab::next_tab(&tabs, acc, TAB_INTERVAL_PT);
-                content = true;
-                previous_no_break = false;
-            }
-            // LINE_BREAK (CharCtrl 10) commits the current line and resumes after the control.
-            InlineItem::LineBreak(next_start) => {
-                place(&mut segs, v_pos, line_start);
-                line_start = *next_start;
-                acc = 0.0;
-                content = false;
-                previous_no_break = false;
-            }
-        }
+    let wrap_hangul_words = body_height.is_some() && crate::shape::wraps_at_hangul_words(doc, para);
+    let starts = synthesized_line_starts(items, &tabs, line_limit_pt, wrap_hangul_words);
+    let mut segs = Vec::with_capacity(starts.len());
+    for start in starts {
+        place(&mut segs, v_pos, start);
     }
-    // Commit the final line, which is also the only line for an empty paragraph.
-    place(&mut segs, v_pos, line_start);
 
     // Encode the paragraph's left margin in col_start (HWPUNIT). Genuine line_seg horzpos
     // stores only this margin, not first-line/hanging indent; measured hanging-indent paragraphs
@@ -1452,6 +1432,65 @@ pub(crate) fn compute_linesegs(
         seg.col_start = ml_hu;
     }
     segs
+}
+
+/// Find WCHAR line origins from shaped advances. Nested-list synthesis uses
+/// the existing glyph rule, while measured body BREAK_WORD can look ahead.
+fn synthesized_line_starts(
+    items: &[InlineItem],
+    tabs: &[crate::tab::TabStop],
+    line_limit_pt: impl Fn(usize) -> f32,
+    wrap_hangul_words: bool,
+) -> Vec<u32> {
+    let word_widths = wrap_hangul_words.then(|| crate::shape::hangul_word_widths(items));
+    let mut starts = vec![0];
+    let mut acc = 0.0f32;
+    let mut content = false;
+    let mut previous_no_break = false;
+    for (item_index, item) in items.iter().enumerate() {
+        match item {
+            InlineItem::Run(run) => {
+                let fallback;
+                let sources = if let Some(widths) = &word_widths {
+                    &widths[item_index].0
+                } else {
+                    fallback = glyph_source_sequences(run);
+                    &fallback
+                };
+                let mut wchar_offset = 0u32;
+                for (glyph_index, (g, source)) in run.glyphs.iter().zip(sources).enumerate() {
+                    let current_no_break = source_has_no_break_space(source);
+                    let break_allowed = !previous_no_break
+                        && !current_no_break
+                        && !crate::shape::source_is_space(run, source);
+                    let width = word_widths.as_ref().map_or(g.x_advance, |widths| {
+                        widths[item_index].1[glyph_index].max(g.x_advance)
+                    });
+                    if content && acc + width > line_limit_pt(starts.len() - 1) && break_allowed {
+                        starts.push(run.start_wchar.saturating_add(wchar_offset));
+                        acc = 0.0;
+                    }
+                    acc += g.x_advance;
+                    content = true;
+                    previous_no_break = current_no_break;
+                    wchar_offset = wchar_offset.saturating_add(source_wchar_len(source));
+                }
+            }
+            InlineItem::Tab => {
+                acc = crate::tab::next_tab(tabs, acc, TAB_INTERVAL_PT);
+                content = true;
+                previous_no_break = false;
+            }
+            // LINE_BREAK (CharCtrl 10) commits the current line and resumes after the control.
+            InlineItem::LineBreak(next_start) => {
+                starts.push(*next_start);
+                acc = 0.0;
+                content = false;
+                previous_no_break = false;
+            }
+        }
+    }
+    starts
 }
 
 #[cfg(test)]
@@ -1528,12 +1567,44 @@ mod advance_tests {
             &doc,
             &para,
             (room * 100.0).floor() as i32,
-            i32::MAX,
+            Some(i32::MAX),
             &mut v,
             &mut warns,
         );
         let starts: Vec<u32> = segs.iter().map(|s| s.text_start).collect();
         assert_eq!(starts, [0, 3]);
+    }
+
+    #[test]
+    fn synthesis_moves_hangul_words_only_with_break_word() {
+        use crate::layout::tab_width_tests::dummy_glyph_run_with_widths;
+        let items = [dummy_glyph_run_with_widths(
+            "가 나다",
+            &[10.0, 5.0, 10.0, 10.0],
+        )];
+        let mut doc = hwp_convert::from_markdown("x");
+        let para = doc.sections[0].paragraphs[0].clone();
+        let shape = para.para_shape.0 as usize;
+        for (bit, body_height, expected) in [
+            (0, Some(i32::MAX), [0, 2]),
+            (1 << 7, Some(i32::MAX), [0, 3]),
+            (0, None, [0, 3]),
+        ] {
+            let attr = &mut doc.header.para_shapes[shape].attr1;
+            *attr = (*attr & !(1 << 7)) | bit;
+            let lines =
+                super::compute_linesegs_from_items(&doc, &para, 2500, body_height, &mut 0, &items);
+            let starts: Vec<_> = lines.iter().map(|line| line.text_start).collect();
+            assert_eq!(starts, expected, "bit {bit}, body height {body_height:?}");
+        }
+        let punctuated = [dummy_glyph_run_with_widths(
+            "가 나다.",
+            &[10.0, 5.0, 10.0, 10.0, 3.0],
+        )];
+        assert_eq!(
+            super::synthesized_line_starts(&punctuated, &[], |_| 25.0, true),
+            [0, 3]
+        );
     }
 
     /// #643 B12 in synthesis: an overflowing ordinary space stays on the line, but a FW_SPACE
@@ -1573,8 +1644,15 @@ mod advance_tests {
             // Room for "aa" plus a sliver, so the separator overflows.
             let width = ((w + 0.1) * 100.0).ceil() as i32;
             let mut v = 0;
-            let segs =
-                super::compute_linesegs(store, &doc, &para, width, i32::MAX, &mut v, &mut warns);
+            let segs = super::compute_linesegs(
+                store,
+                &doc,
+                &para,
+                width,
+                Some(i32::MAX),
+                &mut v,
+                &mut warns,
+            );
             Some(segs.iter().map(|s| s.text_start).collect::<Vec<_>>())
         };
         let Some(space) = starts(&mut store, HwpChar::Text(' ')) else {

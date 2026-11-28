@@ -233,6 +233,57 @@ pub enum InlineItem {
     LineBreak(u32),
 }
 
+/// Hancom's BREAK_WORD setting moves a whitespace-delimited Hangul word to the next line
+/// before falling back to glyph breaks when the word is wider than a fresh line (#643).
+pub(crate) fn wraps_at_hangul_words(doc: &Document, para: &Paragraph) -> bool {
+    doc.header
+        .para_shapes
+        .get(para.para_shape.0 as usize)
+        .is_some_and(|shape| !shape.break_non_latin_keep_word())
+}
+
+/// Return glyph sources and the width at each recognized word's first glyph.
+/// Carry the start across style runs so changing a character style cannot invent a boundary.
+pub(crate) fn hangul_word_widths(items: &[InlineItem]) -> Vec<(Vec<String>, Vec<f32>)> {
+    let mut widths: Vec<_> = items
+        .iter()
+        .map(|item| match item {
+            InlineItem::Run(run) => (glyph_source_sequences(run), vec![0.0; run.glyphs.len()]),
+            _ => (Vec::new(), Vec::new()),
+        })
+        .collect();
+    let mut at_boundary = true;
+    let mut word: Option<(usize, usize)> = None;
+    for (item_index, item) in items.iter().enumerate() {
+        let InlineItem::Run(run) = item else {
+            word = None;
+            at_boundary = true;
+            continue;
+        };
+        for (glyph_index, glyph) in run.glyphs.iter().enumerate() {
+            let source = &widths[item_index].0[glyph_index];
+            if !source.is_empty() && source.chars().all(|c| ('가'..='힣').contains(&c)) {
+                if at_boundary {
+                    word = Some((item_index, glyph_index));
+                }
+                if let Some((run_index, start)) = word {
+                    widths[run_index].1[start] += glyph.x_advance;
+                }
+                at_boundary = false;
+            } else {
+                at_boundary = source_is_space(run, source);
+                if let Some((run_index, start)) = word.take()
+                    && !at_boundary
+                {
+                    // A mixed-script token is outside the measured Hangul cases.
+                    widths[run_index].1[start] = 0.0;
+                }
+            }
+        }
+    }
+    widths
+}
+
 /// 유니코드 → HWP 7언어 슬롯 분류 (U3 — 경계 문자는 실측 보정 예정).
 fn lang_slot_of(c: char) -> usize {
     match c as u32 {

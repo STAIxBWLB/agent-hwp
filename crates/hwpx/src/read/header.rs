@@ -583,9 +583,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     }
                     b"breakSetting" => {
                         if let Some(ps) = &mut current_para {
-                            // Korean line breaking: KEEP_WORD=bit7=1, BREAK_WORD=0. Genuine BREAK_WORD
-                            // paragraphs wrap densely at character boundaries.
-
+                            // Hancom Save As maps KEEP_WORD to bit 7 set and BREAK_WORD to clear.
+                            // BREAK_WORD preferred Hangul word boundaries in the #643 samples.
                             if attr(e, "breakNonLatinWord").as_deref() != Some("BREAK_WORD") {
                                 ps.attr1 |= 1 << 7;
                             }

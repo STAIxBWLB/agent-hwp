@@ -114,6 +114,15 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   글자를 넣기 때문이다([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). 배포 전에 한글에서
   목차를 확인한다.
 
+## 한글 줄나눔
+
+Markdown 출력은 HWPX `KEEP_WORD`(HWP5 문단 모양 비트 7 켜짐)를 사용한다.
+이 설정은 한글 단어 안에서 줄을 나눌 수 있다. `BREAK_WORD`(비트 7 꺼짐)
+스타일에서는 새로 줄을 배치하는 본문의 순수 한글 음절 단어가 남은 폭에
+들어가지 않으면 다음 줄로 옮긴다. 구두점·숫자·다른 문자가 섞인 단어와
+셀·캡션·글상자는 글자 단위로 나눈다. 빈 줄보다 긴 단어는 단어 안에서
+나눈다. 사용 가능한 줄 캐시의 기존 줄바꿈은 유지한다.
+
 ## JSON IR로 문서 재생성하기
 
 기존 문서를 편집하지 않고 처음부터 똑같이 신규 생성할 수 있다.

@@ -479,7 +479,8 @@ pub fn default_header() -> hwp_model::DocHeader {
     // unnecessarily — flush_paragraph_inner distinguishes the two by the presence of self.table.
     //
     // PARA_SHAPE[0] of healthy samples (ganada.hwp 5.1.1.0, hello_world.hwp 5.1.0.1) is
-    // attr1=0x180 (bit7 Hangul line-break=character + bit8 use line grid), line_spacing_old=160,
+    // attr1=0x180 (bit 7 serializes as HWPX KEEP_WORD and allows glyph wrapping in the
+    // measured Hangul text, plus bit 8 for the line grid), line_spacing_old=160,
     // border_fill_id=2. These are the reference values for when Hancom recomputes body line
     // layout; 0 (our previous value) makes the line grid/line-break basis diverge from healthy
     // samples. The direct cause of the black bar is the char_shape shade color, but we match the
