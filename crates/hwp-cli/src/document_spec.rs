@@ -2677,7 +2677,7 @@ impl<'a> BlockCompiler<'a> {
             common_data: Vec::new(),
             placement: Some(hwp_model::GsoPlacement {
                 treat_as_char: true,
-                affect_line_spacing: true,
+                affect_line_spacing: false,
                 flow_with_text: true,
                 hold_anchor: false,
                 vert_rel_to: 2,
@@ -3415,6 +3415,25 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    #[test]
+    fn document_spec_inline_table_keeps_font_based_line_spacing() {
+        let mut compiler = BlockCompiler::over_document(
+            existing_document(),
+            BlockDefaults::COMPOSE,
+            std::path::Path::new("."),
+            &[],
+        );
+        let paragraphs = compiler
+            .compile_block(&one_cell_table("Cell"), "$.blocks[0]")
+            .unwrap();
+        let hwp_model::Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table");
+        };
+        let placement = table.placement.as_ref().unwrap();
+        assert!(placement.treat_as_char);
+        assert!(!placement.affect_line_spacing);
     }
 
     /// Blocks compile against an existing document's header tables: the defaults a block falls
