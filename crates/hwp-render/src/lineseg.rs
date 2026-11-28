@@ -151,9 +151,10 @@ pub(crate) fn inline_table_line_height(para: &Paragraph) -> Option<i32> {
 /// The anchor line's spacing when the table's "affect line spacing" bit (object attr bit 2) is
 /// set: Hangul then applies the paragraph's percentage line spacing to the table line's own
 /// height rather than the font's (the Hangul re-save of the #620 T4 strip: block 2268 at 160%
-/// saved `line_spacing` 1360 = 2268 * 60 / 100). With the bit clear, which every genuine inline
-/// table in the local corpus has (315 HWP5, 451 HWPX), the font-based spacing stands. `None`
-/// leaves the synthesized spacing alone (bit clear, or not a percentage mode).
+/// saved `line_spacing` 1360 = 2268 * 60 / 100). With the bit clear, the anchor uses the
+/// font-based spacing. The B11 corpus had 315 HWP5 and 451 HWPX inline tables with the bit
+/// clear. Both inline tables in each public parity source have it set. `None` leaves the
+/// synthesized spacing alone (bit clear, or not a percentage mode).
 fn inline_table_affected_spacing(doc: &Document, para: &Paragraph, block: i32) -> Option<i32> {
     let table = para.controls.iter().find_map(|c| match c {
         Control::Table(t) => Some(t),
