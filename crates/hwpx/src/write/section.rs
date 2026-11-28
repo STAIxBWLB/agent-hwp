@@ -455,9 +455,18 @@ fn write_paragraph(
                     open_run!(cur_shape);
                     text_buf.push('\n');
                 }
-                24 => text_buf.push('-'),
-                30 => text_buf.push('\u{00A0}'),
-                31 => text_buf.push(' '),
+                24 => {
+                    open_run!(cur_shape);
+                    text_buf.push('-');
+                }
+                30 => {
+                    open_run!(cur_shape);
+                    text_buf.push(' ');
+                }
+                31 => {
+                    open_run!(cur_shape);
+                    text_buf.push(' ');
+                }
                 _ => {}
             },
             HwpChar::InlineCtrl { code, .. } => match *code {
@@ -2338,6 +2347,65 @@ mod tests {
     use super::*;
     use hwp_model::memo::{LIST_HEADER_TAG, MEMO_LIST_TAG, PARA_HEADER_TAG};
     use hwp_model::opaque::OpaqueRecord;
+
+    #[test]
+    fn hwpx_writer_keeps_a_control_only_memo_body() {
+        let mut doc = hwp_convert::from_markdown("Anchor");
+        doc.meta.source_format = "hwp5".into();
+        hwp_convert::edit::add_memo(
+            &mut doc,
+            0,
+            &hwp_convert::edit::MemoAnchor {
+                para: 0,
+                start: 16,
+                end: 17,
+            },
+            "Tester",
+            Some(1),
+            &["-".into()],
+        )
+        .unwrap();
+        let para = doc.sections[0].paragraphs.last_mut().unwrap();
+        let record = |tag, data| OpaqueRecord {
+            tag,
+            data,
+            children: Vec::new(),
+        };
+        para.extras.extend([
+            record(MEMO_LIST_TAG, 1u32.to_le_bytes().to_vec()),
+            record(LIST_HEADER_TAG, 1u16.to_le_bytes().to_vec()),
+            OpaqueRecord {
+                tag: PARA_HEADER_TAG,
+                data: vec![0; 24],
+                children: vec![record(hwp_model::memo::PARA_TEXT_TAG, vec![24, 0, 13, 0])],
+            },
+        ]);
+        let xml = write_section_with_report(
+            &doc,
+            &doc.sections[0],
+            false,
+            &mut BinCollector::default(),
+            &mut WriteReport::new(),
+        );
+        let (section, _) = crate::read::section::parse_section(&xml).unwrap();
+        doc.sections = vec![section];
+        assert_eq!(hwp_model::memo::memos(&doc)[0].body, ["-"]);
+    }
+
+    #[test]
+    fn hwpx_writer_keeps_a_paragraph_with_only_a_nonbreaking_space() {
+        let mut doc = hwp_convert::from_markdown("First\n\nSecond");
+        doc.sections[0].paragraphs[1].chars = vec![HwpChar::CharCtrl(30)];
+        let xml = write_section_with_report(
+            &doc,
+            &doc.sections[0],
+            false,
+            &mut BinCollector::default(),
+            &mut WriteReport::new(),
+        );
+        let (section, _) = crate::read::section::parse_section(&xml).unwrap();
+        assert_eq!(section.paragraphs[1].own_text(), " ");
+    }
 
     #[test]
     fn hwpx_projection_refuses_a_truncated_native_memo_body() {
