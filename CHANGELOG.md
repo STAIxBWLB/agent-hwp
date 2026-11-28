@@ -22,10 +22,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   numbered level-3 headings as 1x3 strip tables that read back as the same heading. Output without
   them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)). The TOC page
   numbers follow ahwp's own layout, and Hancom can paginate differently: on the measured sample,
-  all 16 `.hwp` entries match Hancom ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)),
-  while 11 of 16 `.hwpx` entries were off by 1-2 pages (measured before #644)
-  ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before
-  distributing.
+  all 16 entries match Hancom's PDF heading pages in the 22-page HWP T4 sample after
+  [#649](https://github.com/STAIxBWLB/agent-hwp/issues/649). In the HWPX check before #644,
+  11 of 16 entries were off by 1-2 pages ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
+  Check the TOC in Hancom before distributing.
 
 - Memo edit ops for same-format HWP5 and HWPX documents: `memo_add`, `memo_set_text` and
   `memo_remove` in `ahwp edit --ops` and `schemas/edit-ops-v1.schema.json`. An added memo is
@@ -114,12 +114,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
   A fixed-width space (FW_SPACE) wraps and keeps its width as before. The Hangul line-break
   setting is still not honored.
+- Use font-based line spacing after authored TOC, section-strip and DocumentSpec
+  inline tables ([#649](https://github.com/STAIxBWLB/agent-hwp/issues/649)).
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
   line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
   advances the same way. `--toc` rows are now at least as tall as their content line plus the
-  cell margins, keeping the former 1700 as the minimum. On the 16-entry `--toc` sample the page
-  numbers match Hancom's on every entry (were 15 of 16) and 66 of 67 body line caches equal a
-  Hancom re-save's ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)).
+  cell margins, keeping the former 1700 as the minimum
+  ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)). With the authored flag cleared
+  in #649, the Hancom re-save matches all body line-cache fields except segment width
+  (T4 67 of 67 paragraphs, DocumentSpec 4 of 4). Before #649, the bit-set T4 output matched
+  66 of 67 in the vertical-cache comparison.
 - HWPX memo bodies stay in the memo appendix and no longer produce orphan rows in render layout.
 
 ## [2.1.1]

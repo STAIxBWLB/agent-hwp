@@ -137,7 +137,7 @@ fn table(rows: u16, cols: u16, cells: Vec<Cell>) -> Table {
         common_data: Vec::new(),
         placement: Some(hwp_model::GsoPlacement {
             treat_as_char: true,
-            affect_line_spacing: true,
+            affect_line_spacing: false,
             flow_with_text: true,
             hold_anchor: false,
             vert_rel_to: 2,
@@ -707,6 +707,24 @@ mod tests {
         ] {
             assert_eq!(split_numbered(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn authored_toc_and_strips_keep_font_based_line_spacing() {
+        let mut d = doc("## Ⅰ. Overview\n\n### 1. Section\n\nText\n");
+        assert_eq!(apply_section_strips(&mut d), 1);
+        assert!(insert_toc(&mut d).is_some());
+        let placements: Vec<_> = d.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|control| match control {
+                Control::Table(table) => table.placement.as_ref(),
+                _ => None,
+            })
+            .map(|placement| (placement.treat_as_char, placement.affect_line_spacing))
+            .collect();
+        assert_eq!(placements, [(true, false), (true, false)]);
     }
 
     /// A TOC row holds its one line plus the cell's top and bottom margins: Hangul grows a
