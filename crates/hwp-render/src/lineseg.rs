@@ -258,9 +258,16 @@ pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32>
     // table under a 5100 HU line in the #462 fixture). Resuming at the smaller of the two would
     // start the next paragraph inside the line the output keeps (#509).
     let line_bottom = last.v_pos.saturating_add(last.line_height);
+    // A table-only inline anchor (rule B11, #644) advances by its line height plus line spacing
+    // when that ends below the measured table block.
+    let inline_bottom = if inline_table_line_height(paragraph).is_some() {
+        line_cursor
+    } else {
+        line_bottom
+    };
     Some(
         body_cursor(entry.v_pos, line_cursor, table_total, space_after)
-            .max(line_bottom.saturating_add(space_after)),
+            .max(inline_bottom.saturating_add(space_after)),
     )
 }
 
@@ -804,7 +811,9 @@ fn synthesize_linesegs_inner(
                     .v_pos
                     .saturating_add(block)
                     .saturating_add(line.line_spacing);
-                table_total = 0;
+                // Cells grown past the stored object height (an edit) still push the flow down:
+                // `body_cursor` keeps the larger of the two readings, as `saved_body_cursor` does.
+                table_total = table_total.max(line_cursor.saturating_sub(anchor_v));
             }
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()

@@ -550,11 +550,7 @@ pub fn insert_toc(doc: &mut Document) -> Option<TocPlan> {
             // A row must hold its one content line plus the cell's top and bottom margins:
             // Hangul grows an under-height row on reflow, so a shorter stored height leaves the
             // object height (and the anchor line, rule B11) short of what Hangul lays out (#644).
-            let line = doc
-                .header
-                .char_shapes
-                .first()
-                .map_or(1000, |s| s.base_size);
+            let line = doc.header.char_shapes.first().map_or(1000, |s| s.base_size);
             for c in [&mut left, &mut right] {
                 c.height = HwpUnit(line + i32::from(c.margins[2]) + i32::from(c.margins[3]));
             }
