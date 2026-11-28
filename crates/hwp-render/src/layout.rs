@@ -6104,7 +6104,7 @@ fn place_wrapped(
     while idx < items.len() {
         let item = std::mem::replace(&mut items[idx], InlineItem::Tab);
         match item {
-            InlineItem::Run(run) => {
+            InlineItem::Run(mut run) => {
                 let sources = crate::shape::glyph_source_sequences(&run);
                 if max_width.is_infinite() || x + run.width_pt <= limit {
                     let w = run.width_pt;
@@ -6120,13 +6120,20 @@ fn place_wrapped(
                 let mut start = 0usize;
                 let mut piece_x = x;
                 let mut acc = 0.0f32;
-                for (i, g) in run.glyphs.iter().enumerate() {
+                for i in 0..run.glyphs.len() {
+                    let g = run.glyphs[i];
                     let over = piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
-                    let break_allowed = !previous_no_break
-                        && !current_no_break
-                        && !crate::shape::source_is_space(&sources[i]);
+                    let is_space = crate::shape::source_is_space(&sources[i]);
+                    // An overflowing space stays on the outgoing line (rule B12) with no advance,
+                    // so its underline or background never paints past the right edge.
+                    if over && line_has_content && is_space {
+                        run.glyphs[i].x_advance = 0.0;
+                        previous_no_break = false;
+                        continue;
+                    }
+                    let break_allowed = !previous_no_break && !current_no_break;
                     if over && line_has_content && break_allowed {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
@@ -7364,6 +7371,56 @@ mod tab_width_tests {
             })
             .collect();
         assert_eq!(baselines, [100.0, 100.0, 116.0]);
+        // The space keeps no advance on the outgoing line, so its decoration ends at the edge.
+        let ends: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { x, run, .. } => Some(x + run.width_pt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends, [10.0, 10.0, 10.0]);
+    }
+
+    /// #643: the same with the space inside a run. The outgoing piece carries the space at zero
+    /// advance, so it ends at the limit, not past it.
+    #[test]
+    fn overflowing_space_inside_a_run_has_no_advance() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run_with_widths("a b", &[10.0, 10.0, 10.0])],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+        let placed: Vec<(f32, f32, String)> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { x, y, run, .. } => Some((*y, x + run.width_pt, run.text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (100.0, 10.0, "a ".to_string()),
+                (116.0, 10.0, "b".to_string())
+            ]
+        );
     }
 
     /// A tab landing on a leadered stop emits exactly one dashed `Item::Path` between the
