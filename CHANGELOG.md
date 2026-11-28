@@ -109,6 +109,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Rendering and synthesized line caches no longer push an overflowing space to the start of the
+  next line. Hangul keeps it at the line end, so lines now fill to the right margin as in Hancom's
+  output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). The Hangul
+  line-break setting is still not honored.
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
   line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
   advances the same way. `--toc` rows are now at least as tall as their content line plus the
