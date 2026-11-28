@@ -120,6 +120,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   are unchanged until measured. Text after the table starts below the moved grid, so nothing
   overlaps it (a lower bound: Hancom places that text lower still), and a grid that would cross
   the column edge keeps its old position.
+- A top-level floating table with non-negative offsets, or anchored horizontally to the
+  paragraph, now draws its grid where Hancom does: the offsets add to the outer margins, and a
+  paragraph-relative table also starts at the anchor paragraph's left margin (not its first-line
+  indent). Such tables were drawn up to 28 pt left and 14 pt above Hancom's grid (rule B16,
+  [#659](https://github.com/STAIxBWLB/agent-hwp/issues/659)). Such a table may now extend past
+  the column edge as in Hancom, whatever its text-flow and overlap settings; only one that would
+  cross the paper edge keeps its old position. Text after the table and page breaks move down by
+  the vertical offset plus the top margin, so nothing overlaps the grid; this is a lower bound,
+  since Hancom's exact placement of that text is not established. Negative offsets, other
+  alignments and nested tables are unchanged until measured.
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
