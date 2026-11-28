@@ -609,8 +609,8 @@ fn write_para_properties(out: &mut String, header: &DocHeader) {
         } else {
             r##"<hh:heading type="NONE" idRef="0" level="0"/>"##.to_string()
         };
-        // 줄나눔 설정: read/header.rs의 비트 매핑의 역방향(§1013 breakSetting).
-        // bit7 clear가 정상값(BREAK_WORD)이라 unwritten ParaShape도 왕복이 맞는다.
+        // Preserve the measured HWP5 bit 7 / HWPX enum mapping. Hancom's BREAK_WORD
+        // preferred Hangul word boundaries in the controlled #643 samples.
         let break_non_latin_word = if ps.break_non_latin_keep_word() {
             "KEEP_WORD"
         } else {

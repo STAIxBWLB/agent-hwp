@@ -1397,6 +1397,7 @@ fn layout_document_pages(
                         baseline_y,
                         wrap_width,
                         line_advance,
+                        crate::shape::wraps_at_hangul_words(doc, para),
                         &tabs,
                         first_delta,
                         &doc.header.border_fills,
@@ -1799,6 +1800,7 @@ fn layout_document_pages(
                     baseline_y,
                     wrap_width,
                     line_advance,
+                    false,
                     &tabs,
                     0.0, // The line offset is already included in x.
                     &doc.header.border_fills,
@@ -5091,6 +5093,7 @@ fn layout_box_para_iter<'a>(
                     baseline_y,
                     wrap_width,
                     max_size * 1.6,
+                    crate::shape::wraps_at_hangul_words(doc, para),
                     &tabs,
                     first_delta,
                     &doc.header.border_fills,
@@ -5264,6 +5267,7 @@ fn layout_box_para_iter<'a>(
                     baseline_y,
                     wrap_width,
                     line_advance,
+                    false,
                     &tabs,
                     0.0, // The line offset is already included in x.
                     &doc.header.border_fills,
@@ -6070,6 +6074,7 @@ fn place_wrapped(
     first_baseline_y: f32,
     max_width: f32,
     line_advance: f32,
+    wrap_hangul_words: bool,
     tabs: &[TabStop],
     first_indent: f32,
     border_fills: &[BorderFill],
@@ -6077,6 +6082,8 @@ fn place_wrapped(
     warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
+    let word_widths = (wrap_hangul_words && max_width.is_finite())
+        .then(|| crate::shape::hangul_word_widths(&items));
     if let Some(lines) = lines.as_deref_mut() {
         lines.push((page.items.len(), first_baseline_y));
     }
@@ -6113,7 +6120,10 @@ fn place_wrapped(
         match item {
             InlineItem::Run(mut run) => {
                 let sources = crate::shape::glyph_source_sequences(&run);
-                if !space_overflowed && (max_width.is_infinite() || x + run.width_pt <= limit) {
+                if word_widths.is_none()
+                    && !space_overflowed
+                    && (max_width.is_infinite() || x + run.width_pt <= limit)
+                {
                     let w = run.width_pt;
                     previous_no_break = sources
                         .last()
@@ -6130,7 +6140,22 @@ fn place_wrapped(
                 for i in 0..run.glyphs.len() {
                     let g = run.glyphs[i];
                     let is_space = crate::shape::source_is_space(&run, &sources[i]);
-                    let over = space_overflowed || piece_x + acc + g.x_advance > limit;
+                    // Indent alone does not make the first line nonempty. On that line an
+                    // overlong initial word can fall back to glyph wrapping without a blank line.
+                    let line_start = if y == first_baseline_y {
+                        x0 + first_indent
+                    } else {
+                        x0
+                    };
+                    let occupied = i > start || piece_x > line_start;
+                    let width = if occupied {
+                        word_widths
+                            .as_ref()
+                            .map_or(g.x_advance, |widths| widths[idx][i].max(g.x_advance))
+                    } else {
+                        g.x_advance
+                    };
+                    let over = space_overflowed || piece_x + acc + width > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
                     // An overflowing space stays on the outgoing line (rule B12) with no advance,
@@ -7213,6 +7238,7 @@ mod tab_width_tests {
             100.0,
             15.0,
             16.0,
+            false,
             &[],
             0.0,
             &[],
@@ -7277,6 +7303,7 @@ mod tab_width_tests {
                 100.0,
                 15.0,
                 16.0,
+                false,
                 &[],
                 0.0,
                 &[],
@@ -7320,6 +7347,7 @@ mod tab_width_tests {
                 100.0,
                 15.0,
                 16.0,
+                false,
                 &[],
                 0.0,
                 &[],
@@ -7345,6 +7373,76 @@ mod tab_width_tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn hangul_word_wrapping_moves_words_across_style_runs_before_splitting() {
+        for (words, expected) in [
+            (false, [100.0, 100.0, 116.0, 116.0]),
+            (true, [100.0, 116.0, 116.0, 132.0]),
+        ] {
+            let items = vec![
+                dummy_glyph_run_with_widths("가 ", &[10.0, 5.0]),
+                dummy_glyph_run("나"),
+                dummy_glyph_run("다"),
+                dummy_glyph_run("라"),
+            ];
+            let mut page = PageList {
+                width_pt: 600.0,
+                height_pt: 800.0,
+                items: Vec::new(),
+            };
+            place_wrapped(
+                &mut page,
+                items,
+                0.0,
+                100.0,
+                25.0,
+                16.0,
+                words,
+                &[],
+                0.0,
+                &[],
+                None,
+                &mut RenderIssueAccumulator::new(),
+            );
+            let baselines: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Glyphs { y, .. } => Some(*y),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(baselines, expected);
+        }
+    }
+
+    #[test]
+    fn hangul_word_wrapping_keeps_the_first_indented_line_nonempty() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run_with_widths("가나다", &[10.0, 10.0, 10.0])],
+            0.0,
+            100.0,
+            25.0,
+            16.0,
+            true,
+            &[],
+            9.0,
+            &[],
+            None,
+            &mut RenderIssueAccumulator::new(),
+        );
+        let Some(Item::Glyphs { y, run, .. }) = page.items.first() else {
+            panic!("the first line must have a glyph");
+        };
+        assert_eq!((*y, run.text.as_str()), (100.0, "가"));
     }
 
     fn dummy_glyph_run(text: &str) -> InlineItem {
@@ -7401,6 +7499,7 @@ mod tab_width_tests {
             100.0,
             f32::INFINITY,
             16.0,
+            false,
             tabs,
             0.0,
             &[],
@@ -7447,6 +7546,7 @@ mod tab_width_tests {
             100.0,
             f32::INFINITY,
             16.0,
+            false,
             &tabs,
             0.0,
             &[],
@@ -7490,6 +7590,7 @@ mod tab_width_tests {
             100.0,
             15.0,
             16.0,
+            false,
             &[],
             0.0,
             &[],
@@ -7529,6 +7630,7 @@ mod tab_width_tests {
             100.0,
             15.0,
             16.0,
+            false,
             &[],
             0.0,
             &[],
@@ -7574,6 +7676,7 @@ mod tab_width_tests {
             100.0,
             15.0,
             16.0,
+            false,
             &[],
             0.0,
             &[],
@@ -7623,6 +7726,7 @@ mod tab_width_tests {
             100.0,
             f32::INFINITY,
             16.0,
+            false,
             &tabs,
             0.0,
             &[],
@@ -7693,6 +7797,7 @@ mod tab_width_tests {
             100.0,
             f32::INFINITY,
             16.0,
+            false,
             &tabs,
             0.0,
             &[],

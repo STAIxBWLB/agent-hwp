@@ -1397,22 +1397,27 @@ pub(crate) fn compute_linesegs(
     let items = shape_range(store, doc, para, (0, total), warnings);
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
+    let word_widths = crate::shape::wraps_at_hangul_words(doc, para)
+        .then(|| crate::shape::hangul_word_widths(&items));
     let mut segs = Vec::new();
     let mut line_start = 0u32;
     let mut acc = 0.0f32;
     let mut content = false;
     let mut previous_no_break = false;
-    for item in &items {
+    for (item_index, item) in items.iter().enumerate() {
         match item {
             InlineItem::Run(run) => {
                 let sources = glyph_source_sequences(run);
                 let mut wchar_offset = 0u32;
-                for (g, source) in run.glyphs.iter().zip(&sources) {
+                for (glyph_index, (g, source)) in run.glyphs.iter().zip(&sources).enumerate() {
                     let current_no_break = source_has_no_break_space(source);
                     let break_allowed = !previous_no_break
                         && !current_no_break
                         && !crate::shape::source_is_space(run, source);
-                    if content && acc + g.x_advance > line_limit_pt(segs.len()) && break_allowed {
+                    let width = word_widths.as_ref().map_or(g.x_advance, |widths| {
+                        widths[item_index][glyph_index].max(g.x_advance)
+                    });
+                    if content && acc + width > line_limit_pt(segs.len()) && break_allowed {
                         place(&mut segs, v_pos, line_start);
                         line_start = run.start_wchar.saturating_add(wchar_offset);
                         acc = 0.0;
@@ -1534,6 +1539,54 @@ mod advance_tests {
         );
         let starts: Vec<u32> = segs.iter().map(|s| s.text_start).collect();
         assert_eq!(starts, [0, 3]);
+    }
+
+    #[test]
+    fn synthesis_moves_hangul_words_only_with_break_word() {
+        use crate::shape::{InlineItem, shape_range};
+        let Some(font) = std::env::var_os("HWP_TEST_HCR_FONT") else {
+            return;
+        };
+        let mut doc = hwp_convert::from_markdown("가 나다\n");
+        let mut fonts = crate::FontStore::new_isolated();
+        fonts.load_file(std::path::Path::new(&font)).unwrap();
+        let mut warnings = crate::RenderIssueAccumulator::new();
+        let para = hwp_model::Paragraph {
+            chars: "가 나다".chars().map(hwp_model::HwpChar::Text).collect(),
+            para_shape: doc.sections[0].paragraphs[0].para_shape,
+            ..Default::default()
+        };
+        let width = |items: Vec<InlineItem>| {
+            items.iter().fold(0.0, |acc, item| match item {
+                InlineItem::Run(run) => acc + run.width_pt,
+                _ => acc,
+            })
+        };
+        let width_before_last = width(shape_range(&mut fonts, &doc, &para, (0, 3), &mut warnings));
+        let full = width(shape_range(&mut fonts, &doc, &para, (0, 4), &mut warnings));
+        let full_word = width(shape_range(&mut fonts, &doc, &para, (2, 4), &mut warnings));
+        let floor = width_before_last.max(full_word);
+        assert!(
+            full - floor > 0.02,
+            "the HCR test font must shape all syllables"
+        );
+        let room = ((full + floor) * 50.0).floor() as i32;
+        let shape_index = para.para_shape.0 as usize;
+        for (bit, expected) in [(128, [0, 3]), (0, [0, 2])] {
+            let attr1 = &mut doc.header.para_shapes[shape_index].attr1;
+            *attr1 = (*attr1 & !128) | bit;
+            let lines = super::compute_linesegs(
+                &mut fonts,
+                &doc,
+                &para,
+                room,
+                i32::MAX,
+                &mut 0,
+                &mut warnings,
+            );
+            let starts: Vec<_> = lines.iter().map(|line| line.text_start).collect();
+            assert_eq!(starts, expected);
+        }
     }
 
     /// #643 B12 in synthesis: an overflowing ordinary space stays on the line, but a FW_SPACE
