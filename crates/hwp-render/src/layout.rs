@@ -2841,6 +2841,54 @@ fn place_caption_items(
     (caption.side == CaptionSide::Bottom).then_some(oy + oh + gap + height)
 }
 
+/// Grid-origin shift (left, top) in pt from a floating table's outer margins (rule B14, #655).
+///
+/// Established only for a floating table anchored to the paragraph vertically and to the column
+/// horizontally with both offsets zero: Hancom draws its grid one left and one top outer margin
+/// in from the anchor (a Hancom-authored 3x3 table with 283 HU margins, grid at 87.8/120.9 pt
+/// in Hancom's PDF against 84.9/118.0 pt before). Other relations, non-zero offsets and the
+/// bottom margin's effect on the text after the table are unmeasured and keep (0, 0).
+/// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
+/// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
+fn floating_table_margin_shift(table: &Table) -> (f32, f32) {
+    let (attr_ok, left, top) = if let Some(p) = &table.placement {
+        (
+            !p.treat_as_char
+                && p.vert_rel_to == 2
+                && p.horz_rel_to == 2
+                && p.vert_offset == 0
+                && p.horz_offset == 0,
+            p.out_margins[0],
+            p.out_margins[2],
+        )
+    } else {
+        let d = &table.common_data;
+        let u32_at = |o: usize| {
+            d.get(o..o + 4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
+        let u16_at = |o: usize| {
+            d.get(o..o + 2)
+                .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+        };
+        let (Some(attr), Some(vo), Some(ho), Some(left), Some(top)) =
+            (u32_at(0), u32_at(4), u32_at(8), u16_at(24), u16_at(28))
+        else {
+            return (0.0, 0.0);
+        };
+        (
+            attr & 1 == 0 && (attr >> 3) & 3 == 2 && (attr >> 8) & 3 == 2 && vo == 0 && ho == 0,
+            left,
+            top,
+        )
+    };
+    if attr_ok {
+        (f32::from(left) / 100.0, f32::from(top) / 100.0)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
 /// Lay out paragraph-attached block objects (tables/images), returning the updated content bottom.
 #[allow(clippy::too_many_arguments)]
 fn layout_para_objects(
@@ -2900,13 +2948,14 @@ fn layout_para_objects(
                     });
                     object_y += h + gap;
                 }
+                let (margin_dx, margin_dy) = floating_table_margin_shift(table);
                 let (end, table_split, final_fragment_top, whole) = layout_table(
                     doc,
                     store,
                     page,
                     table,
-                    x,
-                    object_y,
+                    x + margin_dx,
+                    object_y + margin_dy,
                     avail_width,
                     top_caption,
                     b11.then(|| crate::lineseg::inline_table_line_height(para))

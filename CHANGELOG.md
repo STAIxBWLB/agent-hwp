@@ -109,6 +109,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- A floating table anchored to the paragraph and column with zero offsets now draws its grid one
+  left and one top outer margin in from its anchor, as Hancom does; a Hancom-authored table was
+  drawn 2.83 pt high and left (rule B14, [#655](https://github.com/STAIxBWLB/agent-hwp/issues/655)).
+  Other relations, non-zero offsets and the right and bottom margins are unchanged until measured.
 - Use the measured Hancom body width and paragraph margins for synthesized single-column HWP5
   line widths and wrapping ([#652](https://github.com/STAIxBWLB/agent-hwp/issues/652)).
 - Use font-based line spacing after authored TOC, section-strip and DocumentSpec
