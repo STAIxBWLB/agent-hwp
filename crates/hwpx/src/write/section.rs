@@ -168,7 +168,9 @@ pub fn write_section_with_report(
 
 /// Join the HWP5 section's numbered memo bodies to their field anchors for HWPX synthesis.
 fn project_hwp5_memos(section: &Section) -> Option<Section> {
-    use hwp_model::memo::{MEMO_LIST_TAG, decode_hwp5_memo_paragraph, hwp5_memo_body_paragraphs};
+    use hwp_model::memo::{
+        MEMO_LIST_TAG, complete_hwp5_memo_body_paragraphs, decode_hwp5_memo_paragraph,
+    };
 
     let extras = &section.paragraphs.last()?.extras;
     let mut bodies = std::collections::BTreeMap::new();
@@ -184,7 +186,7 @@ fn project_hwp5_memos(section: &Section) -> Option<Section> {
         else {
             continue;
         };
-        let Some(paragraphs) = hwp5_memo_body_paragraphs(&extras[index + 1..])
+        let Some(paragraphs) = complete_hwp5_memo_body_paragraphs(&extras[index + 1..])
             .filter(|paragraphs| !paragraphs.is_empty())
             .and_then(|paragraphs| {
                 paragraphs
@@ -2327,6 +2329,37 @@ fn write_picture(
             h / 2,
             brightness,
             contrast,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hwp_model::memo::{LIST_HEADER_TAG, MEMO_LIST_TAG, PARA_HEADER_TAG};
+    use hwp_model::opaque::OpaqueRecord;
+
+    #[test]
+    fn hwpx_projection_refuses_a_truncated_native_memo_body() {
+        let record = |tag, data| OpaqueRecord {
+            tag,
+            data,
+            children: Vec::new(),
+        };
+        let section = Section {
+            paragraphs: vec![Paragraph {
+                extras: vec![
+                    record(MEMO_LIST_TAG, 1u32.to_le_bytes().to_vec()),
+                    record(LIST_HEADER_TAG, 2u16.to_le_bytes().to_vec()),
+                    record(PARA_HEADER_TAG, vec![0; 24]),
+                ],
+                ..Paragraph::default()
+            }],
+            ..Section::default()
+        };
+        assert!(
+            project_hwp5_memos(&section).is_none(),
+            "the single available paragraph cannot stand for a two-paragraph memo"
         );
     }
 }

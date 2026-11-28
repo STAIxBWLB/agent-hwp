@@ -295,6 +295,16 @@ pub fn decode_hwp5_memo_paragraph(record: &OpaqueRecord) -> Option<Paragraph> {
     let para_shape = u16::from_le_bytes(record.data.get(8..10)?.try_into().ok()?);
     let style = u16::from(*record.data.get(10)?);
     let chars = opaque_para_chars(record);
+    // Match HWPX paragraph text emission. A field end needs its paired control,
+    // which a text-only memo body cannot carry.
+    if !chars.iter().enumerate().all(|(index, ch)| match ch {
+        HwpChar::Text(c) => !matches!(*c, '￾' | '￿'),
+        HwpChar::CharCtrl(10 | 24 | 30 | 31) | HwpChar::InlineCtrl { code: 9, .. } => true,
+        HwpChar::CharCtrl(13) => index + 1 == chars.len(),
+        _ => false,
+    }) {
+        return None;
+    }
     let stored_width = record
         .children
         .iter()
@@ -328,17 +338,28 @@ pub fn decode_hwp5_memo_paragraph(record: &OpaqueRecord) -> Option<Paragraph> {
 /// declared count. Paragraph child records stay inside each paragraph. Any other sibling
 /// terminates the group, even if the saved count is larger.
 pub fn hwp5_memo_body_paragraphs(records: &[OpaqueRecord]) -> Option<&[OpaqueRecord]> {
+    memo_body_extent(records).map(|(_, paragraphs)| paragraphs)
+}
+
+/// Complete HWP5 memo paragraphs for cross-format emission. Unlike the recovery reader,
+/// a target writer must require every declared paragraph before emitting a memo.
+pub fn complete_hwp5_memo_body_paragraphs(records: &[OpaqueRecord]) -> Option<&[OpaqueRecord]> {
+    let (declared, paragraphs) = memo_body_extent(records)?;
+    (paragraphs.len() == declared).then_some(paragraphs)
+}
+
+fn memo_body_extent(records: &[OpaqueRecord]) -> Option<(usize, &[OpaqueRecord])> {
     let (header, paragraphs) = records.split_first()?;
     if header.tag != LIST_HEADER_TAG {
         return None;
     }
-    let count = u16::from_le_bytes(header.data.get(..2)?.try_into().ok()?);
+    let count = usize::from(u16::from_le_bytes(header.data.first_chunk::<2>().copied()?));
     let available = paragraphs
         .iter()
-        .take(usize::from(count))
+        .take(count)
         .take_while(|record| record.tag == PARA_HEADER_TAG)
         .count();
-    Some(&paragraphs[..available])
+    Some((count, &paragraphs[..available]))
 }
 
 /// HWP5 memo bodies from the extras of a section's last paragraph: number -> body paragraphs.
@@ -559,6 +580,26 @@ pub fn nested_paragraph_lists_mut(control: &mut Control) -> Vec<&mut [Paragraph]
 mod tests {
     use super::*;
     use crate::{BorderFillId, Cell, GenericControl, HwpUnit, Table};
+
+    #[test]
+    fn hwpx_projection_refuses_unrepresentable_memo_title_mark() {
+        let record = OpaqueRecord {
+            tag: PARA_HEADER_TAG,
+            data: vec![0; 24],
+            children: vec![OpaqueRecord {
+                tag: PARA_TEXT_TAG,
+                data: [8u16, 0, 0, 0, 0, 0, 0, 8, 13]
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+                children: Vec::new(),
+            }],
+        };
+        assert!(
+            decode_hwp5_memo_paragraph(&record).is_none(),
+            "HWPX cannot emit the inline title mark"
+        );
+    }
 
     /// An HWP5 memo body paragraph keeps line breaks, tabs, hyphens and nb/fw spaces through
     /// the shared character mapping, the same text the HWPX path produces; extended controls
