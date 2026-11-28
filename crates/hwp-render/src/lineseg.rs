@@ -1383,7 +1383,7 @@ pub(crate) fn compute_linesegs(
                     let current_no_break = source_has_no_break_space(source);
                     let break_allowed = !previous_no_break
                         && !current_no_break
-                        && !crate::shape::source_is_space(source);
+                        && !crate::shape::source_is_space(run, source);
                     if content && acc + g.x_advance > line_limit_pt(segs.len()) && break_allowed {
                         place(&mut segs, v_pos, line_start);
                         line_start = run.start_wchar.saturating_add(wchar_offset);
@@ -1446,6 +1446,59 @@ mod advance_tests {
         assert_eq!(source_wchar_len("a"), 1);
         assert_eq!(source_wchar_len("\u{1f600}"), 2);
         assert_eq!(source_wchar_len("x\u{301}"), 2);
+    }
+
+    /// #643 B12 in synthesis: an overflowing ordinary space stays on the line, but a FW_SPACE
+    /// control (shaped from a literal space too) still breaks before it. The box is sized from
+    /// the shaped widths so the boundary character overflows, so no font metric is hard-coded.
+    /// Skips on a host with no font.
+    #[test]
+    fn synthesis_keeps_ordinary_space_but_breaks_before_fw_space() {
+        use crate::shape::{InlineItem, shape_range};
+        use hwp_model::{HwpChar, Paragraph, ctrl_char};
+        let doc = hwp_convert::from_markdown("x\n");
+        let mut store = crate::FontStore::new();
+        let mut warns = crate::RenderIssueAccumulator::new();
+        let starts = |store: &mut crate::FontStore, sep: HwpChar| {
+            let mut warns = crate::RenderIssueAccumulator::new();
+            let mut para = Paragraph {
+                chars: vec![
+                    HwpChar::Text('a'),
+                    HwpChar::Text('a'),
+                    sep,
+                    HwpChar::Text('b'),
+                ],
+                ..Paragraph::default()
+            };
+            para.para_shape = doc.sections[0].paragraphs[0].para_shape;
+            let items = shape_range(store, &doc, &para, (0, 2), &mut warns);
+            let w: f32 = items
+                .iter()
+                .map(|i| match i {
+                    InlineItem::Run(r) => r.width_pt,
+                    _ => 0.0,
+                })
+                .sum();
+            if w == 0.0 {
+                return None;
+            }
+            // Room for "aa" plus a sliver, so the separator overflows.
+            let width = ((w + 0.1) * 100.0).ceil() as i32;
+            let mut v = 0;
+            let segs =
+                super::compute_linesegs(store, &doc, &para, width, i32::MAX, &mut v, &mut warns);
+            Some(segs.iter().map(|s| s.text_start).collect::<Vec<_>>())
+        };
+        let Some(space) = starts(&mut store, HwpChar::Text(' ')) else {
+            return;
+        };
+        // The space stays on line 1; "b" opens line 2.
+        assert_eq!(space, [0, 3]);
+        let fw = starts(&mut store, HwpChar::CharCtrl(ctrl_char::FW_SPACE)).unwrap();
+        // FW_SPACE breaks before itself, as before B12 (the 1em FW_SPACE may wrap again on
+        // this narrow box, so only the second line start is asserted).
+        assert_eq!(fw.get(1), Some(&2));
+        let _ = &mut warns;
     }
 }
 

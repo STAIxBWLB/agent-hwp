@@ -5640,14 +5640,17 @@ fn trim_trailing_spaces(items: &mut [InlineItem]) {
             return;
         };
         let sources = crate::shape::glyph_source_sequences(run);
-        for (g, source) in run.glyphs.iter_mut().zip(&sources).rev() {
-            if !crate::shape::source_is_space(source) {
-                run.width_pt = run.glyphs.iter().map(|g| g.x_advance).sum();
-                return;
-            }
+        let mut keep = run.glyphs.len();
+        while keep > 0 && crate::shape::source_is_space(run, &sources[keep - 1]) {
+            keep -= 1;
+        }
+        for g in &mut run.glyphs[keep..] {
             g.x_advance = 0.0;
         }
-        run.width_pt = 0.0;
+        run.width_pt = run.glyphs.iter().map(|g| g.x_advance).sum();
+        if keep > 0 {
+            return;
+        }
     }
 }
 
@@ -6125,7 +6128,7 @@ fn place_wrapped(
                     let over = piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
-                    let is_space = crate::shape::source_is_space(&sources[i]);
+                    let is_space = crate::shape::source_is_space(&run, &sources[i]);
                     // An overflowing space stays on the outgoing line (rule B12) with no advance,
                     // so its underline or background never paints past the right edge.
                     if over && line_has_content && is_space {
@@ -6491,6 +6494,7 @@ mod justify_tests {
             width_pt: advs.iter().sum(),
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         })
     }
 
@@ -7133,7 +7137,7 @@ mod control_classification_tests {
 mod tab_width_tests {
     use std::sync::Arc;
 
-    use super::{LEADER_DASH_SCALE, items_width, place_wrapped};
+    use super::{LEADER_DASH_SCALE, items_width, place_wrapped, trim_trailing_spaces};
     use crate::display::{Item, PageList, PathCmd};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
@@ -7170,7 +7174,73 @@ mod tab_width_tests {
             width_pt,
             text: String::new(),
             start_wchar: 0,
+            fw_space: false,
         })
+    }
+
+    /// #643 review: a FW_SPACE control is shaped from a literal space but is not an ordinary
+    /// space. B12 must not move it: a line may break before it, and a trailing one keeps its
+    /// advance in the alignment trim.
+    fn fw_space_run_item() -> InlineItem {
+        let mut item = dummy_glyph_run(" ");
+        if let InlineItem::Run(run) = &mut item {
+            run.fw_space = true;
+        }
+        item
+    }
+
+    #[test]
+    fn fw_space_is_not_an_ordinary_space_for_b12() {
+        // Wrap: the overflowing FW_SPACE opens the next line, as before B12.
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run("a"), fw_space_run_item()],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+        let placed: Vec<(f32, f32)> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, run, .. } => Some((*y, run.width_pt)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(placed, [(100.0, 10.0), (116.0, 10.0)]);
+
+        // Trim: a trailing FW_SPACE keeps its advance; an ordinary space before it is not trimmed.
+        let mut items = vec![
+            dummy_glyph_run("a"),
+            dummy_glyph_run(" "),
+            fw_space_run_item(),
+        ];
+        trim_trailing_spaces(&mut items);
+        let widths: Vec<f32> = items
+            .iter()
+            .map(|i| match i {
+                InlineItem::Run(r) => r.width_pt,
+                _ => -1.0,
+            })
+            .collect();
+        assert_eq!(widths, [10.0, 10.0, 10.0]);
+
+        // An ordinary trailing space is still trimmed.
+        let mut items = vec![dummy_glyph_run("a"), dummy_glyph_run(" ")];
+        trim_trailing_spaces(&mut items);
+        assert!(matches!(&items[1], InlineItem::Run(r) if r.width_pt == 0.0));
     }
 
     fn dummy_glyph_run(text: &str) -> InlineItem {
@@ -7724,6 +7794,7 @@ mod decor_tests {
             glyphs,
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         }
     }
 
