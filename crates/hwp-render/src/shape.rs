@@ -64,7 +64,7 @@ pub struct ShapedRun {
     /// True for the run that carries a FW_SPACE (31) control. It is shaped from a literal space,
     /// so its source text alone cannot tell it from an ordinary space (rule B12 covers only the
     /// latter).
-    pub fw_space: bool,
+    pub(crate) fw_space: bool,
 }
 
 impl ShapedRun {
