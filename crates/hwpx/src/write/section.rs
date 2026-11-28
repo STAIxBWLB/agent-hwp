@@ -125,6 +125,10 @@ pub fn write_section_with_report(
     bins: &mut BinCollector,
     report: &mut WriteReport,
 ) -> String {
+    let projected = (doc.meta.source_format == "hwp5")
+        .then(|| project_hwp5_memos(section))
+        .flatten();
+    let section = projected.as_ref().unwrap_or(section);
     let mut out = String::with_capacity(16 * 1024);
     out.push_str(
         r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core""##,
@@ -160,6 +164,67 @@ pub fn write_section_with_report(
     }
     out.push_str("</hs:sec>");
     out
+}
+
+/// Join the HWP5 section's numbered memo bodies to their field anchors for HWPX synthesis.
+fn project_hwp5_memos(section: &Section) -> Option<Section> {
+    use hwp_model::memo::{MEMO_LIST_TAG, decode_hwp5_memo_paragraph, hwp5_memo_body_paragraphs};
+
+    let extras = &section.paragraphs.last()?.extras;
+    let mut bodies = std::collections::BTreeMap::new();
+    for (index, record) in extras.iter().enumerate() {
+        if record.tag != MEMO_LIST_TAG {
+            continue;
+        }
+        let Some(number) = record
+            .data
+            .first_chunk::<4>()
+            .copied()
+            .map(u32::from_le_bytes)
+        else {
+            continue;
+        };
+        let Some(paragraphs) = hwp5_memo_body_paragraphs(&extras[index + 1..])
+            .filter(|paragraphs| !paragraphs.is_empty())
+            .and_then(|paragraphs| {
+                paragraphs
+                    .iter()
+                    .map(decode_hwp5_memo_paragraph)
+                    .collect::<Option<Vec<_>>>()
+            })
+        else {
+            continue;
+        };
+        bodies.insert(number, paragraphs);
+    }
+    if bodies.is_empty() {
+        return None;
+    }
+    fn attach(
+        paragraphs: &mut [Paragraph],
+        bodies: &std::collections::BTreeMap<u32, Vec<Paragraph>>,
+    ) {
+        for paragraph in paragraphs {
+            for control in &mut paragraph.controls {
+                if let Control::Generic(generic) = control
+                    && let Some(body) =
+                        hwp_model::memo::memo_number(generic).and_then(|number| bodies.get(&number))
+                {
+                    generic.paragraph_lists = vec![hwp_model::ParagraphList {
+                        header_data: Vec::new(),
+                        paragraphs: body.clone(),
+                    }];
+                    continue;
+                }
+                for list in hwp_model::memo::nested_paragraph_lists_mut(control) {
+                    attach(list, bodies);
+                }
+            }
+        }
+    }
+    let mut projected = section.clone();
+    attach(&mut projected.paragraphs, &bodies);
+    Some(projected)
 }
 
 #[derive(Default)]
@@ -478,13 +543,13 @@ fn write_paragraph(
                         );
                     }
                     Control::Generic(g)
-                        if doc.meta.source_format == "hwpx"
+                        if matches!(doc.meta.source_format.as_str(), "hwp5" | "hwpx")
                             && g.raw_children.is_empty()
                             && g.hwpx_raw_xml.is_none()
                             && hwp_convert::field::is_memo_anchor(g)
                             && !g.paragraph_lists.is_empty() =>
                     {
-                        // An op-created memo on an HWPX source: emit the measured fieldBegin with
+                        // A projected or op-created memo: emit the measured fieldBegin with
                         // its seven parameters and an inline subList body, the same shape a
                         // Hancom-saved memo carries (07 L2). The FIELD_END echoes these ids.
                         open_run!(cur_shape);
@@ -504,9 +569,8 @@ fn write_paragraph(
                         );
                     }
                     Control::Generic(g) if hwp_convert::field::is_memo_anchor(g) => {
-                        // A memo whose body is not an HWPX capture (HWP5 source, or a memo written
-                        // to the other container) has no same-format OWPML emission: keep the
-                        // anchor text and drop the field, its body and its FIELD_END. The
+                        // An unprojectable or missing body cannot produce a valid memo field.
+                        // Keep the anchor text and drop the field pair. The
                         // conversion's semantic check reports the dropped control as
                         // control_removed.
                         open_fields.push(OpenField::Dropped);

@@ -22,6 +22,9 @@ use crate::document::{Document, Section};
 use crate::opaque::OpaqueRecord;
 use crate::paragraph::{HwpChar, Paragraph};
 
+/// HWP5 CTRL_HEADER attributes measured on the memo anchors in the genuine memo fixtures.
+pub const HWP5_MEMO_CONTROL_ATTR: u32 = 0x0000_8001;
+
 /// HWPTAG_MEMO_LIST (HWPTAG_BEGIN + 77).
 pub const MEMO_LIST_TAG: u16 = 0x5D;
 /// HWPTAG_LIST_HEADER (HWPTAG_BEGIN + 56).
@@ -222,10 +225,9 @@ fn paragraph_text(p: &Paragraph) -> String {
     s
 }
 
-/// HWP5 PARA_TEXT decoding for memo bodies kept as opaque records: text characters only.
-fn opaque_para_text(para: &OpaqueRecord) -> String {
+fn opaque_para_chars(para: &OpaqueRecord) -> Vec<HwpChar> {
     let Some(text) = para.children.iter().find(|c| c.tag == PARA_TEXT_TAG) else {
-        return String::new();
+        return Vec::new();
     };
     let units: Vec<u16> = text
         .data
@@ -235,7 +237,7 @@ fn opaque_para_text(para: &OpaqueRecord) -> String {
     // Lift each unit into the shared `HwpChar` form and project it with `text::char_text`, the
     // mapping every text path uses, so a body read from HWP5 records keeps its line breaks,
     // tabs, hyphens and nb/fw spaces exactly as the same body read from HWPX does.
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < units.len() {
         let u = units[i];
@@ -265,9 +267,61 @@ fn opaque_para_text(para: &OpaqueRecord) -> String {
                 continue;
             }
         };
-        crate::text::char_text(&ch, &mut out);
+        out.push(ch);
     }
     out
+}
+
+fn opaque_para_text(para: &OpaqueRecord) -> String {
+    let mut text = String::new();
+    for ch in opaque_para_chars(para) {
+        crate::text::char_text(&ch, &mut text);
+    }
+    text
+}
+
+/// Projects the measured text-only HWP5 memo paragraph records into the shared paragraph IR.
+/// Referenced paragraph, style and character shapes use the document's existing tables.
+pub fn decode_hwp5_memo_paragraph(record: &OpaqueRecord) -> Option<Paragraph> {
+    const CHAR_SHAPE_TAG: u16 = 0x44;
+    if record.tag != PARA_HEADER_TAG
+        || record
+            .children
+            .iter()
+            .any(|child| !matches!(child.tag, PARA_TEXT_TAG | CHAR_SHAPE_TAG))
+    {
+        return None;
+    }
+    let para_shape = u16::from_le_bytes(record.data.get(8..10)?.try_into().ok()?);
+    let style = u16::from(*record.data.get(10)?);
+    let chars = opaque_para_chars(record);
+    let stored_width = record
+        .children
+        .iter()
+        .find(|r| r.tag == PARA_TEXT_TAG)
+        .map_or(0, |r| r.data.len());
+    if chars.iter().map(HwpChar::wchar_width).sum::<u32>() as usize * 2 != stored_width {
+        return None;
+    }
+    let mut char_shape_runs = Vec::new();
+    if let Some(shapes) = record.children.iter().find(|r| r.tag == CHAR_SHAPE_TAG) {
+        let (runs, rest) = shapes.data.as_chunks::<8>();
+        if !rest.is_empty() {
+            return None;
+        }
+        for run in runs {
+            let start = u32::from_le_bytes(run[..4].try_into().ok()?);
+            let shape = u16::try_from(u32::from_le_bytes(run[4..].try_into().ok()?)).ok()?;
+            char_shape_runs.push((start, crate::CharShapeId(shape)));
+        }
+    }
+    Some(Paragraph {
+        para_shape: crate::ParaShapeId(para_shape),
+        style: crate::StyleId(style),
+        chars,
+        char_shape_runs,
+        ..Paragraph::default()
+    })
 }
 
 /// Returns the memo paragraphs after a MEMO_LIST marker, up to the adjacent LIST_HEADER's

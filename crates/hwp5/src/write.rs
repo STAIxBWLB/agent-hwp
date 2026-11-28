@@ -3005,8 +3005,7 @@ fn strip_unwritable_pictures(
                     && !hwp_model::memo::memo_number(g)
                         .is_some_and(|number| memo_bodies.contains(&number)) =>
             {
-                // A memo anchor with no HWP5 body on the section's last paragraph: read from
-                // HWPX, or an op-created memo written to the other container. A `%%me` field
+                // A memo anchor whose body was missing or could not be projected. A `%%me` field
                 // without its MEMO_LIST body must never be written, so drop the field with its
                 // FIELD_END and keep the anchor text. The loss is not recorded here: the
                 // conversion's semantic check already reports the missing control as
@@ -3111,20 +3110,24 @@ fn hwp5_memo_numbers(section: &hwp_model::Section) -> std::collections::BTreeSet
 /// among the section's last-paragraph extras, then clears the anchor's paragraph lists so the
 /// CTRL_HEADER emitter cannot write a second copy (07 L2).
 ///
-/// Only an HWP5 source is synthesized: a memo read from HWPX keeps PR1's cross-format drop. An
-/// HWP5-read anchor's body is already on the last paragraph, so its paragraph lists are empty and
-/// it is left untouched.
+/// HWP5-read anchors already have their bodies on the last paragraph and stay untouched.
+/// HWPX-read anchors with a portable body use the same synthesis as memo edits.
 fn synthesize_memo_bodies(
     doc: &mut hwp_model::Document,
     add_tracking_tail: bool,
     warnings: &mut WriteReport,
 ) {
-    if doc.meta.source_format != "hwp5" {
-        return;
-    }
+    let from_hwpx = match doc.meta.source_format.as_str() {
+        "hwp5" => false,
+        "hwpx" => true,
+        _ => return,
+    };
     for section in &mut doc.sections {
         let mut pending: Vec<(u32, Vec<Paragraph>)> = Vec::new();
-        collect_pure_ir_memos(&mut section.paragraphs, &mut pending);
+        collect_pure_ir_memos(&mut section.paragraphs, from_hwpx, &mut pending);
+        if from_hwpx {
+            pending.sort_by_key(|(number, _)| *number);
+        }
         if pending.is_empty() {
             continue;
         }
@@ -3164,16 +3167,41 @@ fn synthesize_memo_bodies(
 /// The walk reaches the same containers as [`hwp_model::memo::nested_paragraph_lists_mut`] (cells,
 /// captions, nested lists) so a memo cannot be collected in one container kind and dropped in
 /// another; a memo anchor's own lists are its body and are drained here instead of walked.
-fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragraph>)>) {
+fn collect_pure_ir_memos(
+    paras: &mut [Paragraph],
+    from_hwpx: bool,
+    out: &mut Vec<(u32, Vec<Paragraph>)>,
+) {
     for para in paras {
-        for control in &mut para.controls {
+        let mut converted = BTreeSet::new();
+        for (index, control) in para.controls.iter_mut().enumerate() {
             if let Control::Generic(g) = control
                 && g.raw_children.is_empty()
-                && g.hwpx_raw_xml.is_none()
                 && hwp_model::memo::is_memo_anchor(g)
                 && !g.paragraph_lists.is_empty()
             {
-                if let Some(number) = hwp_model::memo::memo_number(g) {
+                let portable = g.hwpx_raw_xml.is_none()
+                    || (from_hwpx
+                        && g.paragraph_lists
+                            .iter()
+                            .any(|list| !list.paragraphs.is_empty())
+                        && g.data
+                            .starts_with(&hwp_model::memo::HWP5_MEMO_CONTROL_ATTR.to_le_bytes())
+                        && g.paragraph_lists
+                            .iter()
+                            .flat_map(|list| &list.paragraphs)
+                            .all(|p| {
+                                p.controls.is_empty()
+                                    && p.extras.is_empty()
+                                    && !p
+                                        .chars
+                                        .iter()
+                                        .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+                            }));
+                if portable && let Some(number) = hwp_model::memo::memo_number(g) {
+                    if g.hwpx_raw_xml.take().is_some() {
+                        converted.insert(index as u32);
+                    }
                     let paragraphs = g
                         .paragraph_lists
                         .drain(..)
@@ -3184,8 +3212,52 @@ fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragr
                 continue;
             }
             for list in hwp_model::memo::nested_paragraph_lists_mut(control) {
-                collect_pure_ir_memos(list, out);
+                collect_pure_ir_memos(list, from_hwpx, out);
             }
+        }
+        if !converted.is_empty() {
+            encode_converted_memo_fields(para, &converted);
+        }
+    }
+}
+
+/// Put the measured HWP5 field blocks around the original HWPX anchor spans.
+fn encode_converted_memo_fields(para: &mut Paragraph, converted: &BTreeSet<u32>) {
+    let mut open = Vec::new();
+    let mut ends = Vec::new();
+    for (position, ch) in para.chars.iter_mut().enumerate() {
+        match ch {
+            HwpChar::ExtCtrl {
+                code: 3,
+                ctrl_id,
+                payload,
+                ctrl_index,
+            } => {
+                let number = ctrl_index
+                    .filter(|index| converted.contains(index))
+                    .and_then(|index| match para.controls.get(index as usize) {
+                        Some(Control::Generic(g)) => hwp_model::memo::memo_number(g),
+                        _ => None,
+                    });
+                if number.is_some() {
+                    *ctrl_id = *b"%%me";
+                    *payload = hwp_model::memo::hwp5_field_begin_payload().to_vec();
+                }
+                open.push(number);
+            }
+            HwpChar::InlineCtrl { code: 4, .. } => {
+                if let Some(Some(number)) = open.pop() {
+                    ends.push((position, number));
+                }
+            }
+            _ => {}
+        }
+    }
+    let last = ends.last().map(|&(position, _)| position);
+    for (position, number) in ends {
+        if let HwpChar::InlineCtrl { payload, .. } = &mut para.chars[position] {
+            *payload =
+                hwp_model::memo::hwp5_field_end_payload(number, Some(position) == last).to_vec();
         }
     }
 }

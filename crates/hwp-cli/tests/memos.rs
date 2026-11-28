@@ -1,8 +1,8 @@
 //! `cat --with-memos` (issue #110). The refusal tests use the committed synthetic sample. The
 //! fixture tests read local-only, owner-authored memo documents (gitignored) and skip, counted,
-//! without them (#275). No test asserts on or prints a memo author or the raw field command.
+//! without them (#275). Comparisons avoid printing memo authors and raw field commands.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 #[path = "common/fixture_skip.rs"]
@@ -126,11 +126,10 @@ fn memo_fixtures_list_identical_memos_in_both_formats() {
     }
 }
 
-/// Across formats a memo is never half-written: the target has no memo (HWP5 never gets `%%me`
-/// without `MEMO_LIST`, HWPX never gets an HWP5-only body), and the drop is a typed loss.
+/// Both native streams preserve the measured memo semantics through the other container.
 #[test]
-fn cross_format_memos_are_a_typed_loss() {
-    // (source, target extension, memo count): each dropped memo is one control, counted once.
+fn cross_format_memos_preserve_their_semantics() {
+    // (source, target extension, memo count) for the local Hancom-saved files.
     let cases: Vec<(PathBuf, &str, usize)> = [(1, 1), (2, 2), (3, 2), (4, 1)]
         .into_iter()
         .flat_map(|(n, memos)| {
@@ -171,21 +170,28 @@ fn cross_format_memos_are_a_typed_loss() {
         assert!(run.status.success(), "{src:?}: {}", text(&run.stderr));
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
-        let removed: u64 = report["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|e| e["code"] == "control_removed")
-            .map(|e| e["count"].as_u64().unwrap())
-            .sum();
-        assert_eq!(removed, *memos as u64, "{src:?}: {report}");
-        let back = cat(&[out.to_str().unwrap(), "--with-memos"]);
-        assert!(back.status.success(), "{src:?}");
-        assert!(!text(&back.stdout).contains("[메모 "), "{src:?}");
+        let events = report["events"].as_array().unwrap();
+        // HWP5 document metadata can contain trailing title whitespace and sub-second FILETIME
+        // values. Its ordinary HWPX conversion reports their pre-existing document metadata loss.
         assert!(
-            text(&back.stderr).is_empty(),
-            "{src:?}: {}",
-            text(&back.stderr)
+            events
+                .iter()
+                .all(|event| *ext == "hwpx" && event["code"] == "metadata_value_removed"),
+            "{src:?}: {report}"
+        );
+        let read_memos = |file: &Path| {
+            let doc = if file.extension().unwrap() == "hwpx" {
+                hwpx::read_document(file).unwrap().document
+            } else {
+                hwp5::read_document(file).unwrap().document
+            };
+            hwp_model::memo::memos(&doc)
+        };
+        let expected = read_memos(src);
+        assert_eq!(expected.len(), *memos);
+        assert!(
+            read_memos(&out) == expected,
+            "{src:?}: converted memo semantics differ"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

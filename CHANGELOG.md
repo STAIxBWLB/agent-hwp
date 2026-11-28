@@ -12,6 +12,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Convert text-body memos between HWP5 and HWPX while preserving the anchor span, author,
+  UTC creation time and body paragraphs ([#619](https://github.com/STAIxBWLB/agent-hwp/issues/619)).
+
 - Opt-in report blocks: `new --toc` (and DocumentSpec v2 `report_blocks.toc`) inserts a front
   table of contents over the `##`/`###` (개요 2/개요 3) headings of the first section, whose page
   numbers are backfilled from a layout pass of the file as its own writer publishes it, with

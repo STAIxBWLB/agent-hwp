@@ -921,9 +921,15 @@ fn parse_ctrl(
 fn parse_memo_field(raw: &str, warnings: &mut Vec<String>) -> Result<GenericControl> {
     let mut reader = Reader::from_str(raw);
     let mut command = None;
+    let mut field_id = None;
     let mut paragraph_lists = Vec::new();
     loop {
         match next_event(&mut reader)? {
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == b"fieldBegin" => {
+                field_id = attr(&e, "id")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|id| *id != 0);
+            }
             Event::Start(e) if e.local_name().as_ref().as_bytes() == b"stringParam" => {
                 if attr(&e, "name").as_deref() == Some("Command") {
                     command = Some(read_element_text(&mut reader, b"stringParam")?);
@@ -938,7 +944,15 @@ fn parse_memo_field(raw: &str, warnings: &mut Vec<String>) -> Result<GenericCont
     }
     let data = command
         .as_deref()
-        .map(|c| hwp_convert::field::make_field_command_data(b"%unk", c))
+        .map(|c| {
+            if let Some(id) = field_id
+                && let Some(memo) = hwp_model::memo::parse_memo_command(c)
+                && u16::try_from(c.encode_utf16().count()).is_ok()
+            {
+                return hwp_convert::field::make_memo_command_data(c, id, memo.number);
+            }
+            hwp_convert::field::make_field_command_data(b"%unk", c)
+        })
         .unwrap_or_default();
     Ok(GenericControl {
         ctrl_id: *b"%unk",
