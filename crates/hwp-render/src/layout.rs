@@ -5630,25 +5630,24 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
     }
 }
 
-/// Drops the ordinary spaces that end a line. Hangul keeps an overflowing space at the line end
-/// (rule B12, #643) where it is invisible, so alignment and drawing use the line without it:
-/// otherwise right and center alignment push the visible text past the edge.
-fn trim_trailing_spaces(items: &mut Vec<InlineItem>) {
-    while let Some(InlineItem::Run(run)) = items.last_mut() {
-        let sources = crate::shape::glyph_source_sequences(run);
-        let keep = sources
-            .iter()
-            .rposition(|source| !crate::shape::source_is_space(source))
-            .map_or(0, |i| i + 1);
-        if keep == run.glyphs.len() {
+/// Collapses the ordinary spaces that end a line to zero advance. Hangul keeps an overflowing
+/// space at the line end (rule B12, #643) where it is invisible, so alignment and drawing use the
+/// line without its width: otherwise right and center alignment push the visible text past the
+/// edge. The glyphs stay, so the line's source character range keeps covering the space.
+fn trim_trailing_spaces(items: &mut [InlineItem]) {
+    for item in items.iter_mut().rev() {
+        let InlineItem::Run(run) = item else {
             return;
+        };
+        let sources = crate::shape::glyph_source_sequences(run);
+        for (g, source) in run.glyphs.iter_mut().zip(&sources).rev() {
+            if !crate::shape::source_is_space(source) {
+                run.width_pt = run.glyphs.iter().map(|g| g.x_advance).sum();
+                return;
+            }
+            g.x_advance = 0.0;
         }
-        if keep == 0 {
-            items.pop();
-            continue;
-        }
-        *run = run.slice_with_sources(0, keep, &sources);
-        return;
+        run.width_pt = 0.0;
     }
 }
 
