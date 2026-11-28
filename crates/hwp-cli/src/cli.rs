@@ -372,7 +372,8 @@ pub enum Cmd {
         /// default
         #[arg(long)]
         toc: bool,
-        /// Font directory for the --toc layout pass (repeatable)
+        /// Font directory for --toc: the TOC layout pass and, for .hwp output, the line-cache
+        /// synthesis and preview (repeatable; overrides HWP_FONT_DIR)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
     },

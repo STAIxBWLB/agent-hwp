@@ -17,7 +17,8 @@ pub struct NewOptions {
     pub section_strips: bool,
     /// `--toc` (#620): a front table of contents with layout-verified page numbers.
     pub toc: bool,
-    /// Font directories for the `--toc` layout pass (`--font-dir`, else `HWP_FONT_DIR`).
+    /// Font directories for `--toc` (`--font-dir`, else `HWP_FONT_DIR`): the TOC layout pass
+    /// and, for `.hwp` output, the writer's line-cache synthesis and preview (#657).
     pub font_dirs: Vec<std::path::PathBuf>,
 }
 
@@ -401,6 +402,13 @@ pub fn execute(
         );
     }
     // Opt-in report blocks (#620). Strips come first, so the TOC lists a strip's `N. Title`.
+    // `--font-dir` (only accepted with `--toc`) feeds the TOC layout pass and the HWP writer's
+    // line-cache synthesis alike (#657); without it both fall back to HWP_FONT_DIR / fonts/.
+    let synthesis_dirs = if options.toc {
+        crate::commands::convert::resolve_font_dirs(options.font_dirs.clone())
+    } else {
+        Vec::new()
+    };
     if options.section_strips || options.toc {
         if matches!(input_kind, InputKind::Json) {
             anyhow::bail!(
@@ -413,17 +421,21 @@ pub fn execute(
         if options.toc {
             match hwp_convert::report_blocks::insert_toc(&mut doc) {
                 Some(plan) => {
-                    let font_dirs =
-                        crate::commands::convert::resolve_font_dirs(options.font_dirs.clone());
+                    let font_dirs = synthesis_dirs.clone();
                     let layout = hwp_cli::toc::TocLayout {
                         fonts: hwp_cli::toc::TocFonts::Dirs(&font_dirs),
                         switch: "--toc",
                     };
-                    // Measure with the writer `new` publishes with (below).
+                    // Measure with the writer `new` publishes with (below), on the same fonts.
                     let filled = hwp_cli::toc::backfill(&mut doc, &plan, &layout, |candidate| {
                         published_round_trip(candidate, write_hwp, "new", "--toc", |d, p| {
                             if write_hwp {
-                                crate::commands::convert::write_hwp(d, p, false)
+                                crate::commands::convert::write_hwp_with_font_dirs(
+                                    d,
+                                    p,
+                                    false,
+                                    &synthesis_dirs,
+                                )
                             } else {
                                 Ok(hwpx::write_document_with_report(d, p)?)
                             }
@@ -453,7 +465,12 @@ pub fn execute(
         None,
         |staged| {
             if write_hwp {
-                crate::commands::convert::write_hwp(&doc, staged, false)
+                crate::commands::convert::write_hwp_with_font_dirs(
+                    &doc,
+                    staged,
+                    false,
+                    &synthesis_dirs,
+                )
             } else {
                 Ok(hwpx::write_document_with_report(&doc, staged)?)
             }
@@ -472,4 +489,48 @@ pub fn execute(
         warnings: writer_report.warnings,
         preservation: writer_report.preservation,
     })
+}
+
+#[cfg(test)]
+mod font_dir_tests {
+    use super::*;
+
+    /// #657: `new --toc --font-dir D -o x.hwp` must hand D to the HWP writer's line-cache
+    /// synthesis, not only to the TOC layout pass. The empty directory needs no font, so this
+    /// runs in CI; HWP_FONT_DIR is never set here, so the assertion is about `--font-dir` alone.
+    #[test]
+    fn toc_font_dir_reaches_hwp_line_cache_synthesis() {
+        let root = std::env::temp_dir().join(format!("ahwp-657-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fonts = root.join("only-font-dir");
+        std::fs::create_dir_all(&fonts).unwrap();
+        let output = root.join("t.hwp");
+        let options = NewOptions {
+            toc: true,
+            font_dirs: vec![fonts.clone()],
+            ..NewOptions::default()
+        };
+        crate::commands::convert::SYNTHESIS_FONT_DIRS.with(|seen| seen.borrow_mut().clear());
+        execute(
+            &output,
+            NewInput::Markdown {
+                text: "## One\n\nbody\n\n## Two\n\nmore\n",
+                base_dir: None,
+                roots: &[],
+            },
+            &[],
+            &options,
+        )
+        .unwrap();
+        let seen = crate::commands::convert::SYNTHESIS_FONT_DIRS.with(|seen| seen.take());
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !seen.is_empty(),
+            "HWP line-cache synthesis loaded no font directory"
+        );
+        assert!(
+            seen.iter().all(|dir| dir == &fonts),
+            "synthesis loaded {seen:?}, not only the --font-dir {fonts:?}"
+        );
+    }
 }
