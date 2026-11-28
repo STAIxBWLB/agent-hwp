@@ -356,7 +356,10 @@ jobs:
     name: test (${{ matrix.os }})
     needs: decision
     if: needs.decision.outputs.run_full == 'true'
-    timeout-minutes: 30
+    # #645: macOS spends up to 26m29s executing tests after about 2m of setup/build,
+    # and a 30-minute cancellation still had integration binaries left to run.
+    # Leave 10 minutes of additional macOS headroom for runner variance.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 40 || 30 }}
     strategy:
       fail-fast: false
       matrix:
