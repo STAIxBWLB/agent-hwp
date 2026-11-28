@@ -115,7 +115,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   [#655](https://github.com/STAIxBWLB/agent-hwp/issues/655)).
   Other relations and alignments, non-zero offsets, nested tables and the right and bottom margins
   are unchanged until measured. Text after the table starts below the moved grid, so nothing
-  overlaps it, and a grid that would cross the column edge keeps its old position.
+  overlaps it (a lower bound: Hancom places that text lower still), and a grid that would cross
+  the column edge keeps its old position.
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
