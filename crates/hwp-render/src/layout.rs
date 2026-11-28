@@ -1568,6 +1568,17 @@ fn layout_document_pages(
                     rec,
                 );
                 content_bottom = objects_bottom;
+                // Rule B11 (#644), cacheless reading: a table-only inline anchor occupies one line as
+                // tall as the table object block plus the paragraph's line spacing, then its
+                // space-after, exactly as the synthesized cache records it.
+                if !objects_split
+                    && !para_split
+                    && let Some(top) = para_top
+                    && let Some(advance) = crate::lineseg::inline_table_line_advance(doc, para)
+                {
+                    let line_end = top + advance as f32 / 100.0;
+                    content_bottom = content_bottom.max(line_end + geom.spacing_bottom);
+                }
                 // A fallback paragraph is one slice with both borders. If an
                 // attached table split, approximate only its final-page slice.
                 if let Some(top) = para_top {
