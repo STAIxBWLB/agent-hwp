@@ -2893,6 +2893,7 @@ fn layout_para_objects(
                     object_y,
                     avail_width,
                     top_caption,
+                    crate::lineseg::inline_table_line_height(para).map(|h| h as f32 / 100.0),
                     split.as_deref_mut(),
                     warnings,
                     rec,
@@ -3519,6 +3520,9 @@ fn layout_table(
     y: f32,
     avail_width: f32,
     mut top_caption: Option<CaptionPrelude>,
+    // Rule B11 (#644): the anchor line height (pt) of a table-only inline anchor, which rule A
+    // fits at the body bottom when it is taller than the row grid.
+    inline_line: Option<f32>,
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
@@ -3814,10 +3818,16 @@ fn layout_table(
             ))
         .max(body_top);
         let page_h = body_bottom - body_top;
-        let unsplit_h = total_h + top_caption_extent;
         let treat_as_char = table.placement.as_ref().is_some_and(|p| p.treat_as_char);
+        // Rule A with rule B11 (#644): an inline anchor's line is the larger of the row grid and
+        // the object block, as in synthesis; fitting only the rows leaves that line ending below
+        // the body.
+        let fit_h = inline_line
+            .filter(|_| treat_as_char)
+            .map_or(total_h, |line| total_h.max(line));
+        let unsplit_h = fit_h + top_caption_extent;
         let policy = table.page_break_policy();
-        if y + total_h > first_body_bottom {
+        if y + fit_h > first_body_bottom {
             if treat_as_char || (policy == hwp_model::TablePageBreak::None && unsplit_h <= page_h) {
                 // An inline table is one indivisible character (GE-8).
                 // NONE also keeps a page-sized table together.
@@ -8167,6 +8177,56 @@ mod inline_table_anchor_cursor_tests {
         assert!(
             checked,
             "no filler count moved the strip whole to the next page"
+        );
+    }
+
+    /// Rule A on the cacheless path with an object block taller than the row grid (a stored
+    /// object height, #644): the B11 line must fit the body, so a table whose rows would still
+    /// fit moves whole to the next page while the anchor's empty text line stays (the
+    /// `objects_split` branch). The next paragraph then starts one B11 advance below the new
+    /// body top; on the same page it starts one B11 advance below the anchor.
+    #[test]
+    fn a_b11_line_taller_than_its_grid_moves_the_table_and_keeps_the_advance() {
+        let mut moved_with_text_kept = false;
+        for filler in 20..40 {
+            let (mut doc, strip) = strip_document(filler);
+            for c in &mut doc.sections[0].paragraphs[strip].controls {
+                if let Control::Table(t) = c {
+                    t.placement.as_mut().expect("placement").height = 9000;
+                }
+            }
+            let content_h = {
+                let pg = doc.sections[0]
+                    .section_def()
+                    .and_then(|d| d.page.as_ref())
+                    .expect("page def");
+                crate::lineseg::body_box(pg, pg.height.0).height_hu
+            };
+            let anchors = anchors_of(&doc);
+            let at = anchors.slot(0, strip).expect("strip anchor");
+            let next = anchors.slot(0, strip + 1).expect("next anchor");
+            let step = b11_step(&doc, strip);
+            if next.v_pos > at.v_pos {
+                assert!(
+                    at.v_pos + 9000 <= content_h,
+                    "filler={filler}: the B11 line ends at {} below the body ({content_h})",
+                    at.v_pos + 9000
+                );
+                assert_eq!(next.v_pos - at.v_pos, step, "filler={filler}: same page");
+            } else if !at.starts_page && at.v_pos > 0 && at.v_pos + 9000 > content_h {
+                // The B11 line does not fit below the anchor's text line, which stayed (the rows
+                // alone would have fit): the table moved whole to the next page.
+                assert_eq!(
+                    next.v_pos, step,
+                    "filler={filler}: after the table moved whole with its text line kept, the \
+                     next paragraph starts one B11 advance below the new body top"
+                );
+                moved_with_text_kept = true;
+            }
+        }
+        assert!(
+            moved_with_text_kept,
+            "no filler count moved the table while keeping the anchor's text line"
         );
     }
 }

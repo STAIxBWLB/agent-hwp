@@ -118,7 +118,7 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
   can paginate differently. On the measured 16-entry sample (not a general bound), `.hwp` matches
   Hancom on all 16 entries since the table-anchor line rule
   ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)): the written line caches equal a
-  Hancom re-save's in 66 of 67 body paragraphs, the last off by 1 HU. `.hwpx` matched on 5 of 16, the
+  Hancom re-save's in 66 of 67 body paragraphs, the last off by 1 HU. `.hwpx` matched on 5 of 16 (measured before #644), the
   others off by 1-2 pages, because the `.hwpx` carries no line layout cache, so Hancom re-wraps
   the lines and fits more characters per line than ahwp
   ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before

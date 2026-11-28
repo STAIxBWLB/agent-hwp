@@ -20,7 +20,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   them is unchanged ([#620](https://github.com/STAIxBWLB/agent-hwp/issues/620)). The TOC page
   numbers follow ahwp's own layout, and Hancom can paginate differently: on the measured sample,
   all 16 `.hwp` entries match Hancom ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)),
-  while 11 of 16 `.hwpx` entries were off by 1-2 pages
+  while 11 of 16 `.hwpx` entries were off by 1-2 pages (measured before #644)
   ([#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)). Check the TOC in Hancom before
   distributing.
 
@@ -108,7 +108,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
   line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
-  advances the same way. `--toc` rows are now tall enough for their line plus cell margins. On
+  advances the same way. `--toc` rows are now sized to their content line plus the cell margins (1282 under the
+  default preset, was a fixed 1700). On
   the 16-entry `--toc` sample the page numbers match Hancom's on every entry (were 15 of 16) and
   66 of 67 body line caches equal a Hancom re-save's
   ([#644](https://github.com/STAIxBWLB/agent-hwp/issues/644)).
