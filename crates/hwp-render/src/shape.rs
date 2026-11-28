@@ -165,8 +165,8 @@ pub(crate) fn source_has_no_break_space(source: &str) -> bool {
 }
 
 /// Returns true when a shaped source cluster of `run` is an ordinary space (U+0020 text, not a
-/// FW_SPACE control, which is shaped from a literal space too). Hangul-saved caches almost never
-/// start a line with one (0 of 10,892 genuine HWPX line starts, 16 of 1,009 HWP5, #643), and
+/// FW_SPACE control, which is shaped from a literal space too). Hancom-authored caches almost never
+/// start a line with one (0 of 100 genuine HWPX line starts, 14 of 504 HWP5, #643), and
 /// Hancom's PDF of the T4 HWPX keeps the overflowing space at the line end, so a space never
 /// opens a new line here.
 pub(crate) fn source_is_space(run: &ShapedRun, source: &str) -> bool {
