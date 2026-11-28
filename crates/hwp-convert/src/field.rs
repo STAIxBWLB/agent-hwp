@@ -731,15 +731,15 @@ pub fn memo_number(g: &GenericControl) -> Option<u32> {
 }
 
 /// CTRL_HEADER attributes measured on every memo anchor (`01 80 00 00`).
-const MEMO_CTRL_ATTR: u32 = 0x0000_8001;
-
 /// CTRL_HEADER payload for a memo anchor (07 L5).
 ///
 /// Same layout as [`make_field_command_data`], with the two trailing words a memo carries instead
 /// of one id and a zero: the field instance id, then the memo number (measured on every memo of
 /// the four fixtures).
 pub fn make_memo_command_data(command: &str, field_id: u32, number: u32) -> Vec<u8> {
-    let mut data = MEMO_CTRL_ATTR.to_le_bytes().to_vec();
+    let mut data = hwp_model::memo::HWP5_MEMO_CONTROL_ATTR
+        .to_le_bytes()
+        .to_vec();
     data.push(0); // extra
     let units: Vec<u16> = command.encode_utf16().collect();
     data.extend((units.len() as u16).to_le_bytes());

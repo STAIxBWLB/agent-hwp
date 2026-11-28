@@ -1031,7 +1031,7 @@ fn materialize_document(
         }
         // Memo bodies this writer synthesizes must exist as MEMO_LIST records before the strip
         // pass decides whether an anchor still has a body to point at.
-        synthesize_memo_bodies(&mut d, add_tracking_tail, &mut report);
+        synthesize_memo_bodies(&mut d, add_tracking_tail);
         for section in &mut d.sections {
             let memo_bodies = hwp5_memo_numbers(section);
             for para in &mut section.paragraphs {
@@ -3005,8 +3005,7 @@ fn strip_unwritable_pictures(
                     && !hwp_model::memo::memo_number(g)
                         .is_some_and(|number| memo_bodies.contains(&number)) =>
             {
-                // A memo anchor with no HWP5 body on the section's last paragraph: read from
-                // HWPX, or an op-created memo written to the other container. A `%%me` field
+                // A memo anchor whose body was missing or could not be projected. A `%%me` field
                 // without its MEMO_LIST body must never be written, so drop the field with its
                 // FIELD_END and keep the anchor text. The loss is not recorded here: the
                 // conversion's semantic check already reports the missing control as
@@ -3111,37 +3110,33 @@ fn hwp5_memo_numbers(section: &hwp_model::Section) -> std::collections::BTreeSet
 /// among the section's last-paragraph extras, then clears the anchor's paragraph lists so the
 /// CTRL_HEADER emitter cannot write a second copy (07 L2).
 ///
-/// Only an HWP5 source is synthesized: a memo read from HWPX keeps PR1's cross-format drop. An
-/// HWP5-read anchor's body is already on the last paragraph, so its paragraph lists are empty and
-/// it is left untouched.
-fn synthesize_memo_bodies(
-    doc: &mut hwp_model::Document,
-    add_tracking_tail: bool,
-    warnings: &mut WriteReport,
-) {
-    if doc.meta.source_format != "hwp5" {
-        return;
-    }
+/// HWP5-read anchors already have their bodies on the last paragraph and stay untouched.
+/// HWPX-read anchors with a portable body use the same synthesis as memo edits.
+fn synthesize_memo_bodies(doc: &mut Document, add_tracking_tail: bool) {
+    let from_hwpx = match doc.meta.source_format.as_str() {
+        "hwp5" => false,
+        "hwpx" => true,
+        _ => return,
+    };
     for section in &mut doc.sections {
-        let mut pending: Vec<(u32, Vec<Paragraph>)> = Vec::new();
-        collect_pure_ir_memos(&mut section.paragraphs, &mut pending);
-        if pending.is_empty() {
-            continue;
+        let mut pending = Vec::new();
+        collect_pure_ir_memos(&mut section.paragraphs, from_hwpx, &mut pending);
+        if from_hwpx {
+            pending.sort_by_key(|(number, _, _)| *number);
         }
         let Some(last) = section.paragraphs.last_mut() else {
             continue;
         };
-        for (number, paragraphs) in pending {
-            let count = paragraphs.len().max(1) as u16;
+        for (number, count, paragraphs) in pending {
             let mut list_header = vec![0u8; 16];
             list_header[0..2].copy_from_slice(&count.to_le_bytes());
             last.extras.push(hwp_model::OpaqueRecord {
-                tag: hwp_model::memo::MEMO_LIST_TAG,
+                tag: tag::MEMO_LIST,
                 data: number.to_le_bytes().to_vec(),
                 children: Vec::new(),
             });
             last.extras.push(hwp_model::OpaqueRecord {
-                tag: hwp_model::memo::LIST_HEADER_TAG,
+                tag: tag::LIST_HEADER,
                 data: list_header,
                 children: Vec::new(),
             });
@@ -3152,40 +3147,147 @@ fn synthesize_memo_bodies(
                     add_tracking_tail,
                 ));
             }
-            if paragraphs.is_empty() {
-                warnings.warning(format!("메모 {number} 본문이 비어 있음"));
-            }
         }
     }
 }
 
-/// Takes the paragraphs of every op-created memo anchor in this section, leaving its lists empty.
-///
-/// The walk reaches the same containers as [`hwp_model::memo::nested_paragraph_lists_mut`] (cells,
-/// captions, nested lists) so a memo cannot be collected in one container kind and dropped in
-/// another; a memo anchor's own lists are its body and are drained here instead of walked.
-fn collect_pure_ir_memos(paras: &mut [Paragraph], out: &mut Vec<(u32, Vec<Paragraph>)>) {
+/// Detaches cross-paragraph memo ends before the ordinary missing-body pass drops their starts.
+/// The native HWP5 memo shape is measured only for spans inside a single paragraph.
+fn drop_cross_paragraph_memo_ends(paragraphs: &mut [Paragraph]) {
+    let mut open = Vec::new();
+    for (paragraph_index, para) in paragraphs.iter_mut().enumerate() {
+        let mut drop = Vec::new();
+        for (index, ch) in para.chars.iter().enumerate() {
+            match ch {
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_index,
+                    ..
+                } => {
+                    let memo = ctrl_index.and_then(|i| para.controls.get(i as usize))
+                        .is_some_and(|control| matches!(control, Control::Generic(g) if hwp_model::memo::is_memo_anchor(g)));
+                    open.push(memo.then_some(paragraph_index));
+                }
+                HwpChar::InlineCtrl { code: 4, .. } => {
+                    if let Some(Some(owner)) = open.pop()
+                        && owner != paragraph_index
+                    {
+                        drop.resize(para.chars.len(), false);
+                        drop[index] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !drop.is_empty() {
+            remove_chars_rebasing(para, &drop);
+            para.header.ctrl_mask = 0;
+        }
+    }
+}
+
+/// Takes each writable anchor's portable body, leaving its paragraph lists empty.
+/// The walk reaches cells, captions and nested lists without treating a memo body as an anchor.
+fn collect_pure_ir_memos(
+    paras: &mut [Paragraph],
+    from_hwpx: bool,
+    out: &mut Vec<(u32, u16, Vec<Paragraph>)>,
+) {
+    if from_hwpx {
+        drop_cross_paragraph_memo_ends(paras);
+    }
     for para in paras {
-        for control in &mut para.controls {
+        let pairs = if from_hwpx {
+            hwp_model::memo::local_field_pairs(para)
+        } else {
+            Vec::new()
+        };
+        let paired_controls: BTreeSet<_> = pairs.iter().map(|&(control, _, _)| control).collect();
+        let mut converted = BTreeSet::new();
+        for (index, control) in para.controls.iter_mut().enumerate() {
             if let Control::Generic(g) = control
                 && g.raw_children.is_empty()
-                && g.hwpx_raw_xml.is_none()
                 && hwp_model::memo::is_memo_anchor(g)
                 && !g.paragraph_lists.is_empty()
             {
-                if let Some(number) = hwp_model::memo::memo_number(g) {
+                let portable = if from_hwpx {
+                    paired_controls.contains(&(index as u32))
+                        && g.data
+                            .starts_with(&hwp_model::memo::HWP5_MEMO_CONTROL_ATTR.to_le_bytes())
+                        && g.paragraph_lists
+                            .iter()
+                            .flat_map(|list| &list.paragraphs)
+                            .all(|p| {
+                                p.controls.is_empty()
+                                    && p.extras.is_empty()
+                                    && p.chars.iter().all(|ch| match ch {
+                                        HwpChar::ExtCtrl { .. } => false,
+                                        HwpChar::InlineCtrl { code, .. } => {
+                                            *code == hwp_model::ctrl_char::TAB
+                                        }
+                                        _ => true,
+                                    })
+                            })
+                } else {
+                    g.hwpx_raw_xml.is_none()
+                };
+                let count = g
+                    .paragraph_lists
+                    .iter()
+                    .map(|list| list.paragraphs.len())
+                    .sum::<usize>();
+                if portable
+                    && let Ok(count @ 1..) = u16::try_from(count)
+                    && let Some(number) = hwp_model::memo::memo_number(g)
+                {
+                    if from_hwpx {
+                        converted.insert(index as u32);
+                        g.hwpx_raw_xml = None;
+                    }
                     let paragraphs = g
                         .paragraph_lists
                         .drain(..)
                         .flat_map(|list| list.paragraphs)
                         .collect();
-                    out.push((number, paragraphs));
+                    out.push((number, count, paragraphs));
                 }
                 continue;
             }
             for list in hwp_model::memo::nested_paragraph_lists_mut(control) {
-                collect_pure_ir_memos(list, out);
+                collect_pure_ir_memos(list, from_hwpx, out);
             }
+        }
+        encode_converted_memo_fields(para, &converted, &pairs);
+    }
+}
+
+/// Put the measured HWP5 field blocks around the original HWPX anchor spans.
+fn encode_converted_memo_fields(
+    para: &mut Paragraph,
+    converted: &BTreeSet<u32>,
+    pairs: &[(u32, usize, usize)],
+) {
+    let mut pairs = pairs
+        .iter()
+        .filter(|(control, _, _)| converted.contains(control))
+        .peekable();
+    while let Some(&(control, start, end)) = pairs.next() {
+        let Control::Generic(generic) = &para.controls[control as usize] else {
+            continue;
+        };
+        let Some(number) = hwp_model::memo::memo_number(generic) else {
+            continue;
+        };
+        if let HwpChar::ExtCtrl {
+            ctrl_id, payload, ..
+        } = &mut para.chars[start]
+        {
+            *ctrl_id = *b"%%me";
+            *payload = hwp_model::memo::hwp5_field_begin_payload().to_vec();
+        }
+        if let HwpChar::InlineCtrl { payload, .. } = &mut para.chars[end] {
+            *payload =
+                hwp_model::memo::hwp5_field_end_payload(number, pairs.peek().is_none()).to_vec();
         }
     }
 }
@@ -3215,13 +3317,19 @@ fn memo_body_record(
         chars_flags &= !0x80;
     }
     let nchars = char_count | (u32::from(chars_flags) << 24);
+    // A7: even an empty native paragraph has one character-shape run.
+    let runs = if para.char_shape_runs.is_empty() {
+        &[(0, hwp_model::CharShapeId(0))]
+    } else {
+        para.char_shape_runs.as_slice()
+    };
     let mut data = Vec::with_capacity(24);
     data.extend_from_slice(&nchars.to_le_bytes());
     data.extend_from_slice(&paragraph_control_mask(&chars).to_le_bytes());
     data.extend_from_slice(&para.para_shape.0.to_le_bytes());
     data.push(para.style.0 as u8);
     data.push(para.header.break_type);
-    data.extend_from_slice(&(para.char_shape_runs.len() as u16).to_le_bytes());
+    data.extend_from_slice(&(runs.len() as u16).to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes()); // range tags
     data.extend_from_slice(&0u16.to_le_bytes()); // line segments, as in the fixtures
     data.extend_from_slice(&0u32.to_le_bytes()); // instance id
@@ -3236,18 +3344,16 @@ fn memo_body_record(
             children: Vec::new(),
         });
     }
-    if !para.char_shape_runs.is_empty() {
-        let mut cw = ByteWriter::new();
-        for (pos, id) in &para.char_shape_runs {
-            cw.write_u32(*pos);
-            cw.write_u32(u32::from(id.0));
-        }
-        children.push(hwp_model::OpaqueRecord {
-            tag: crate::record::tag::PARA_CHAR_SHAPE,
-            data: cw.into_bytes(),
-            children: Vec::new(),
-        });
+    let mut cw = ByteWriter::new();
+    for (pos, id) in runs {
+        cw.write_u32(*pos);
+        cw.write_u32(u32::from(id.0));
     }
+    children.push(hwp_model::OpaqueRecord {
+        tag: tag::PARA_CHAR_SHAPE,
+        data: cw.into_bytes(),
+        children: Vec::new(),
+    });
     hwp_model::OpaqueRecord {
         tag: crate::record::tag::PARA_HEADER,
         data,
@@ -5060,6 +5166,153 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hwpx_memo_document(cross_paragraph: bool, body_suffix: &str) -> Document {
+        let end_prefix = if cross_paragraph {
+            r#"</hp:run></hp:p><hp:p><hp:run charPrIDRef="0">"#
+        } else {
+            ""
+        };
+        let xml = format!(
+            r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+            <hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="1" fieldid="623209829" type="MEMO">
+            <hp:parameters><hp:stringParam name="Command">MEMO/65535/1/1/0/Test/</hp:stringParam></hp:parameters>
+            <hp:subList><hp:p><hp:run charPrIDRef="0"><hp:t>Original body</hp:t>{body_suffix}</hp:run></hp:p></hp:subList>
+            </hp:fieldBegin></hp:ctrl><hp:t>Anchor</hp:t>{end_prefix}
+            <hp:ctrl><hp:fieldEnd beginIDRef="1" fieldid="623209829"/></hp:ctrl></hp:run></hp:p></hs:sec>"#
+        );
+        let (section, _) = hwpx::read::section::parse_section(&xml).unwrap();
+        let mut doc = hwp_convert::from_markdown("Anchor");
+        doc.meta.source_format = "hwpx".into();
+        doc.sections = vec![section];
+        doc
+    }
+
+    fn synthesized_memo_section(doc: &Document) -> Vec<RecordNode> {
+        let materialized =
+            materialize_document(doc, &WriteOptions::default(), false, false).unwrap();
+        scan_stream(
+            &materialized.streams["/BodyText/Section0"],
+            ScanMode::Strict,
+        )
+        .unwrap()
+        .roots
+    }
+
+    #[test]
+    fn edited_hwpx_memo_reencodes_both_hwp5_field_blocks() {
+        let mut doc = hwpx_memo_document(false, "");
+        assert_eq!(
+            hwp_convert::edit::replace_text(&mut doc, "Original body", "Edited body", false)
+                .unwrap(),
+            1
+        );
+        let roots = synthesized_memo_section(&doc);
+        let chars = &roots[0]
+            .children
+            .iter()
+            .find(|node| node.tag == tag::PARA_TEXT)
+            .unwrap()
+            .data;
+        let start = hwp_model::memo::hwp5_field_begin_payload();
+        let end = hwp_model::memo::hwp5_field_end_payload(1, true);
+        assert!(
+            [start, end]
+                .iter()
+                .all(|bytes| chars.windows(bytes.len()).any(|w| w == bytes)),
+            "an edited HWPX memo must use both measured HWP5 field blocks"
+        );
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .any(|node| node.tag == tag::MEMO_LIST)
+        );
+    }
+
+    #[test]
+    fn cross_paragraph_hwpx_memo_drops_both_ends_and_the_body() {
+        let roots = synthesized_memo_section(&hwpx_memo_document(true, ""));
+        for para in &roots {
+            for child in &para.children {
+                assert_ne!(child.tag, tag::MEMO_LIST);
+                assert!(!(child.tag == tag::CTRL_HEADER && child.data.starts_with(b"knu%")));
+                if child.tag == tag::PARA_TEXT {
+                    assert!(
+                        child
+                            .data
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .all(|unit| !matches!(u16::from_le_bytes(*unit), 3 | 4))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hwp5_projection_drops_a_hwpx_memo_with_an_orphan_body_field_end() {
+        let doc = hwpx_memo_document(
+            false,
+            r#"<hp:ctrl><hp:fieldEnd beginIDRef="99" fieldid="623209829"/></hp:ctrl>"#,
+        );
+        let Control::Generic(memo) = &doc.sections[0].paragraphs[0].controls[0] else {
+            panic!("expected a memo");
+        };
+        assert!(
+            memo.paragraph_lists[0].paragraphs[0]
+                .chars
+                .iter()
+                .any(|ch| matches!(ch, HwpChar::InlineCtrl { code: 4, .. }))
+        );
+        let roots = synthesized_memo_section(&doc);
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .all(|node| node.tag != tag::MEMO_LIST),
+            "an unmatched body field end cannot be emitted by HWP5",
+        );
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .all(|node| { node.tag != tag::CTRL_HEADER || !node.data.starts_with(b"knu%") })
+        );
+    }
+
+    #[test]
+    fn empty_memo_body_still_has_one_character_shape_record() {
+        let paragraph = memo_body_record(&Paragraph::default(), true, true);
+        let shape = paragraph
+            .children
+            .iter()
+            .find(|child| child.tag == tag::PARA_CHAR_SHAPE);
+        assert_eq!(
+            shape.map(|child| child.data.as_slice()),
+            Some([0; 8].as_slice())
+        );
+        assert_eq!(&paragraph.data[12..14], &[1, 0]);
+    }
+
+    #[test]
+    fn a_memo_body_exceeding_the_native_count_is_dropped() {
+        let mut doc = hwpx_memo_document(false, "");
+        let Control::Generic(memo) = &mut doc.sections[0].paragraphs[0].controls[0] else {
+            panic!("expected a memo");
+        };
+        memo.paragraph_lists[0]
+            .paragraphs
+            .resize(usize::from(u16::MAX) + 1, Paragraph::default());
+        let roots = synthesized_memo_section(&doc);
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .all(|node| node.tag != tag::MEMO_LIST)
+        );
+    }
 
     #[test]
     fn memo_body_header_matches_the_source_version() {
