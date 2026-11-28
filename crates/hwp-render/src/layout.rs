@@ -6085,8 +6085,8 @@ fn place_wrapped(
     let mut y = first_baseline_y;
     let mut previous_no_break = false;
     // Set once an ordinary space overflowed and stayed on the line at zero advance (rule B12):
-    // the next non-space glyph opens a new line even if it fits the width the space left, the
-    // same as `lineseg::compute_linesegs`.
+    // the next allowed break starts a new line even if its glyph fits the width the space left,
+    // the same as `lineseg::compute_linesegs`.
     let mut space_overflowed = false;
 
     if std::env::var_os("HWP_RENDER_TRACE").is_some() {
@@ -6141,8 +6141,7 @@ fn place_wrapped(
                         previous_no_break = false;
                         continue;
                     }
-                    let break_allowed =
-                        space_overflowed || (!previous_no_break && !current_no_break);
+                    let break_allowed = !previous_no_break && !current_no_break;
                     if over && line_has_content && break_allowed {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
@@ -7293,6 +7292,58 @@ mod tab_width_tests {
                 })
                 .next();
             assert_eq!(last_y, Some(116.0));
+        }
+    }
+
+    #[test]
+    fn overflowing_space_keeps_both_nonbreaking_space_boundaries() {
+        for items in [
+            vec![dummy_glyph_run_with_widths(
+                "a  ib",
+                &[10.0, 10.0, 4.0, 4.0, 4.0],
+            )],
+            ["a", " ", " ", "i", "b"]
+                .into_iter()
+                .zip([10.0, 10.0, 4.0, 4.0, 4.0])
+                .map(|(text, width)| dummy_glyph_run_with_widths(text, &[width]))
+                .collect(),
+        ] {
+            let mut page = PageList {
+                width_pt: 600.0,
+                height_pt: 800.0,
+                items: Vec::new(),
+            };
+            place_wrapped(
+                &mut page,
+                items,
+                0.0,
+                100.0,
+                15.0,
+                16.0,
+                &[],
+                0.0,
+                &[],
+                None,
+                &mut RenderIssueAccumulator::new(),
+            );
+            let placements: Vec<_> = page
+                .items
+                .iter()
+                .flat_map(|item| match item {
+                    Item::Glyphs { y, run, .. } => run.text.chars().map(|ch| (ch, *y)).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            assert_eq!(
+                placements,
+                [
+                    ('a', 100.0),
+                    (' ', 100.0),
+                    (' ', 100.0),
+                    ('i', 100.0),
+                    ('b', 116.0)
+                ]
+            );
         }
     }
 
