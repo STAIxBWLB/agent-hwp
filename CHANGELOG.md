@@ -114,6 +114,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
   A fixed-width space (FW_SPACE) wraps and keeps its width as before. The Hangul line-break
   setting is still not honored.
+- Use the measured Hancom body width and paragraph margins for synthesized single-column HWP5
+  line widths and wrapping ([#652](https://github.com/STAIxBWLB/agent-hwp/issues/652)).
 - Use font-based line spacing after authored TOC, section-strip and DocumentSpec
   inline tables ([#649](https://github.com/STAIxBWLB/agent-hwp/issues/649)).
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor

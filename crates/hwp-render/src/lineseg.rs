@@ -657,8 +657,26 @@ fn synthesize_linesegs_inner(
             .section_def()
             .and_then(|d| d.page.as_ref());
         let body_width = page.map_or(42520, |pg| {
-            pg.width.0 - pg.margin_left.0 - pg.margin_right.0
+            pg.width
+                .0
+                .saturating_sub(pg.margin_left.0)
+                .saturating_sub(pg.margin_right.0)
         });
+        // B13: the measured paragraph geometry is for a portrait, single-column body with
+        // zero gutter. Keep nested lists and other page geometries on their existing paths.
+        let measured_body_width = page
+            .filter(|pg| pg.attr & 1 == 0 && pg.gutter.0 == 0)
+            .filter(|_| {
+                !snap.sections[si]
+                    .paragraphs
+                    .iter()
+                    .flat_map(|p| &p.controls)
+                    .any(|control| {
+                        matches!(control, Control::Generic(g)
+                        if g.column_def.as_ref().is_some_and(|columns| columns.count != 1))
+                    })
+            })
+            .map(|_| body_width.div_euclid(4) * 4);
         // Body height excludes the top/bottom margins and, as of #423, the header/footer bands:
         // the same box `layout_document_pages` draws in. Genuine multipage caches are
         // page-relative: body vertpos resets on every page, and its maximum 59668 is below body
@@ -821,8 +839,17 @@ fn synthesize_linesegs_inner(
                 ));
                 lines
             } else {
+                let line_width = measured_body_width.map_or(body_width, |width| {
+                    let Some(shape) = snap.header.para_shapes.get(src.para_shape.0 as usize) else {
+                        return width;
+                    };
+                    // Paragraph shape margins are stored in twice HWPUNIT.
+                    width
+                        .saturating_sub(shape.margin_left.max(0) / 2)
+                        .saturating_sub(shape.margin_right.max(0) / 2)
+                });
                 compute_linesegs(
-                    store, &snap, src, body_width, content_h, &mut v_pos, warnings,
+                    store, &snap, src, line_width, content_h, &mut v_pos, warnings,
                 )
             };
             // Capture the line cursor before applying table/source-offset flow. Ordinary
@@ -1308,7 +1335,7 @@ pub(crate) fn compute_linesegs(
     store: &mut FontStore,
     doc: &Document,
     para: &Paragraph,
-    body_width: i32,
+    line_width: i32,
     content_h: i32,
     v_pos: &mut i32,
     warnings: &mut RenderIssueAccumulator,
@@ -1319,7 +1346,7 @@ pub(crate) fn compute_linesegs(
     let line_advance = metrics.advance;
     let line_spacing = line_advance.saturating_sub(base).max(0);
     let baseline_gap = metrics.baseline_gap;
-    let seg_width = body_width.max(1);
+    let seg_width = line_width.max(1);
     // Reduce line width by the renderer's indent (layout::line_indents): positive indent
     // affects the first line, hanging indent subsequent lines. Without subtracting it,
     // synthesized lines exceed the paragraph's right edge. List-marker width requires shaping
@@ -1365,7 +1392,7 @@ pub(crate) fn compute_linesegs(
         *v_pos = (*v_pos).saturating_add(line_advance);
     };
 
-    // Shape fonts to measure character widths and wrap greedily within body width.
+    // Shape fonts and wrap within the same available width recorded in each segment.
     // Use the same glyph x_advance accumulation as place_wrapped in layout.rs.
     let items = shape_range(store, doc, para, (0, total), warnings);
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
@@ -1567,6 +1594,42 @@ mod advance_tests {
 mod tests {
     use super::*;
     use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
+
+    #[test]
+    fn synthesized_body_width_floors_the_page_then_subtracts_both_margins() {
+        let mut doc = hwp_convert::from_markdown("Intro\n\nParagraph body\n");
+        let section = &mut doc.sections[0];
+        let page = section.paragraphs[0]
+            .controls
+            .iter_mut()
+            .find_map(|control| match control {
+                Control::SectionDef(def) => def.page.as_mut(),
+                _ => None,
+            })
+            .unwrap();
+        page.width.0 = 59528;
+        page.margin_left.0 = 5669;
+        page.margin_right.0 = 5668;
+        let shape = &mut doc.header.para_shapes[section.paragraphs[1].para_shape.0 as usize];
+        shape.margin_left = 2002;
+        shape.margin_right = 4000;
+        shape.indent = 1200;
+
+        synthesize_linesegs(
+            &mut doc,
+            &mut FontStore::new_isolated(),
+            &mut RenderIssueAccumulator::new(),
+        );
+        let lines = &doc.sections[0].paragraphs[1].line_segs;
+        assert!(!lines.is_empty());
+        for line in lines {
+            assert_eq!(
+                (line.col_start, line.seg_width),
+                (1001, 48188 - 1001 - 2000),
+                "floor PAGE_DEF width before the margins, keeping indent out of the cache",
+            );
+        }
+    }
 
     /// Emulate a saved inline table with the affect-line-spacing flag set.
     fn set_strip_affect_line_spacing(doc: &mut Document) -> usize {
