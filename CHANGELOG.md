@@ -112,9 +112,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `validate` now fails an `.hwp` whose paragraph has text but no paragraph-end character (13),
   and names the paragraph and the fix. Hancom rejects such a file as damaged while ahwp's reader
   accepted it ([#660](https://github.com/STAIxBWLB/agent-hwp/issues/660)). The HWP writer now
-  appends the missing paragraph end to an HWP-origin paragraph (one built through the API, for
-  example) and reports it; adding that one character was the change that made Hancom open the
-  probe file. Hancom-saved paragraphs always end with it, so round trips are unchanged.
+  appends the missing paragraph end to every paragraph it writes, including footnote, header and
+  text-box paragraphs and source paragraphs an edit leaves untouched, and reports how many it
+  fixed; adding that one character was the change that made Hancom open the probe file.
+  Hancom-saved paragraphs always end with it, so round trips are unchanged.
 - Right- and center-aligned cached lines ending in a forced line break use their visible
   width, including in table cells. Ordinary trailing spaces before the break collapse
   as on other non-final lines ([#656](https://github.com/STAIxBWLB/agent-hwp/issues/656)).

@@ -1387,3 +1387,169 @@ fn hwp5_origin_paragraph_without_end_char_is_repaired() {
         report.warnings
     );
 }
+
+/// Writes `doc`, then strips the trailing char 13 from the PARA_TEXT records the predicate picks
+/// (`depth` 0 = body, deeper = nested lists), so the source file itself carries the #660 defect.
+#[cfg(test)]
+fn strip_end_chars(path: &std::path::Path, pick: impl Fn(usize, usize) -> bool) -> usize {
+    use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+    use std::io::Write as _;
+    fn visit(
+        nodes: &mut [RecordNode],
+        depth: usize,
+        seen: &mut usize,
+        stripped: &mut usize,
+        pick: &dyn Fn(usize, usize) -> bool,
+    ) {
+        for node in nodes {
+            if node.tag == tag::PARA_HEADER
+                && let Some(i) = node.children.iter().position(|c| c.tag == tag::PARA_TEXT)
+            {
+                let ends = node.children[i].data.ends_with(&[13, 0]);
+                if ends && pick(depth, *seen) {
+                    let len = node.children[i].data.len();
+                    node.children[i].data.truncate(len - 2);
+                    let n = u32::from_le_bytes(node.data[0..4].try_into().unwrap()) - 1;
+                    node.data[0..4].copy_from_slice(&n.to_le_bytes());
+                    *stripped += 1;
+                }
+                *seen += 1;
+            }
+            visit(&mut node.children, depth + 1, seen, stripped, pick);
+        }
+    }
+    let mut container = hwp5::Hwp5Container::open(path).unwrap();
+    let compressed = container.file_header().is_compressed();
+    let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+    drop(container);
+    let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+    let (mut seen, mut stripped) = (0, 0);
+    visit(&mut roots, 0, &mut seen, &mut stripped, &pick);
+    let raw = RecordNode::serialize_forest(&roots);
+    let encoded = if compressed {
+        hwp5::codec::compress(&raw)
+    } else {
+        raw
+    };
+    let mut cfb = cfb::open_rw(path).unwrap();
+    cfb.create_stream("/BodyText/Section0")
+        .unwrap()
+        .write_all(&encoded)
+        .unwrap();
+    cfb.flush().unwrap();
+    stripped
+}
+
+/// Every PARA_TEXT in the written file's body records, nested ones included, ends with char 13.
+#[cfg(test)]
+fn unterminated_records(path: &std::path::Path) -> usize {
+    use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+    fn count(nodes: &[RecordNode]) -> usize {
+        nodes
+            .iter()
+            .map(|n| {
+                let own = usize::from(
+                    n.tag == tag::PARA_HEADER
+                        && n.children
+                            .iter()
+                            .any(|c| c.tag == tag::PARA_TEXT && !c.data.ends_with(&[13, 0])),
+                );
+                own + count(&n.children)
+            })
+            .sum()
+    }
+    let mut container = hwp5::Hwp5Container::open(path).unwrap();
+    let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+    count(&scan_stream(&bytes, ScanMode::Strict).unwrap().roots)
+}
+
+/// #660 review (1): the surgical rewrite keeps unchanged source paragraphs byte for byte. An
+/// unterminated source paragraph that the edit does not touch must still be written with its
+/// paragraph end, and the repair warning must describe what was actually written.
+#[test]
+fn rewrite_with_an_unrelated_edit_repairs_the_kept_source_paragraph() {
+    use hwp_model::HwpChar;
+    let root = tmp(&format!("rewrite-unterminated-{}", std::process::id()));
+    std::fs::create_dir_all(&*root).unwrap();
+    let source = root.join("source.hwp");
+    let doc = hwp_convert::from_markdown("keep me\n\nedit me\n");
+    hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+    // Body paragraph 0 loses its end on disk; paragraph 1 is the one the edit changes.
+    assert_eq!(strip_end_chars(&source, |depth, i| depth == 0 && i == 0), 1);
+    assert_eq!(
+        unterminated_records(&source),
+        1,
+        "fixture carries the defect"
+    );
+    let original = hwp5::read_document(&source).unwrap().document;
+    let mut edited = original.clone();
+    let target = &mut edited.sections[0].paragraphs[1].chars;
+    let end = target.pop();
+    target.push(HwpChar::Text('!'));
+    target.extend(end);
+
+    let output = root.join("out.hwp");
+    let report = hwp5::rewrite_document_with_report(
+        &source,
+        &original,
+        &edited,
+        &output,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        unterminated_records(&output),
+        0,
+        "the kept source paragraph must be repaired"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("문단 끝 문자(13)") && w.contains("1개")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+/// #660 review (2): footnote, header and text-box lists are written from their raw child
+/// records. An unterminated paragraph there must be repaired and reported too.
+#[test]
+fn raw_backed_footnote_list_paragraph_is_repaired() {
+    let root = tmp(&format!("raw-unterminated-{}", std::process::id()));
+    std::fs::create_dir_all(&*root).unwrap();
+    let source = root.join("source.hwp");
+    let doc = hwp_convert::from_markdown("본문[^1]\n\n[^1]: 각주 본문\n");
+    hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+    // Strip only nested (footnote list) paragraphs.
+    assert_eq!(
+        strip_end_chars(&source, |depth, _| depth > 0),
+        1,
+        "one footnote paragraph"
+    );
+    let back = hwp5::read_document(&source).unwrap().document;
+    let raw_backed = back.sections[0].paragraphs.iter().flat_map(|p| &p.controls).any(|c| {
+        matches!(c, hwp_model::Control::Generic(g) if g.ctrl_id == *b"fn  " && !g.raw_children.is_empty())
+    });
+    assert!(
+        raw_backed,
+        "the footnote must read back as a raw-backed generic control"
+    );
+
+    let output = root.join("out.hwp");
+    let report =
+        hwp5::write_document_with_report(&back, &output, &hwp5::WriteOptions::default()).unwrap();
+    assert_eq!(
+        unterminated_records(&output),
+        0,
+        "the raw footnote paragraph must be repaired"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("문단 끝 문자(13)")),
+        "{:?}",
+        report.warnings
+    );
+}

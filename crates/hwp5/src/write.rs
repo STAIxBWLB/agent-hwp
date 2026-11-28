@@ -81,9 +81,80 @@ pub fn write_document_with_report(
     path: &Path,
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
-    let materialization = materialize_document(doc, opts, true, false)?;
+    let mut materialization = materialize_document(doc, opts, true, false)?;
+    terminate_written_paragraphs(&mut materialization, true)?;
     write_materialized_document(path, &materialization)?;
     Ok(materialization.report)
+}
+
+/// Appends the paragraph end (char 13) to every written PARA_TEXT that lacks it, in the final
+/// body-section streams, and reports how many (#660).
+///
+/// Hancom rejects a paragraph with text but no paragraph end as damaged: the #660 probe changed
+/// only that character on an otherwise identical file, and only the file with it opened. Running
+/// on the serialized records (not the IR) covers every record the file actually carries: a
+/// source subtree kept by the surgical rewrite merge and the raw child records of footnotes,
+/// headers and text boxes alike, and the warning describes what is written. Every Hancom-saved
+/// paragraph with text already ends in 13 (0 of 18,073 in 242 local files lack it), so a genuine
+/// round trip finds nothing and its streams stay byte-identical.
+fn terminate_written_paragraphs(
+    materialization: &mut HwpStreamMaterialization,
+    compressed: bool,
+) -> Result<()> {
+    fn visit(nodes: &mut [RecordNode], fixed: &mut usize) {
+        for node in nodes {
+            if node.tag == tag::PARA_HEADER && node.data.len() >= 4 {
+                let text = node.children.iter_mut().find(|c| c.tag == tag::PARA_TEXT);
+                if let Some(text) = text
+                    && text.data.len() >= 2
+                    && text.data.len() % 2 == 0
+                    && text.data[text.data.len() - 2..] != [13, 0]
+                {
+                    // The last WCHAR of an 8-WCHAR control repeats its code (never 13, a
+                    // 1-WCHAR char control), so a missing end is exactly a last WCHAR != 13.
+                    text.data.extend_from_slice(&[13, 0]);
+                    let nchars = u32::from_le_bytes(node.data[0..4].try_into().unwrap());
+                    let count = (nchars & 0x7fff_ffff) + 1;
+                    node.data[0..4]
+                        .copy_from_slice(&((nchars & 0x8000_0000) | count).to_le_bytes());
+                    *fixed += 1;
+                }
+            }
+            visit(&mut node.children, fixed);
+        }
+    }
+    let mut total = 0usize;
+    let paths: Vec<String> = materialization
+        .streams
+        .keys()
+        .filter(|p| p.starts_with("/BodyText/Section"))
+        .cloned()
+        .collect();
+    for path in paths {
+        let stored = &materialization.streams[&path];
+        let decoded = if compressed {
+            decompress(stored, &path)?
+        } else {
+            stored.clone()
+        };
+        let mut roots = scan_stream(&decoded, ScanMode::Strict)?.roots;
+        let mut fixed = 0usize;
+        visit(&mut roots, &mut fixed);
+        if fixed > 0 {
+            total += fixed;
+            materialization.streams.insert(
+                path,
+                encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed),
+            );
+        }
+    }
+    if total > 0 {
+        materialization.report.warning(format!(
+            "문단 끝 문자(13)가 없는 문단 {total}개에 문단 끝을 붙여 저장했습니다 \
+             (없으면 한글이 손상 파일로 판정)"
+        ));
+    }
+    Ok(())
 }
 
 /// Rewrites an HWP document by copying its immutable source container and
@@ -151,6 +222,7 @@ pub fn rewrite_document_with_report(
         &source_section_roots,
         &mut materialization,
     )?;
+    terminate_written_paragraphs(&mut materialization, compressed)?;
     std::fs::copy(source, path)?;
     patch_source_container(path, &plan, &source_bin_paths, &materialization)?;
     Ok(materialization.report)
@@ -4381,18 +4453,6 @@ fn emit_paragraph(
         // 3. Merge consecutive PARA_CHAR_SHAPE runs with identical IDs; duplicate runs are treated
         //    as corruption.
         p.char_shape_runs.dedup_by(|(_, b), (_, a)| a == b);
-        patched = p;
-        &patched
-    } else if !para.chars.is_empty() && para.chars.last() != Some(&HwpChar::CharCtrl(13)) {
-        // #660: an HWP5-origin paragraph with text but no paragraph end (e.g. built through the
-        // API) is rejected by Hancom as damaged. Appending char 13 alone made the probe open
-        // (`corpus/hancom-repro/issue-660/probe/v-a-terminator`), and no Hancom-saved paragraph
-        // lacks it (0 of 18,073 in 242 local files), so this never touches a genuine round trip.
-        let mut p = para.clone();
-        p.chars.push(HwpChar::CharCtrl(13));
-        warnings.warning(
-            "문단 끝 문자(13)가 없는 문단에 문단 끝을 붙여 저장했습니다 (없으면 한글이 손상 파일로 판정)",
-        );
         patched = p;
         &patched
     } else {
