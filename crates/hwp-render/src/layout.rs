@@ -6295,7 +6295,13 @@ fn place_wrapped(
                     acc += g.x_advance;
                     previous_no_break = current_no_break;
                 }
-                if start < run.glyphs.len() {
+                if start == 0 && !run.glyphs.is_empty() {
+                    // Keep the untouched source text, including runs whose glyphs outnumber
+                    // source scalars. Only its advance can change when a space is collapsed.
+                    run.width_pt = acc;
+                    push_run(page, piece_x, y, run, border_fills, warnings);
+                    x = piece_x + acc;
+                } else if start < run.glyphs.len() {
                     let piece = run.slice_with_sources(start, run.glyphs.len(), sources);
                     let w = piece.width_pt;
                     push_run(page, piece_x, y, piece, border_fills, warnings);
@@ -7599,6 +7605,34 @@ pub(crate) mod tab_width_tests {
         assert!(matches!(items.last(), Some(InlineItem::LineBreak(4))));
     }
 
+    #[test]
+    fn hangul_word_wrapping_preserves_unbroken_expanded_glyph_run_text() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        place_wrapped(
+            &mut page,
+            vec![dummy_glyph_run_with_widths("ก", &[10.0, 2.0])],
+            0.0,
+            100.0,
+            50.0,
+            16.0,
+            true,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut RenderIssueAccumulator::new(),
+        );
+        let [Item::Glyphs { run, .. }] = page.items.as_slice() else {
+            panic!("expected one unbroken glyph run");
+        };
+        assert_eq!(run.text, "ก");
+        assert_eq!(run.glyphs.len(), 2);
+    }
+
     fn dummy_glyph_run(text: &str) -> InlineItem {
         let mut item = dummy_run(10.0);
         let InlineItem::Run(run) = &mut item else {
@@ -7614,7 +7648,7 @@ pub(crate) mod tab_width_tests {
         item
     }
 
-    /// A glyph run with one glyph per `char` of `text`, each carrying the matching entry of
+    /// A dummy run with one glyph per entry of
     /// `glyph_widths` as its `x_advance` — for tests that need to know exactly where a
     /// specific character (e.g. a decimal separator) starts. Font data stays empty so
     /// `glyph_source_sequences`'s rustybuzz path fails closed to its byte-count fallback,

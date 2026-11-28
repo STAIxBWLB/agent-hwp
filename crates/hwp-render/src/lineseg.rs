@@ -1346,6 +1346,18 @@ pub(crate) fn compute_linesegs(
     v_pos: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
+    let items = shape_range(store, doc, para, (0, para.wchar_len()), warnings);
+    compute_linesegs_from_items(doc, para, line_width, body_height, v_pos, &items)
+}
+
+fn compute_linesegs_from_items(
+    doc: &Document,
+    para: &Paragraph,
+    line_width: i32,
+    body_height: Option<i32>,
+    v_pos: &mut i32,
+    items: &[InlineItem],
+) -> Vec<LineSeg> {
     // Preserve the measured height/baseline formula and the paragraph's line spacing.
     let metrics = paragraph_metrics(doc, para);
     let base = metrics.height;
@@ -1368,8 +1380,6 @@ pub(crate) fn compute_linesegs(
         };
         ((seg_width - indent).max(1)) as f32 / 100.0
     };
-    let total = para.wchar_len();
-
     let make = |start: u32, v: i32| LineSeg {
         text_start: start,
         v_pos: v,
@@ -1401,13 +1411,11 @@ pub(crate) fn compute_linesegs(
         *v_pos = (*v_pos).saturating_add(line_advance);
     };
 
-    // Shape fonts and wrap within the same available width recorded in each segment.
-    // Use the same glyph x_advance accumulation as place_wrapped in layout.rs.
-    let items = shape_range(store, doc, para, (0, total), warnings);
+    // Wrap within the available width recorded in each segment, as in place_wrapped.
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
     let wrap_hangul_words = body_height.is_some() && crate::shape::wraps_at_hangul_words(doc, para);
-    let starts = synthesized_line_starts(&items, &tabs, line_limit_pt, wrap_hangul_words);
+    let starts = synthesized_line_starts(items, &tabs, line_limit_pt, wrap_hangul_words);
     let mut segs = Vec::with_capacity(starts.len());
     for start in starts {
         place(&mut segs, v_pos, start);
@@ -1574,9 +1582,20 @@ mod advance_tests {
             "가 나다",
             &[10.0, 5.0, 10.0, 10.0],
         )];
-        for (words, expected) in [(false, [0, 3]), (true, [0, 2])] {
-            let starts = super::synthesized_line_starts(&items, &[], |_| 25.0, words);
-            assert_eq!(starts, expected);
+        let mut doc = hwp_convert::from_markdown("x");
+        let para = doc.sections[0].paragraphs[0].clone();
+        let shape = para.para_shape.0 as usize;
+        for (bit, body_height, expected) in [
+            (0, Some(i32::MAX), [0, 2]),
+            (1 << 7, Some(i32::MAX), [0, 3]),
+            (0, None, [0, 3]),
+        ] {
+            let attr = &mut doc.header.para_shapes[shape].attr1;
+            *attr = (*attr & !(1 << 7)) | bit;
+            let lines =
+                super::compute_linesegs_from_items(&doc, &para, 2500, body_height, &mut 0, &items);
+            let starts: Vec<_> = lines.iter().map(|line| line.text_start).collect();
+            assert_eq!(starts, expected, "bit {bit}, body height {body_height:?}");
         }
         let punctuated = [dummy_glyph_run_with_widths(
             "가 나다.",
