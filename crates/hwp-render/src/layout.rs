@@ -2852,8 +2852,8 @@ fn place_caption_items(
 /// in Hancom's PDF against 84.9/118.0 pt before). Other relations, other alignments, non-zero
 /// offsets, nested lists (cells, text boxes) and the bottom margin's effect on the text after the
 /// table are unmeasured and keep (0, 0); `top_level` is false for a nested list. The caller
-/// translates only the painted items: pagination and the flow cursor stay on the anchor, and a
-/// table that splits or moves to another page is not shifted.
+/// lays the table out at the shifted origin so pagination and the following flow clear the
+/// grid, and keeps the anchor origin when the shifted grid would cross the column width.
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
 fn floating_table_margin_shift(table: &Table, top_level: bool) -> (f32, f32) {
@@ -2966,17 +2966,31 @@ fn layout_para_objects(
                     object_y += h + gap;
                 }
                 let (margin_dx, margin_dy) = floating_table_margin_shift(table, split.is_some());
-                // Rule B14 moves only the painted grid: lay the table out at the anchor so
-                // pagination and the returned flow cursor are unchanged (text flow after a
-                // floating table is unestablished, #655), then translate the items it drew.
-                let first_item = page.items.len();
+                // Fail closed when the shifted grid would cross the column's right edge: that
+                // case is unmeasured, and the old origin keeps the grid inside the column.
+                let grid_width: f32 = table
+                    .cells
+                    .iter()
+                    .filter(|c| c.row == 0)
+                    .map(|c| c.width.to_pt() as f32)
+                    .sum();
+                let (margin_dx, margin_dy) = if grid_width + margin_dx > avail_width + 0.01 {
+                    (0.0, 0.0)
+                } else {
+                    (margin_dx, margin_dy)
+                };
+                // Rule B14 lays the table out at the shifted origin, so pagination fits the
+                // grid where it is painted and the flow cursor clears it: following content
+                // never overlaps the shifted grid and the grid never crosses the body bottom.
+                // On the Hancom probe this moves the next paragraph toward Hancom's, not away
+                // (case0 MARKER 159.97 -> 168.47 pt, Hancom 193.34; #655).
                 let (end, table_split, final_fragment_top, whole) = layout_table(
                     doc,
                     store,
                     page,
                     table,
-                    x,
-                    object_y,
+                    x + margin_dx,
+                    object_y + margin_dy,
                     avail_width,
                     top_caption,
                     b11.then(|| crate::lineseg::inline_table_line_height(para))
@@ -2986,21 +3000,6 @@ fn layout_para_objects(
                     warnings,
                     rec,
                 );
-                // A split or a whole-table move repaints on another page; the margin is
-                // unmeasured there, so only a table kept on its anchor page moves.
-                let (margin_dx, margin_dy) = if table_split {
-                    (0.0, 0.0)
-                } else {
-                    (margin_dx, margin_dy)
-                };
-                if (margin_dx, margin_dy) != (0.0, 0.0) {
-                    let drawn: Vec<Item> = page.items.drain(first_item..).collect();
-                    page.items.extend(
-                        drawn
-                            .into_iter()
-                            .map(|i| translate_item(i, margin_dx, margin_dy)),
-                    );
-                }
                 rec.end_segment(page);
                 if table_split {
                     // After a split, the cursor uses the new page's coordinates, not the previous
@@ -3019,18 +3018,16 @@ fn layout_para_objects(
                     if cap.side != CaptionSide::Top {
                         let (items, h) =
                             layout_caption_items(doc, store, page, cap, wrap, warnings);
-                        // A side caption follows the painted grid; a bottom caption's flow
-                        // bottom stays on the unshifted table (flow is unestablished, #655).
+                        // A side caption follows the grid's shifted x.
                         let obj = (
                             x + margin_dx,
-                            final_fragment_top + margin_dy,
+                            final_fragment_top,
                             avail_width,
                             end - final_fragment_top,
                         );
                         if let Some(cap_bottom) =
                             place_caption_items(page, items, h, cap, obj, wrap)
                         {
-                            let cap_bottom = cap_bottom - margin_dy;
                             bottom = bottom.max(cap_bottom);
                             object_y = cap_bottom;
                         }

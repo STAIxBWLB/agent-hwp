@@ -159,43 +159,75 @@ fn nested_floating_table_keeps_the_anchor_origin() {
     );
 }
 
-#[test]
-fn margins_do_not_move_the_text_after_the_table() {
-    // Flow after a floating table is unestablished (#655): B14 moves only the painted grid. The
-    // next paragraph is marked by its own inline table (blue), so no host font is needed.
-    let next_para_y = |out_margins: [u16; 4]| {
-        let mut doc = hwp_convert::from_markdown("x\n\nafter\n");
+/// A rect's (x0, y0, x1, y1) in points.
+type Bounds = (f32, f32, f32, f32);
+
+/// Bounds of the red floating grid and the blue inline marker table in the next paragraph.
+/// Both are font-free filled cell rects.
+fn grid_and_next(out_margins: [u16; 4], grid_width: i32) -> (Bounds, Bounds) {
+    let mut doc = hwp_convert::from_markdown("x\n\nafter\n");
+    for color in [0x0000_ff00u32, 0x0000_00ff] {
         doc.header.border_fills.push(hwp_model::BorderFill {
-            bg_color: Some(0x0000_00ff),
+            bg_color: Some(color),
             ..Default::default()
         });
-        let blue = BorderFillId(doc.header.border_fills.len() as u16);
-        let mut marker = floating_table(2, 0, [0; 4]);
-        marker.placement.as_mut().unwrap().treat_as_char = true;
-        marker.cells[0].border_fill = blue;
-        let paras = &mut doc.sections[0].paragraphs;
-        paras[0]
-            .controls
-            .push(Control::Table(floating_table(2, 0, out_margins)));
-        paras[1].controls.push(Control::Table(marker));
-        for p in paras.iter_mut() {
-            p.line_segs.clear();
-        }
-        let mut store = FontStore::new_isolated();
-        let mut warns = RenderIssueAccumulator::new();
-        let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
-        let ys: Vec<f32> = list.pages[0]
+    }
+    let n = doc.header.border_fills.len() as u16;
+    let (red, blue) = (BorderFillId(n - 1), BorderFillId(n));
+    let mut grid = floating_table(2, 0, out_margins);
+    grid.cells[0].width = HwpUnit(grid_width);
+    grid.cells[0].border_fill = red;
+    let mut marker = floating_table(2, 0, [0; 4]);
+    marker.placement.as_mut().unwrap().treat_as_char = true;
+    marker.cells[0].border_fill = blue;
+    let paras = &mut doc.sections[0].paragraphs;
+    paras[0].controls.push(Control::Table(grid));
+    paras[1].controls.push(Control::Table(marker));
+    for p in paras.iter_mut() {
+        p.line_segs.clear();
+    }
+    let mut store = FontStore::new_isolated();
+    let mut warns = RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let rect = |color: u32| {
+        let found: Vec<_> = list.pages[0]
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Rect { y, fill, .. } if *fill == 0x0000_00ff => Some(*y),
+                Item::Rect { x, y, w, h, fill } if *fill == color => {
+                    Some((*x, *y, *x + *w, *y + *h))
+                }
                 _ => None,
             })
             .collect();
-        assert_eq!(ys.len(), 1, "the marker table must draw once: {ys:?}");
-        ys[0]
+        assert_eq!(found.len(), 1, "color {color:#x} must draw once: {found:?}");
+        found[0]
     };
-    assert_eq!(next_para_y([567, 1134, 850, 283]), next_para_y([0; 4]));
+    (rect(0x0000_ff00), rect(0x0000_00ff))
+}
+
+#[test]
+fn shifted_grid_never_overlaps_the_following_content() {
+    // codex review of 4882fa5: a paint-only shift drew the grid 8.50 pt into the next
+    // paragraph's table. The shifted grid must end at or above where the next content starts.
+    let (grid, next) = grid_and_next([567, 1134, 850, 283], 10000);
+    assert!(
+        grid.3 <= next.1 + 0.01,
+        "grid {grid:?} overlaps the next paragraph's table {next:?}"
+    );
+    // And the measured shift itself still applies.
+    let (plain, _) = grid_and_next([0; 4], 10000);
+    assert!((grid.0 - plain.0 - 5.67).abs() < 0.01 && (grid.1 - plain.1 - 8.50).abs() < 0.01);
+}
+
+#[test]
+fn grid_that_would_cross_the_column_keeps_the_anchor_origin() {
+    // A full-width grid shifted right would cross the column's right edge: that case is
+    // unmeasured, so the grid stays at the anchor and inside the previously available width.
+    let full = 42520; // the default body width from_markdown sets up, in HWPUNIT
+    let (shifted, _) = grid_and_next([567, 1134, 850, 283], full);
+    let (plain, _) = grid_and_next([0; 4], full);
+    assert_eq!(shifted, plain);
 }
 
 #[test]
