@@ -2843,19 +2843,25 @@ fn place_caption_items(
 
 /// Grid-origin shift (left, top) in pt from a floating table's outer margins (rule B14, #655).
 ///
-/// Established only for a floating table anchored to the paragraph vertically and to the column
-/// horizontally with both offsets zero: Hancom draws its grid one left and one top outer margin
+/// Established only for a top-level body floating table anchored to the paragraph vertically and
+/// to the column horizontally, aligned top and left, with both offsets zero: Hancom draws its grid one left and one top outer margin
 /// in from the anchor (a Hancom-authored 3x3 table with 283 HU margins, grid at 87.8/120.9 pt
-/// in Hancom's PDF against 84.9/118.0 pt before). Other relations, non-zero offsets and the
-/// bottom margin's effect on the text after the table are unmeasured and keep (0, 0).
+/// in Hancom's PDF against 84.9/118.0 pt before). Other relations, other alignments, non-zero
+/// offsets, nested lists (cells, text boxes) and the bottom margin's effect on the text after the
+/// table are unmeasured and keep (0, 0); `top_level` is false for a nested list.
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
-fn floating_table_margin_shift(table: &Table) -> (f32, f32) {
+fn floating_table_margin_shift(table: &Table, top_level: bool) -> (f32, f32) {
+    if !top_level {
+        return (0.0, 0.0);
+    }
     let (attr_ok, left, top) = if let Some(p) = &table.placement {
         (
             !p.treat_as_char
                 && p.vert_rel_to == 2
                 && p.horz_rel_to == 2
+                && p.vert_align == 0
+                && p.horz_align == 0
                 && p.vert_offset == 0
                 && p.horz_offset == 0,
             p.out_margins[0],
@@ -2877,7 +2883,13 @@ fn floating_table_margin_shift(table: &Table) -> (f32, f32) {
             return (0.0, 0.0);
         };
         (
-            attr & 1 == 0 && (attr >> 3) & 3 == 2 && (attr >> 8) & 3 == 2 && vo == 0 && ho == 0,
+            attr & 1 == 0
+                && (attr >> 3) & 3 == 2
+                && (attr >> 8) & 3 == 2
+                && (attr >> 5) & 7 == 0
+                && (attr >> 10) & 7 == 0
+                && vo == 0
+                && ho == 0,
             left,
             top,
         )
@@ -2948,7 +2960,7 @@ fn layout_para_objects(
                     });
                     object_y += h + gap;
                 }
-                let (margin_dx, margin_dy) = floating_table_margin_shift(table);
+                let (margin_dx, margin_dy) = floating_table_margin_shift(table, split.is_some());
                 let (end, table_split, final_fragment_top, whole) = layout_table(
                     doc,
                     store,
@@ -2983,7 +2995,12 @@ fn layout_para_objects(
                     if cap.side != CaptionSide::Top {
                         let (items, h) =
                             layout_caption_items(doc, store, page, cap, wrap, warnings);
-                        let obj = (x, final_fragment_top, avail_width, end - final_fragment_top);
+                        let obj = (
+                            x + margin_dx,
+                            final_fragment_top,
+                            avail_width,
+                            end - final_fragment_top,
+                        );
                         if let Some(cap_bottom) =
                             place_caption_items(page, items, h, cap, obj, wrap)
                         {
