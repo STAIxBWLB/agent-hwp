@@ -137,6 +137,100 @@ pub fn scan_ctrl_data(path: &Path) -> CtrlDataScan {
     result
 }
 
+/// Where a paragraph sits, for messages: `구역 0 문단 2`, `구역 0 문단 1 표 셀 문단 0`.
+fn paragraph_where(section: usize, path: &[String], index: usize) -> String {
+    let mut text = format!("구역 {section}");
+    for step in path {
+        text.push(' ');
+        text.push_str(step);
+    }
+    format!("{text} 문단 {index}")
+}
+
+/// Paragraphs with text whose last character is not the paragraph end (char 13), with where they
+/// sit (#660).
+///
+/// Hancom rejects such a paragraph as damaged or tampered: the #660 probe changed only that
+/// character on an otherwise identical file, and only the file with char 13 opened. In 242 local
+/// Hancom-saved `.hwp` files every one of 18,073 body and table-cell paragraphs with text ends
+/// with it. An empty paragraph (no PARA_TEXT, the implicit end) is valid and not reported.
+pub fn unterminated_paragraphs(doc: &hwp_model::Document) -> Vec<String> {
+    use hwp_model::{Control, HwpChar, Paragraph};
+    fn visit(
+        paragraphs: &[Paragraph],
+        section: usize,
+        path: &mut Vec<String>,
+        out: &mut Vec<String>,
+    ) {
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            if !paragraph.chars.is_empty() && paragraph.chars.last() != Some(&HwpChar::CharCtrl(13))
+            {
+                out.push(paragraph_where(section, path, index));
+            }
+            for control in &paragraph.controls {
+                let mut nested = |label: &str, lists: &[&[Paragraph]]| {
+                    for list in lists {
+                        path.push(format!("문단 {index} {label}"));
+                        visit(list, section, path, out);
+                        path.pop();
+                    }
+                };
+                match control {
+                    Control::Table(table) => {
+                        if let Some(caption) = &table.caption {
+                            nested("표 캡션", &[&caption.paragraphs]);
+                        }
+                        let cells: Vec<&[Paragraph]> = table
+                            .cells
+                            .iter()
+                            .map(|c| c.paragraphs.as_slice())
+                            .collect();
+                        nested("표 셀", &cells);
+                    }
+                    Control::Picture(picture) => {
+                        if let Some(caption) = &picture.caption {
+                            nested("그림 캡션", &[&caption.paragraphs]);
+                        }
+                    }
+                    Control::Generic(generic) => {
+                        if let Some(caption) = &generic.caption {
+                            nested("개체 캡션", &[&caption.paragraphs]);
+                        }
+                        let lists: Vec<&[Paragraph]> = generic
+                            .paragraph_lists
+                            .iter()
+                            .map(|l| l.paragraphs.as_slice())
+                            .collect();
+                        nested("개체 목록", &lists);
+                    }
+                    Control::SectionDef(_) => {}
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (section, body) in doc.sections.iter().enumerate() {
+        visit(&body.paragraphs, section, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
+/// The `validate` error for [`unterminated_paragraphs`], naming the cause and the fix, or `None`.
+pub fn unterminated_paragraph_error(places: &[String]) -> Option<String> {
+    let first = places.first()?;
+    let more = if places.len() > 1 {
+        format!(" 외 {}개", places.len() - 1)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "문단 끝 문자(13)가 없는 문단 {}개: {first}{more} (한글이 손상 파일로 판정). \
+         글자가 있는 문단은 마지막 문자가 문단 끝(13)이어야 합니다. 이 파일을 만든 도구에서 \
+         문단마다 문단 끝 문자를 넣어 다시 저장하거나, ahwp convert로 .hwpx로 바꾼 뒤 다시 .hwp로 저장하세요",
+        places.len()
+    ))
+}
+
 /// Counts CTRL_DATA nodes that are not the first child of a CTRL_HEADER.
 fn count_detached(nodes: &[RecordNode], parent_is_control: bool, count: &mut usize) {
     for (index, node) in nodes.iter().enumerate() {
