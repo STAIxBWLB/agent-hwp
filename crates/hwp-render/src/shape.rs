@@ -242,14 +242,14 @@ pub(crate) fn wraps_at_hangul_words(doc: &Document, para: &Paragraph) -> bool {
         .is_some_and(|shape| !shape.break_non_latin_keep_word())
 }
 
-/// Return each recognized word's width at its first glyph, with zeroes at other glyphs.
+/// Return glyph sources and the width at each recognized word's first glyph.
 /// Carry the start across style runs so changing a character style cannot invent a boundary.
-pub(crate) fn hangul_word_widths(items: &[InlineItem]) -> Vec<Vec<f32>> {
-    let mut widths: Vec<Vec<f32>> = items
+pub(crate) fn hangul_word_widths(items: &[InlineItem]) -> Vec<(Vec<String>, Vec<f32>)> {
+    let mut widths: Vec<_> = items
         .iter()
         .map(|item| match item {
-            InlineItem::Run(run) => vec![0.0; run.glyphs.len()],
-            _ => Vec::new(),
+            InlineItem::Run(run) => (glyph_source_sequences(run), vec![0.0; run.glyphs.len()]),
+            _ => (Vec::new(), Vec::new()),
         })
         .collect();
     let mut at_boundary = true;
@@ -260,14 +260,14 @@ pub(crate) fn hangul_word_widths(items: &[InlineItem]) -> Vec<Vec<f32>> {
             at_boundary = true;
             continue;
         };
-        let sources = glyph_source_sequences(run);
-        for (glyph_index, (glyph, source)) in run.glyphs.iter().zip(&sources).enumerate() {
+        for (glyph_index, glyph) in run.glyphs.iter().enumerate() {
+            let source = &widths[item_index].0[glyph_index];
             if !source.is_empty() && source.chars().all(|c| ('가'..='힣').contains(&c)) {
                 if at_boundary {
                     word = Some((item_index, glyph_index));
                 }
                 if let Some((run_index, start)) = word {
-                    widths[run_index][start] += glyph.x_advance;
+                    widths[run_index].1[start] += glyph.x_advance;
                 }
                 at_boundary = false;
             } else {
@@ -276,7 +276,7 @@ pub(crate) fn hangul_word_widths(items: &[InlineItem]) -> Vec<Vec<f32>> {
                     && !at_boundary
                 {
                     // A mixed-script token is outside the measured Hangul cases.
-                    widths[run_index][start] = 0.0;
+                    widths[run_index].1[start] = 0.0;
                 }
             }
         }

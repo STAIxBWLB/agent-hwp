@@ -5093,7 +5093,7 @@ fn layout_box_para_iter<'a>(
                     baseline_y,
                     wrap_width,
                     max_size * 1.6,
-                    crate::shape::wraps_at_hangul_words(doc, para),
+                    false,
                     &tabs,
                     first_delta,
                     &doc.header.border_fills,
@@ -6056,7 +6056,9 @@ fn first_wchar_from(items: &[Item], from: usize) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
-/// Places inline items with greedy glyph-level wrapping at `max_width`.
+/// Places inline items with greedy glyph wrapping at `max_width`. With
+/// `wrap_hangul_words`, a body paragraph can move a plain Hangul word first
+/// (#643); an overlong word on an empty line still falls back to glyph breaks.
 ///
 /// An infinite width disables wrapping. The return value is the final baseline.
 ///
@@ -6119,7 +6121,13 @@ fn place_wrapped(
         let item = std::mem::replace(&mut items[idx], InlineItem::Tab);
         match item {
             InlineItem::Run(mut run) => {
-                let sources = crate::shape::glyph_source_sequences(&run);
+                let fallback;
+                let sources = if let Some(widths) = &word_widths {
+                    &widths[idx].0
+                } else {
+                    fallback = crate::shape::glyph_source_sequences(&run);
+                    &fallback
+                };
                 if word_widths.is_none()
                     && !space_overflowed
                     && (max_width.is_infinite() || x + run.width_pt <= limit)
@@ -6151,7 +6159,7 @@ fn place_wrapped(
                     let width = if occupied {
                         word_widths
                             .as_ref()
-                            .map_or(g.x_advance, |widths| widths[idx][i].max(g.x_advance))
+                            .map_or(g.x_advance, |widths| widths[idx].1[i].max(g.x_advance))
                     } else {
                         g.x_advance
                     };
@@ -6169,7 +6177,7 @@ fn place_wrapped(
                     let break_allowed = !previous_no_break && !current_no_break;
                     if over && line_has_content && break_allowed {
                         if i > start {
-                            let piece = run.slice_with_sources(start, i, &sources);
+                            let piece = run.slice_with_sources(start, i, sources);
                             push_run(page, piece_x, y, piece, border_fills, warnings);
                         }
                         y += line_advance;
@@ -6185,7 +6193,7 @@ fn place_wrapped(
                     previous_no_break = current_no_break;
                 }
                 if start < run.glyphs.len() {
-                    let piece = run.slice_with_sources(start, run.glyphs.len(), &sources);
+                    let piece = run.slice_with_sources(start, run.glyphs.len(), sources);
                     let w = piece.width_pt;
                     push_run(page, piece_x, y, piece, border_fills, warnings);
                     x = piece_x + w;
@@ -7167,7 +7175,7 @@ mod control_classification_tests {
 }
 
 #[cfg(test)]
-mod tab_width_tests {
+pub(crate) mod tab_width_tests {
     use std::sync::Arc;
 
     use super::{LEADER_DASH_SCALE, items_width, place_wrapped, trim_trailing_spaces};
@@ -7465,7 +7473,7 @@ mod tab_width_tests {
     /// specific character (e.g. a decimal separator) starts. Font data stays empty so
     /// `glyph_source_sequences`'s rustybuzz path fails closed to its byte-count fallback,
     /// keeping the character-to-glyph mapping font-independent (see `distribute_source`).
-    fn dummy_glyph_run_with_widths(text: &str, glyph_widths: &[f32]) -> InlineItem {
+    pub(crate) fn dummy_glyph_run_with_widths(text: &str, glyph_widths: &[f32]) -> InlineItem {
         let mut item = dummy_run(glyph_widths.iter().sum());
         let InlineItem::Run(run) = &mut item else {
             unreachable!();

@@ -849,7 +849,13 @@ fn synthesize_linesegs_inner(
                         .saturating_sub(shape.margin_right.max(0) / 2)
                 });
                 compute_linesegs(
-                    store, &snap, src, line_width, content_h, &mut v_pos, warnings,
+                    store,
+                    &snap,
+                    src,
+                    line_width,
+                    Some(content_h),
+                    &mut v_pos,
+                    warnings,
                 )
             };
             // Capture the line cursor before applying table/source-offset flow. Ordinary
@@ -1326,7 +1332,7 @@ pub(crate) fn compute_box_linesegs(
     v: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
-    compute_linesegs(store, doc, para, width, i32::MAX, v, warnings)
+    compute_linesegs(store, doc, para, width, None, v, warnings)
 }
 
 /// Compute one paragraph's cache using a page-relative or cell-local cursor.
@@ -1336,7 +1342,7 @@ pub(crate) fn compute_linesegs(
     doc: &Document,
     para: &Paragraph,
     line_width: i32,
-    content_h: i32,
+    body_height: Option<i32>,
     v_pos: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
@@ -1385,7 +1391,10 @@ pub(crate) fn compute_linesegs(
     // breaks a paragraph at the body bottom, so neither rule is established:
     // the cache keeps the block its own saved fields define (#423).
     let place = |segs: &mut Vec<LineSeg>, v_pos: &mut i32, start: u32| {
-        if *v_pos > 0 && (*v_pos).saturating_add(base) > content_h {
+        if let Some(height) = body_height
+            && *v_pos > 0
+            && (*v_pos).saturating_add(base) > height
+        {
             *v_pos = 0;
         }
         segs.push(make(start, *v_pos));
@@ -1397,54 +1406,12 @@ pub(crate) fn compute_linesegs(
     let items = shape_range(store, doc, para, (0, total), warnings);
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
-    let word_widths = crate::shape::wraps_at_hangul_words(doc, para)
-        .then(|| crate::shape::hangul_word_widths(&items));
-    let mut segs = Vec::new();
-    let mut line_start = 0u32;
-    let mut acc = 0.0f32;
-    let mut content = false;
-    let mut previous_no_break = false;
-    for (item_index, item) in items.iter().enumerate() {
-        match item {
-            InlineItem::Run(run) => {
-                let sources = glyph_source_sequences(run);
-                let mut wchar_offset = 0u32;
-                for (glyph_index, (g, source)) in run.glyphs.iter().zip(&sources).enumerate() {
-                    let current_no_break = source_has_no_break_space(source);
-                    let break_allowed = !previous_no_break
-                        && !current_no_break
-                        && !crate::shape::source_is_space(run, source);
-                    let width = word_widths.as_ref().map_or(g.x_advance, |widths| {
-                        widths[item_index][glyph_index].max(g.x_advance)
-                    });
-                    if content && acc + width > line_limit_pt(segs.len()) && break_allowed {
-                        place(&mut segs, v_pos, line_start);
-                        line_start = run.start_wchar.saturating_add(wchar_offset);
-                        acc = 0.0;
-                    }
-                    acc += g.x_advance;
-                    content = true;
-                    previous_no_break = current_no_break;
-                    wchar_offset = wchar_offset.saturating_add(source_wchar_len(source));
-                }
-            }
-            InlineItem::Tab => {
-                acc = crate::tab::next_tab(&tabs, acc, TAB_INTERVAL_PT);
-                content = true;
-                previous_no_break = false;
-            }
-            // LINE_BREAK (CharCtrl 10) commits the current line and resumes after the control.
-            InlineItem::LineBreak(next_start) => {
-                place(&mut segs, v_pos, line_start);
-                line_start = *next_start;
-                acc = 0.0;
-                content = false;
-                previous_no_break = false;
-            }
-        }
+    let wrap_hangul_words = body_height.is_some() && crate::shape::wraps_at_hangul_words(doc, para);
+    let starts = synthesized_line_starts(&items, &tabs, line_limit_pt, wrap_hangul_words);
+    let mut segs = Vec::with_capacity(starts.len());
+    for start in starts {
+        place(&mut segs, v_pos, start);
     }
-    // Commit the final line, which is also the only line for an empty paragraph.
-    place(&mut segs, v_pos, line_start);
 
     // Encode the paragraph's left margin in col_start (HWPUNIT). Genuine line_seg horzpos
     // stores only this margin, not first-line/hanging indent; measured hanging-indent paragraphs
@@ -1457,6 +1424,65 @@ pub(crate) fn compute_linesegs(
         seg.col_start = ml_hu;
     }
     segs
+}
+
+/// Find WCHAR line origins from shaped advances. Nested-list synthesis uses
+/// the existing glyph rule, while measured body BREAK_WORD can look ahead.
+fn synthesized_line_starts(
+    items: &[InlineItem],
+    tabs: &[crate::tab::TabStop],
+    line_limit_pt: impl Fn(usize) -> f32,
+    wrap_hangul_words: bool,
+) -> Vec<u32> {
+    let word_widths = wrap_hangul_words.then(|| crate::shape::hangul_word_widths(items));
+    let mut starts = vec![0];
+    let mut acc = 0.0f32;
+    let mut content = false;
+    let mut previous_no_break = false;
+    for (item_index, item) in items.iter().enumerate() {
+        match item {
+            InlineItem::Run(run) => {
+                let fallback;
+                let sources = if let Some(widths) = &word_widths {
+                    &widths[item_index].0
+                } else {
+                    fallback = glyph_source_sequences(run);
+                    &fallback
+                };
+                let mut wchar_offset = 0u32;
+                for (glyph_index, (g, source)) in run.glyphs.iter().zip(sources).enumerate() {
+                    let current_no_break = source_has_no_break_space(source);
+                    let break_allowed = !previous_no_break
+                        && !current_no_break
+                        && !crate::shape::source_is_space(run, source);
+                    let width = word_widths.as_ref().map_or(g.x_advance, |widths| {
+                        widths[item_index].1[glyph_index].max(g.x_advance)
+                    });
+                    if content && acc + width > line_limit_pt(starts.len() - 1) && break_allowed {
+                        starts.push(run.start_wchar.saturating_add(wchar_offset));
+                        acc = 0.0;
+                    }
+                    acc += g.x_advance;
+                    content = true;
+                    previous_no_break = current_no_break;
+                    wchar_offset = wchar_offset.saturating_add(source_wchar_len(source));
+                }
+            }
+            InlineItem::Tab => {
+                acc = crate::tab::next_tab(tabs, acc, TAB_INTERVAL_PT);
+                content = true;
+                previous_no_break = false;
+            }
+            // LINE_BREAK (CharCtrl 10) commits the current line and resumes after the control.
+            InlineItem::LineBreak(next_start) => {
+                starts.push(*next_start);
+                acc = 0.0;
+                content = false;
+                previous_no_break = false;
+            }
+        }
+    }
+    starts
 }
 
 #[cfg(test)]
@@ -1533,7 +1559,7 @@ mod advance_tests {
             &doc,
             &para,
             (room * 100.0).floor() as i32,
-            i32::MAX,
+            Some(i32::MAX),
             &mut v,
             &mut warns,
         );
@@ -1543,50 +1569,23 @@ mod advance_tests {
 
     #[test]
     fn synthesis_moves_hangul_words_only_with_break_word() {
-        use crate::shape::{InlineItem, shape_range};
-        let Some(font) = std::env::var_os("HWP_TEST_HCR_FONT") else {
-            return;
-        };
-        let mut doc = hwp_convert::from_markdown("가 나다\n");
-        let mut fonts = crate::FontStore::new_isolated();
-        fonts.load_file(std::path::Path::new(&font)).unwrap();
-        let mut warnings = crate::RenderIssueAccumulator::new();
-        let para = hwp_model::Paragraph {
-            chars: "가 나다".chars().map(hwp_model::HwpChar::Text).collect(),
-            para_shape: doc.sections[0].paragraphs[0].para_shape,
-            ..Default::default()
-        };
-        let width = |items: Vec<InlineItem>| {
-            items.iter().fold(0.0, |acc, item| match item {
-                InlineItem::Run(run) => acc + run.width_pt,
-                _ => acc,
-            })
-        };
-        let width_before_last = width(shape_range(&mut fonts, &doc, &para, (0, 3), &mut warnings));
-        let full = width(shape_range(&mut fonts, &doc, &para, (0, 4), &mut warnings));
-        let full_word = width(shape_range(&mut fonts, &doc, &para, (2, 4), &mut warnings));
-        let floor = width_before_last.max(full_word);
-        assert!(
-            full - floor > 0.02,
-            "the HCR test font must shape all syllables"
-        );
-        let room = ((full + floor) * 50.0).floor() as i32;
-        let shape_index = para.para_shape.0 as usize;
-        for (bit, expected) in [(128, [0, 3]), (0, [0, 2])] {
-            let attr1 = &mut doc.header.para_shapes[shape_index].attr1;
-            *attr1 = (*attr1 & !128) | bit;
-            let lines = super::compute_linesegs(
-                &mut fonts,
-                &doc,
-                &para,
-                room,
-                i32::MAX,
-                &mut 0,
-                &mut warnings,
-            );
-            let starts: Vec<_> = lines.iter().map(|line| line.text_start).collect();
+        use crate::layout::tab_width_tests::dummy_glyph_run_with_widths;
+        let items = [dummy_glyph_run_with_widths(
+            "가 나다",
+            &[10.0, 5.0, 10.0, 10.0],
+        )];
+        for (words, expected) in [(false, [0, 3]), (true, [0, 2])] {
+            let starts = super::synthesized_line_starts(&items, &[], |_| 25.0, words);
             assert_eq!(starts, expected);
         }
+        let punctuated = [dummy_glyph_run_with_widths(
+            "가 나다.",
+            &[10.0, 5.0, 10.0, 10.0, 3.0],
+        )];
+        assert_eq!(
+            super::synthesized_line_starts(&punctuated, &[], |_| 25.0, true),
+            [0, 3]
+        );
     }
 
     /// #643 B12 in synthesis: an overflowing ordinary space stays on the line, but a FW_SPACE
@@ -1626,8 +1625,15 @@ mod advance_tests {
             // Room for "aa" plus a sliver, so the separator overflows.
             let width = ((w + 0.1) * 100.0).ceil() as i32;
             let mut v = 0;
-            let segs =
-                super::compute_linesegs(store, &doc, &para, width, i32::MAX, &mut v, &mut warns);
+            let segs = super::compute_linesegs(
+                store,
+                &doc,
+                &para,
+                width,
+                Some(i32::MAX),
+                &mut v,
+                &mut warns,
+            );
             Some(segs.iter().map(|s| s.text_start).collect::<Vec<_>>())
         };
         let Some(space) = starts(&mut store, HwpChar::Text(' ')) else {

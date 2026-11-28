@@ -113,7 +113,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).
   A fixed-width space (FW_SPACE) retains its wrap behavior and advance. `BREAK_WORD` moves
-  a Hangul word that would overflow to the next line when calculating new breaks (rule B15).
+  a plain Hangul word that would overflow to the next line when laying out body text (rule B15).
 - Use the measured Hancom body width and paragraph margins for synthesized single-column HWP5
   line widths and wrapping ([#652](https://github.com/STAIxBWLB/agent-hwp/issues/652)).
 - Use font-based line spacing after authored TOC, section-strip and DocumentSpec

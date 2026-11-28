@@ -129,9 +129,11 @@ ahwp new --from report.md -o report.hwpx --preset report --toc --section-strips 
 Markdown output uses the HWPX `KEEP_WORD` token (HWP5 paragraph-shape bit 7
 set), which allows wrapping within a Hangul word. For a style with
 `BREAK_WORD` (bit 7 clear), ahwp moves a space-delimited Hangul word to the
-next line when it does not fit. A word longer than an empty line still
-wraps within the word. These rules apply when ahwp calculates new line
-breaks. Existing usable line caches retain their stored breaks.
+next line when it does not fit. This applies to newly laid-out body text
+whose words contain only Hangul syllables. Tokens with punctuation, digits
+or other scripts use glyph wrapping, as do cells, captions and text boxes.
+A word longer than an empty line still wraps within the word. Existing
+usable line caches retain their stored breaks.
 
 ## Regenerate a document from the JSON IR
 
