@@ -118,6 +118,81 @@ fn offsets_add_to_the_margins_in_both_relations() {
     }
 }
 
+/// The same table as `floating_table`, but carried as HWP5 object-common bytes (HWP 5.0 §4.3.9
+/// table 69: attr @0, vertical offset @4, horizontal offset @8, outer margins @24) with no HWPX
+/// placement, so the raw decoding path is exercised.
+fn hwp5_table(
+    horz_rel_to: u32,
+    vert_offset: i32,
+    horz_offset: i32,
+    out_margins: [u16; 4],
+) -> Table {
+    let mut t = floating_table(2, 0, [0; 4]);
+    t.placement = None;
+    // bit0 treat-as-char clear, bits3-4 vertical PARA (2), bits5-7 vert align TOP (0),
+    // bits8-9 horizontal relation, bits10-12 horz align LEFT (0).
+    let attr: u32 = (2 << 3) | (horz_rel_to << 8);
+    let mut d = vec![0u8; 36];
+    d[0..4].copy_from_slice(&attr.to_le_bytes());
+    d[4..8].copy_from_slice(&vert_offset.to_le_bytes());
+    d[8..12].copy_from_slice(&horz_offset.to_le_bytes());
+    for (i, m) in out_margins.iter().enumerate() {
+        d[24 + 2 * i..26 + 2 * i].copy_from_slice(&m.to_le_bytes());
+    }
+    t.common_data = d;
+    t
+}
+
+#[test]
+fn hwp5_object_common_bytes_shift_like_the_placement() {
+    // The HWP5 branch must decode the same rule: COLUMN and PARA relations, and a positive
+    // offset adding to the margins.
+    let margins = [567, 1134, 850, 283];
+    for rel in [2u32, 3] {
+        let base = grid_origin(hwp5_table(rel, 0, 0, [0; 4]));
+        let shifted = grid_origin(hwp5_table(rel, 0, 0, margins));
+        assert!(
+            (shifted.0 - base.0 - 5.67).abs() < 0.01 && (shifted.1 - base.1 - 8.50).abs() < 0.01,
+            "rel {rel}: margins {shifted:?} must be {base:?} + (5.67, 8.50)"
+        );
+        let offset = grid_origin(hwp5_table(rel, 1417, 2834, margins));
+        assert!(
+            (offset.0 - base.0 - 34.01).abs() < 0.01 && (offset.1 - base.1 - 22.67).abs() < 0.01,
+            "rel {rel}: offsets {offset:?} must be {base:?} + (34.01, 22.67)"
+        );
+    }
+}
+
+#[test]
+fn hwp5_negative_offset_keeps_the_anchor_origin() {
+    // Signed decoding: a negative offset is unmeasured, so the margins must not move the grid.
+    let margins = [567, 1134, 850, 283];
+    for (vo, ho) in [(-1000, 0), (0, -1000)] {
+        assert_eq!(
+            grid_origin(hwp5_table(2, vo, ho, margins)),
+            grid_origin(hwp5_table(2, vo, ho, [0; 4])),
+            "vo {vo} ho {ho}"
+        );
+    }
+}
+
+#[test]
+fn offset_grid_never_overlaps_the_following_content() {
+    // The flow advances by vertical offset + top margin (a no-overlap lower bound; Hancom's exact
+    // flow is unestablished). With vertOffset 1417 the next paragraph's table starts at or below
+    // the shifted grid's bottom.
+    let (grid, next) = grid_and_next_offset([567, 1134, 850, 283], 1417);
+    assert!(
+        next.1 + 0.01 >= grid.3,
+        "next content {next:?} starts above the offset grid's bottom {grid:?}"
+    );
+    let (plain, _) = grid_and_next_offset([0; 4], 0);
+    assert!(
+        (grid.1 - plain.1 - 22.67).abs() < 0.01,
+        "grid {grid:?} vs {plain:?}"
+    );
+}
+
 #[test]
 fn negative_offsets_keep_the_anchor_origin() {
     // Only non-negative offsets are measured: a negative one keeps the anchor origin.
@@ -237,7 +312,20 @@ fn grid_and_next(out_margins: [u16; 4], grid_width: i32) -> (Bounds, Bounds) {
     grid_and_next_flow(out_margins, grid_width, false)
 }
 
+fn grid_and_next_offset(out_margins: [u16; 4], vert_offset: i32) -> (Bounds, Bounds) {
+    grid_and_next_with(out_margins, 10000, false, vert_offset)
+}
+
 fn grid_and_next_flow(out_margins: [u16; 4], grid_width: i32, flow: bool) -> (Bounds, Bounds) {
+    grid_and_next_with(out_margins, grid_width, flow, 0)
+}
+
+fn grid_and_next_with(
+    out_margins: [u16; 4],
+    grid_width: i32,
+    flow: bool,
+    vert_offset: i32,
+) -> (Bounds, Bounds) {
     let mut doc = hwp_convert::from_markdown("x\n\nafter\n");
     for color in [0x0000_ff00u32, 0x0000_00ff] {
         doc.header.border_fills.push(hwp_model::BorderFill {
@@ -247,7 +335,7 @@ fn grid_and_next_flow(out_margins: [u16; 4], grid_width: i32, flow: bool) -> (Bo
     }
     let n = doc.header.border_fills.len() as u16;
     let (red, blue) = (BorderFillId(n - 1), BorderFillId(n));
-    let mut grid = floating_table(2, 0, out_margins);
+    let mut grid = floating_table(2, vert_offset, out_margins);
     grid.placement.as_mut().unwrap().flow_with_text = flow;
     grid.cells[0].width = HwpUnit(grid_width);
     grid.cells[0].border_fill = red;

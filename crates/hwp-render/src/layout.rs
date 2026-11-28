@@ -2854,8 +2854,10 @@ fn place_caption_items(
 /// offsets 1417/2834 HU add +14.20/+28.35 pt in both relations; right/bottom margins never move
 /// the grid. Other relations, other alignments, negative offsets and nested lists (cells, text
 /// boxes; `top_level` false) are unmeasured and keep (0, 0). The caller lays the table out at the
-/// shifted origin so pagination and the following flow clear the grid, and keeps the anchor
-/// origin when the shifted grid would cross the paper's right edge.
+/// shifted origin so pagination and the following flow clear the grid: the flow advances by the
+/// vertical offset plus the top margin, a no-overlap lower bound (Hancom's exact flow after the
+/// table is unestablished: it moved the probe's MARKER 4.80 pt up for a 1417 HU offset). It keeps
+/// the anchor origin when the shifted grid would cross the paper's right edge.
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
 /// `para_left_pt` is the anchor paragraph's left margin in pt.
