@@ -2851,7 +2851,9 @@ fn place_caption_items(
 /// in from the anchor (a Hancom-authored 3x3 table with 283 HU margins, grid at 87.8/120.9 pt
 /// in Hancom's PDF against 84.9/118.0 pt before). Other relations, other alignments, non-zero
 /// offsets, nested lists (cells, text boxes) and the bottom margin's effect on the text after the
-/// table are unmeasured and keep (0, 0); `top_level` is false for a nested list.
+/// table are unmeasured and keep (0, 0); `top_level` is false for a nested list. The caller
+/// translates only the painted items: pagination and the flow cursor stay on the anchor, and a
+/// table that splits or moves to another page is not shifted.
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
 fn floating_table_margin_shift(table: &Table, top_level: bool) -> (f32, f32) {
@@ -2964,13 +2966,17 @@ fn layout_para_objects(
                     object_y += h + gap;
                 }
                 let (margin_dx, margin_dy) = floating_table_margin_shift(table, split.is_some());
+                // Rule B14 moves only the painted grid: lay the table out at the anchor so
+                // pagination and the returned flow cursor are unchanged (text flow after a
+                // floating table is unestablished, #655), then translate the items it drew.
+                let first_item = page.items.len();
                 let (end, table_split, final_fragment_top, whole) = layout_table(
                     doc,
                     store,
                     page,
                     table,
-                    x + margin_dx,
-                    object_y + margin_dy,
+                    x,
+                    object_y,
                     avail_width,
                     top_caption,
                     b11.then(|| crate::lineseg::inline_table_line_height(para))
@@ -2980,6 +2986,21 @@ fn layout_para_objects(
                     warnings,
                     rec,
                 );
+                // A split or a whole-table move repaints on another page; the margin is
+                // unmeasured there, so only a table kept on its anchor page moves.
+                let (margin_dx, margin_dy) = if table_split {
+                    (0.0, 0.0)
+                } else {
+                    (margin_dx, margin_dy)
+                };
+                if (margin_dx, margin_dy) != (0.0, 0.0) {
+                    let drawn: Vec<Item> = page.items.drain(first_item..).collect();
+                    page.items.extend(
+                        drawn
+                            .into_iter()
+                            .map(|i| translate_item(i, margin_dx, margin_dy)),
+                    );
+                }
                 rec.end_segment(page);
                 if table_split {
                     // After a split, the cursor uses the new page's coordinates, not the previous
@@ -2998,15 +3019,18 @@ fn layout_para_objects(
                     if cap.side != CaptionSide::Top {
                         let (items, h) =
                             layout_caption_items(doc, store, page, cap, wrap, warnings);
+                        // A side caption follows the painted grid; a bottom caption's flow
+                        // bottom stays on the unshifted table (flow is unestablished, #655).
                         let obj = (
                             x + margin_dx,
-                            final_fragment_top,
+                            final_fragment_top + margin_dy,
                             avail_width,
                             end - final_fragment_top,
                         );
                         if let Some(cap_bottom) =
                             place_caption_items(page, items, h, cap, obj, wrap)
                         {
+                            let cap_bottom = cap_bottom - margin_dy;
                             bottom = bottom.max(cap_bottom);
                             object_y = cap_bottom;
                         }

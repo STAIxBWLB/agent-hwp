@@ -114,7 +114,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   a Hancom-authored table was drawn 2.83 pt high and left (rule B14,
   [#655](https://github.com/STAIxBWLB/agent-hwp/issues/655)).
   Other relations and alignments, non-zero offsets, nested tables and the right and bottom margins
-  are unchanged until measured.
+  are unchanged until measured. Only the drawn grid moves: page breaks and the text after the
+  table keep their positions.
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).

@@ -160,6 +160,45 @@ fn nested_floating_table_keeps_the_anchor_origin() {
 }
 
 #[test]
+fn margins_do_not_move_the_text_after_the_table() {
+    // Flow after a floating table is unestablished (#655): B14 moves only the painted grid. The
+    // next paragraph is marked by its own inline table (blue), so no host font is needed.
+    let next_para_y = |out_margins: [u16; 4]| {
+        let mut doc = hwp_convert::from_markdown("x\n\nafter\n");
+        doc.header.border_fills.push(hwp_model::BorderFill {
+            bg_color: Some(0x0000_00ff),
+            ..Default::default()
+        });
+        let blue = BorderFillId(doc.header.border_fills.len() as u16);
+        let mut marker = floating_table(2, 0, [0; 4]);
+        marker.placement.as_mut().unwrap().treat_as_char = true;
+        marker.cells[0].border_fill = blue;
+        let paras = &mut doc.sections[0].paragraphs;
+        paras[0]
+            .controls
+            .push(Control::Table(floating_table(2, 0, out_margins)));
+        paras[1].controls.push(Control::Table(marker));
+        for p in paras.iter_mut() {
+            p.line_segs.clear();
+        }
+        let mut store = FontStore::new_isolated();
+        let mut warns = RenderIssueAccumulator::new();
+        let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+        let ys: Vec<f32> = list.pages[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Rect { y, fill, .. } if *fill == 0x0000_00ff => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ys.len(), 1, "the marker table must draw once: {ys:?}");
+        ys[0]
+    };
+    assert_eq!(next_para_y([567, 1134, 850, 283]), next_para_y([0; 4]));
+}
+
+#[test]
 fn unmeasured_alignments_keep_the_anchor_origin() {
     let margins = [567, 1134, 850, 283];
     // Only top/left alignment is measured: a centered or bottom-aligned table keeps its origin.
