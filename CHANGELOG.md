@@ -109,6 +109,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Keep font-based paragraph line spacing after authored TOC, section-strip and DocumentSpec
+  inline tables ([#649](https://github.com/STAIxBWLB/agent-hwp/issues/649)).
 - `.hwp` line caches for a paragraph holding only an inline table now follow Hangul: the anchor
   line is as tall as the table object and keeps its line spacing, and the cacheless layout cursor
   advances the same way. `--toc` rows are now at least as tall as their content line plus the
