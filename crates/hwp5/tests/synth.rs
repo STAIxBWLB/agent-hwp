@@ -1335,3 +1335,55 @@ fn xmltemplate_dochistory_스토리지_왕복() {
         .unwrap();
     assert_eq!(got_hist, hist_bytes, "DocHistory 바이트 동일");
 }
+
+/// #660: an HWP5-origin document whose paragraph has text but no paragraph end (built through the
+/// API, as in the #655 bisect's b2-marker) was written as-is, and Hancom rejected it as damaged.
+/// Appending char 13 alone made that probe open, so the writer now repairs the paragraph and says
+/// so. Body and table-cell paragraphs are both covered.
+#[test]
+fn hwp5_origin_paragraph_without_end_char_is_repaired() {
+    use hwp_model::{Control, HwpChar};
+    let root = tmp(&format!("unterminated-{}", std::process::id()));
+    std::fs::create_dir_all(&*root).unwrap();
+    let source = root.join("source.hwp");
+    let doc = hwp_convert::from_markdown("first\n\n| cell |\n|---|\n| b |\n");
+    hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+    let mut doc = hwp5::read_document(&source).unwrap().document;
+    assert_eq!(doc.meta.source_format, "hwp5");
+    let strip = |chars: &mut Vec<HwpChar>| {
+        assert_eq!(
+            chars.pop(),
+            Some(HwpChar::CharCtrl(13)),
+            "fixture ends in char 13"
+        );
+    };
+    let paragraphs = &mut doc.sections[0].paragraphs;
+    strip(&mut paragraphs[0].chars);
+    let cell = paragraphs
+        .iter_mut()
+        .flat_map(|p| p.controls.iter_mut())
+        .find_map(|c| match c {
+            Control::Table(t) => Some(&mut t.cells[0].paragraphs[0]),
+            _ => None,
+        })
+        .unwrap();
+    strip(&mut cell.chars);
+
+    let output = root.join("out.hwp");
+    let report =
+        hwp5::write_document_with_report(&doc, &output, &hwp5::WriteOptions::default()).unwrap();
+    let back = hwp5::read_document(&output).unwrap().document;
+    assert!(
+        hwp5::structure_check::unterminated_paragraphs(&back).is_empty(),
+        "written paragraphs must end with char 13: {:?}",
+        hwp5::structure_check::unterminated_paragraphs(&back)
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("문단 끝 문자(13)")),
+        "the repair must be reported: {:?}",
+        report.warnings
+    );
+}

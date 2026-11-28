@@ -4383,6 +4383,18 @@ fn emit_paragraph(
         p.char_shape_runs.dedup_by(|(_, b), (_, a)| a == b);
         patched = p;
         &patched
+    } else if !para.chars.is_empty() && para.chars.last() != Some(&HwpChar::CharCtrl(13)) {
+        // #660: an HWP5-origin paragraph with text but no paragraph end (e.g. built through the
+        // API) is rejected by Hancom as damaged. Appending char 13 alone made the probe open
+        // (`corpus/hancom-repro/issue-660/probe/v-a-terminator`), and no Hancom-saved paragraph
+        // lacks it (0 of 18,073 in 242 local files), so this never touches a genuine round trip.
+        let mut p = para.clone();
+        p.chars.push(HwpChar::CharCtrl(13));
+        warnings.warning(
+            "문단 끝 문자(13)가 없는 문단에 문단 끝을 붙여 저장했습니다 (없으면 한글이 손상 파일로 판정)",
+        );
+        patched = p;
+        &patched
     } else {
         para
     };

@@ -37,6 +37,11 @@ pub fn validate_json(path: &Path) -> Value {
                     let scan = hwp5::structure_check::scan_ctrl_data(path);
                     errors.extend(hwp5::structure_check::detached_ctrl_data_errors(&scan));
                     warnings.extend(hwp5::structure_check::unchecked_warnings(&scan));
+                    // #660: a paragraph with text but no paragraph end (char 13) reads fine
+                    // but Hangul rejects the file as damaged.
+                    errors.extend(hwp5::structure_check::unterminated_paragraph_error(
+                        &hwp5::structure_check::unterminated_paragraphs(&r.document),
+                    ));
                 }
                 Err(e) => errors.push(format!("파싱 실패: {e}")),
             }
@@ -125,6 +130,83 @@ fn validate_hwpx(path: &Path, errors: &mut Vec<String>, warnings: &mut Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes `doc` as raw HWP5 records with paragraph 0's trailing char 13 removed, bypassing
+    /// the writer's own repair, so the file carries the #660 b2-marker defect.
+    fn write_unterminated_fixture(path: &Path) {
+        use std::io::Write as _;
+        let document = hwp_convert::from_markdown("MARKER after table\n");
+        hwp5::write_document(&document, path, &hwp5::WriteOptions::default()).unwrap();
+        let mut container = hwp5::Hwp5Container::open(path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = hwp5::record::scan_stream(&bytes, hwp5::record::ScanMode::Strict)
+            .unwrap()
+            .roots;
+        let para = roots
+            .iter_mut()
+            .find(|n| n.tag == hwp5::record::tag::PARA_HEADER)
+            .unwrap();
+        let text = para
+            .children
+            .iter_mut()
+            .find(|n| n.tag == hwp5::record::tag::PARA_TEXT)
+            .unwrap();
+        assert_eq!(
+            text.data[text.data.len() - 2..],
+            [13, 0],
+            "fixture: text ends in 13"
+        );
+        text.data.truncate(text.data.len() - 2);
+        let nchars = u32::from_le_bytes(para.data[0..4].try_into().unwrap()) - 1;
+        para.data[0..4].copy_from_slice(&nchars.to_le_bytes());
+        let raw = hwp5::record::RecordNode::serialize_forest(&roots);
+        let encoded = if compressed {
+            hwp5::codec::compress(&raw)
+        } else {
+            raw
+        };
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    /// #660: a paragraph with text but no paragraph end reads fine but Hangul shows the
+    /// damaged/tampered modal, so validate must fail it and say why and how to fix it.
+    #[test]
+    fn paragraph_without_end_char_is_a_validate_error() {
+        let path = std::env::temp_dir().join(format!("hwp660-validate-{}.hwp", std::process::id()));
+        write_unterminated_fixture(&path);
+        let result = validate_json(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(result["valid"], false, "{result}");
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors.iter().any(|e| {
+                let text = e.as_str().unwrap();
+                text.contains("문단 끝 문자(13)")
+                    && text.contains("구역 0 문단 0")
+                    && text.contains("손상 파일")
+                    && text.contains(".hwpx")
+            }),
+            "{result}"
+        );
+    }
+
+    /// A terminated document (the writer's normal output) stays valid.
+    #[test]
+    fn terminated_paragraphs_stay_valid() {
+        let path = std::env::temp_dir().join(format!("hwp660-valid-{}.hwp", std::process::id()));
+        let document = hwp_convert::from_markdown("MARKER after table\n\n| a |\n|---|\n| b |\n");
+        hwp5::write_document(&document, &path, &hwp5::WriteOptions::default()).unwrap();
+        let result = validate_json(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(result["valid"], true, "{result}");
+    }
 
     /// Review of #611: when the CTRL_DATA scan cannot inspect a section (here one that
     /// decompresses past its 64 MiB cap while the reader still accepts the file), `validate`
