@@ -1,6 +1,8 @@
-//! Rule B14 (#655): a floating table anchored to the paragraph and column with zero offsets draws
-//! its grid one left and one top outer margin in from the anchor, as Hancom does. Every number is
-//! page geometry or a stored table field, so no assertion depends on a host font.
+//! Rules B14 (#655) and B16 (#659): a top-level floating table anchored to the paragraph
+//! vertically and to the column or paragraph horizontally draws its grid at the anchor plus its
+//! offsets plus one left and one top outer margin, as Hancom does; a paragraph-relative table also
+//! moves right by the anchor paragraph's left margin. Every number is page geometry or a stored
+//! table field, so no assertion depends on a host font.
 
 use hwp_model::{BorderFillId, Cell, Control, GsoPlacement, HwpUnit, Paragraph, Table};
 use hwp_render::display::Item;
@@ -100,17 +102,84 @@ fn floating_column_table_grid_moves_by_left_and_top_outer_margin() {
 }
 
 #[test]
-fn unmeasured_relations_and_offsets_keep_the_anchor_origin() {
+fn offsets_add_to_the_margins_in_both_relations() {
+    // #659 Hancom probe d3/d2: vertOffset 1417 / horzOffset 2834 HU add +14.17 / +28.34 pt on top
+    // of the outer margins, for COLUMN and PARA alike.
     let margins = [567, 1134, 850, 283];
-    // hrel PARA (3) is unmeasured, so the margins do not move it.
+    for horz_rel_to in [2, 3] {
+        let base = grid_origin(floating_table(horz_rel_to, 0, margins));
+        let mut t = floating_table(horz_rel_to, 1417, margins);
+        t.placement.as_mut().unwrap().horz_offset = 2834;
+        let moved = grid_origin(t);
+        assert!(
+            (moved.0 - base.0 - 28.34).abs() < 0.01 && (moved.1 - base.1 - 14.17).abs() < 0.01,
+            "horz_rel_to {horz_rel_to}: {moved:?} must be {base:?} + (28.34, 14.17)"
+        );
+    }
+}
+
+#[test]
+fn negative_offsets_keep_the_anchor_origin() {
+    // Only non-negative offsets are measured: a negative one keeps the anchor origin.
+    let margins = [567, 1134, 850, 283];
     assert_eq!(
-        grid_origin(floating_table(3, 0, margins)),
-        grid_origin(floating_table(3, 0, [0; 4]))
+        grid_origin(floating_table(2, -1000, margins)),
+        grid_origin(floating_table(2, -1000, [0; 4]))
     );
-    // A non-zero vertical offset is unmeasured, so the margins do not move it either.
+}
+
+/// Grid origin with the anchor paragraph given a left margin and first-line indent, in HWPUNIT.
+fn indented_grid_origin(horz_rel_to: u8, margin_left_hu: i32, indent_hu: i32) -> (f32, f32) {
+    let mut doc = hwp_convert::from_markdown("x\n");
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x00ff_0000),
+        ..Default::default()
+    });
+    let fill = BorderFillId(doc.header.border_fills.len() as u16);
+    let base_shape = doc.sections[0].paragraphs[0].para_shape.0 as usize;
+    let mut shape = doc.header.para_shapes[base_shape].clone();
+    // The model stores paragraph margins doubled (HWPX value x 2; layout divides by 200).
+    shape.margin_left = margin_left_hu * 2;
+    shape.indent = indent_hu * 2;
+    doc.header.para_shapes.push(shape);
+    let shape_id = (doc.header.para_shapes.len() - 1) as u16;
+    let mut table = floating_table(horz_rel_to, 0, [567, 1134, 850, 283]);
+    table.border_fill = fill;
+    table.cells[0].border_fill = fill;
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.para_shape = hwp_model::ParaShapeId(shape_id);
+    para.controls.push(Control::Table(table));
+    para.line_segs.clear();
+    let mut store = FontStore::new_isolated();
+    let mut warns = RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let mut min = (f32::INFINITY, f32::INFINITY);
+    for item in &list.pages[0].items {
+        if let Item::Rect { x, y, fill, .. } = item
+            && *fill == 0x00ff_0000
+        {
+            min = (min.0.min(*x), min.1.min(*y));
+        }
+    }
+    assert!(min.0.is_finite(), "the table grid must draw");
+    min
+}
+
+#[test]
+fn para_relative_grid_adds_the_anchor_left_margin_not_the_indent() {
+    // #659 Hancom probe d0/d1: with the anchor paragraph at left 2834 / first-line 1417 HU, a
+    // PARA-relative grid sits 28.34 pt right of the COLUMN one (the indent does not count), and
+    // the COLUMN grid ignores the paragraph entirely.
+    let column = indented_grid_origin(2, 2834, 1417);
+    let column_plain = indented_grid_origin(2, 0, 0);
+    let para = indented_grid_origin(3, 2834, 1417);
     assert_eq!(
-        grid_origin(floating_table(2, 1000, margins)),
-        grid_origin(floating_table(2, 1000, [0; 4]))
+        column, column_plain,
+        "COLUMN must ignore the anchor paragraph's indent"
+    );
+    assert!(
+        (para.0 - column.0 - 28.34).abs() < 0.01 && (para.1 - column.1).abs() < 0.01,
+        "PARA {para:?} must be COLUMN {column:?} + (28.34, 0)"
     );
 }
 
@@ -165,6 +234,10 @@ type Bounds = (f32, f32, f32, f32);
 /// Bounds of the red floating grid and the blue inline marker table in the next paragraph.
 /// Both are font-free filled cell rects.
 fn grid_and_next(out_margins: [u16; 4], grid_width: i32) -> (Bounds, Bounds) {
+    grid_and_next_flow(out_margins, grid_width, false)
+}
+
+fn grid_and_next_flow(out_margins: [u16; 4], grid_width: i32, flow: bool) -> (Bounds, Bounds) {
     let mut doc = hwp_convert::from_markdown("x\n\nafter\n");
     for color in [0x0000_ff00u32, 0x0000_00ff] {
         doc.header.border_fills.push(hwp_model::BorderFill {
@@ -175,6 +248,7 @@ fn grid_and_next(out_margins: [u16; 4], grid_width: i32) -> (Bounds, Bounds) {
     let n = doc.header.border_fills.len() as u16;
     let (red, blue) = (BorderFillId(n - 1), BorderFillId(n));
     let mut grid = floating_table(2, 0, out_margins);
+    grid.placement.as_mut().unwrap().flow_with_text = flow;
     grid.cells[0].width = HwpUnit(grid_width);
     grid.cells[0].border_fill = red;
     let mut marker = floating_table(2, 0, [0; 4]);
@@ -222,8 +296,8 @@ fn shifted_grid_never_overlaps_the_following_content() {
 
 #[test]
 fn grid_that_would_cross_the_column_keeps_the_anchor_origin() {
-    // A full-width grid shifted right would cross the column's right edge: that case is
-    // unmeasured, so the grid stays at the anchor and inside the previously available width.
+    // flowWithText clear is unmeasured: a full-width grid shifted right would cross the column's
+    // right edge, so it stays at the anchor and inside the previously available width.
     let full = 42520; // the default body width from_markdown sets up, in HWPUNIT
     let (shifted, _) = grid_and_next([567, 1134, 850, 283], full);
     let (plain, _) = grid_and_next([0; 4], full);
@@ -231,11 +305,39 @@ fn grid_that_would_cross_the_column_keeps_the_anchor_origin() {
 }
 
 #[test]
+fn flowing_grid_may_cross_the_column_but_not_the_paper() {
+    // #659 Hancom probe d1/d2: with flowWithText set, Hancom draws the grid past the column's right
+    // edge (535.75 / 564.05 pt against a 510.24 body edge), so the full-width grid shifts.
+    let full = 42520;
+    let (shifted, _) = grid_and_next_flow([567, 1134, 850, 283], full, true);
+    let (plain, _) = grid_and_next_flow([0; 4], full, true);
+    assert!(
+        (shifted.0 - plain.0 - 5.67).abs() < 0.01 && (shifted.1 - plain.1 - 8.50).abs() < 0.01,
+        "flowing grid {shifted:?} must shift from {plain:?} by (5.67, 8.50)"
+    );
+    // The paper's right edge is a guard (no probe reached it): a grid that would cross it keeps
+    // the anchor origin. The 425.20 pt grid at the 85.04 pt body left, offset 90 pt, would end
+    // past the 595.28 pt paper.
+    let far = |out_margins: [u16; 4]| {
+        let mut t = floating_table(2, 0, out_margins);
+        let p = t.placement.as_mut().unwrap();
+        p.flow_with_text = true;
+        p.horz_offset = 9000;
+        t.cells[0].width = HwpUnit(full);
+        grid_origin(t)
+    };
+    assert_eq!(far([567, 1134, 850, 283]), far([0; 4]));
+    assert_eq!(far([0; 4]), grid_origin(floating_table(2, 0, [0; 4])));
+}
+
+#[test]
 fn column_guard_uses_the_drawn_width_from_later_rows() {
     // codex review of 56bc40e: row 0 is one narrow merged cell, but row 1's span-1 cells make the
-    // drawn grid full-width. The guard must use that width, so the grid keeps the anchor origin.
-    let layout = |out_margins: [u16; 4]| {
+    // drawn grid full-width. The guard must use that width: with flowWithText clear (unmeasured)
+    // the grid keeps the anchor origin; with it set (#659) it follows the drawn width and shifts.
+    let layout = |out_margins: [u16; 4], flow: bool| {
         let mut table = floating_table(2, 0, out_margins);
+        table.placement.as_mut().unwrap().flow_with_text = flow;
         table.rows = 2;
         table.cols = 2;
         table.row_cell_counts = vec![1, 2];
@@ -279,7 +381,12 @@ fn column_guard_uses_the_drawn_width_from_later_rows() {
         assert!(b.0.is_finite(), "the grid must draw");
         b
     };
-    assert_eq!(layout([567, 1134, 850, 283]), layout([0; 4]));
+    assert_eq!(layout([567, 1134, 850, 283], false), layout([0; 4], false));
+    let (shifted, plain) = (layout([567, 1134, 850, 283], true), layout([0; 4], true));
+    assert!(
+        (shifted.0 - plain.0 - 5.67).abs() < 0.01 && (shifted.2 - plain.2 - 5.67).abs() < 0.01,
+        "flowing grid {shifted:?} must shift its drawn width from {plain:?} by 5.67"
+    );
 }
 
 #[test]

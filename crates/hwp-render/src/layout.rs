@@ -2844,65 +2844,86 @@ fn place_caption_items(
     (caption.side == CaptionSide::Bottom).then_some(oy + oh + gap + height)
 }
 
-/// Grid-origin shift (left, top) in pt from a floating table's outer margins (rule B14, #655).
+/// Grid-origin shift (left, top) in pt for a floating table (rules B14 #655, B16 #659).
 ///
-/// Established only for a top-level body floating table anchored to the paragraph vertically and
-/// to the column horizontally, aligned top and left, with both offsets zero: Hancom draws its grid one left and one top outer margin
-/// in from the anchor (a Hancom-authored 3x3 table with 283 HU margins, grid at 87.8/120.9 pt
-/// in Hancom's PDF against 84.9/118.0 pt before). Other relations, other alignments, non-zero
-/// offsets, nested lists (cells, text boxes) and the bottom margin's effect on the text after the
-/// table are unmeasured and keep (0, 0); `top_level` is false for a nested list. The caller
-/// lays the table out at the shifted origin so pagination and the following flow clear the
-/// grid, and keeps the anchor origin when the shifted grid would cross the column width.
+/// Established for a top-level body floating table anchored to the paragraph vertically and to
+/// the column or the paragraph horizontally, aligned top and left, with non-negative offsets.
+/// Hancom draws the grid at the anchor plus its offsets plus one left and one top outer margin;
+/// a paragraph-relative table also moves right by the anchor paragraph's left margin (not its
+/// first-line indent). Hancom PDFs of a Hancom-authored 3x3 table (`corpus/hancom-repro/
+/// issue-655/probe`, `issue-659/probe`): column-relative grid left 87.90 = body 85.08 + 2.83
+/// margin; paragraph-relative with a 2834 HU left margin and 1417 HU indent 116.25 (+28.35);
+/// offsets 1417/2834 HU add +14.20/+28.35 pt in both relations; right/bottom margins never move
+/// the grid. Other relations, other alignments, negative offsets and nested lists (cells, text
+/// boxes; `top_level` false) are unmeasured and keep (0, 0). The caller lays the table out at the
+/// shifted origin so pagination and the following flow clear the grid, and keeps the anchor
+/// origin when the shifted grid would cross the column width (the paper width when flowWithText
+/// is set).
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
-fn floating_table_margin_shift(table: &Table, top_level: bool) -> (f32, f32) {
+/// `para_left_pt` is the anchor paragraph's left margin in pt.
+fn floating_table_margin_shift(table: &Table, top_level: bool, para_left_pt: f32) -> (f32, f32) {
     if !top_level {
         return (0.0, 0.0);
     }
-    let (attr_ok, left, top) = if let Some(p) = &table.placement {
+    // (attr ok, horizontal relation, vertical offset, horizontal offset, left margin, top margin)
+    let (attr_ok, horz_rel, vo, ho, left, top) = if let Some(p) = &table.placement {
         (
-            !p.treat_as_char
-                && p.vert_rel_to == 2
-                && p.horz_rel_to == 2
-                && p.vert_align == 0
-                && p.horz_align == 0
-                && p.vert_offset == 0
-                && p.horz_offset == 0,
+            !p.treat_as_char && p.vert_rel_to == 2 && p.vert_align == 0 && p.horz_align == 0,
+            u32::from(p.horz_rel_to),
+            p.vert_offset,
+            p.horz_offset,
             p.out_margins[0],
             p.out_margins[2],
         )
     } else {
         let d = &table.common_data;
-        let u32_at = |o: usize| {
+        let i32_at = |o: usize| {
             d.get(o..o + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
         };
         let u16_at = |o: usize| {
             d.get(o..o + 2)
                 .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
         };
         let (Some(attr), Some(vo), Some(ho), Some(left), Some(top)) =
-            (u32_at(0), u32_at(4), u32_at(8), u16_at(24), u16_at(28))
+            (i32_at(0), i32_at(4), i32_at(8), u16_at(24), u16_at(28))
         else {
             return (0.0, 0.0);
         };
+        let attr = attr as u32;
         (
-            attr & 1 == 0
-                && (attr >> 3) & 3 == 2
-                && (attr >> 8) & 3 == 2
-                && (attr >> 5) & 7 == 0
-                && (attr >> 10) & 7 == 0
-                && vo == 0
-                && ho == 0,
+            attr & 1 == 0 && (attr >> 3) & 3 == 2 && (attr >> 5) & 7 == 0 && (attr >> 10) & 7 == 0,
+            (attr >> 8) & 3,
+            vo,
+            ho,
             left,
             top,
         )
     };
-    if attr_ok {
-        (f32::from(left) / 100.0, f32::from(top) / 100.0)
+    // 2 = COLUMN, 3 = PARA; offsets measured only when non-negative.
+    if !attr_ok || !(horz_rel == 2 || horz_rel == 3) || vo < 0 || ho < 0 {
+        return (0.0, 0.0);
+    }
+    let para = if horz_rel == 3 {
+        para_left_pt.max(0.0)
     } else {
-        (0.0, 0.0)
+        0.0
+    };
+    (
+        para + ho as f32 / 100.0 + f32::from(left) / 100.0,
+        vo as f32 / 100.0 + f32::from(top) / 100.0,
+    )
+}
+
+/// Whether a floating table's flowWithText is set (HWPX `hp:pos`, HWP5 object attr bit13).
+fn floating_table_flows_with_text(table: &Table) -> bool {
+    match &table.placement {
+        Some(p) => p.flow_with_text,
+        None => table
+            .common_data
+            .get(0..4)
+            .is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) & (1 << 13) != 0),
     }
 }
 
@@ -2979,13 +3000,28 @@ fn layout_para_objects(
                     });
                     object_y += h + gap;
                 }
-                let (margin_dx, margin_dy) = floating_table_margin_shift(table, split.is_some());
-                // Fail closed when the shifted grid would cross the column's right edge: that
-                // case is unmeasured, and the old origin keeps the grid inside the column. The
-                // width is the one `layout_table` draws (every row's cells, derived widths).
+                let (margin_dx, margin_dy) = floating_table_margin_shift(
+                    table,
+                    split.is_some(),
+                    doc.header
+                        .para_shapes
+                        .get(para.para_shape.0 as usize)
+                        .map_or(0.0, |shape| shape.margin_left as f32 / 200.0),
+                );
+                // Column guard (B14): fail closed when the shifted grid would cross the column's
+                // right edge. The width is the one `layout_table` draws (every row's cells, derived
+                // widths). B16 (#659): with flowWithText set, Hancom draws the grid past the column
+                // (probe d1/d2 right edges 535.75/564.05 against a 510.24 body edge), so only a
+                // grid past the paper's right edge fails closed. That paper limit is a guard, not
+                // a measured rule: no probe reached it. flowWithText clear stays column-bounded.
                 let cols = table.cols.max(1) as usize;
                 let grid_width: f32 = table_col_widths(table, cols, avail_width).iter().sum();
-                let (margin_dx, margin_dy) = if grid_width + margin_dx > avail_width + 0.01 {
+                let limit = if floating_table_flows_with_text(table) {
+                    page.width_pt - x
+                } else {
+                    avail_width
+                };
+                let (margin_dx, margin_dy) = if grid_width + margin_dx > limit + 0.01 {
                     (0.0, 0.0)
                 } else {
                     (margin_dx, margin_dy)
