@@ -1717,10 +1717,8 @@ fn layout_document_pages(
                     warnings,
                 );
                 crate::shape::apply_link_style(&mut items, &links);
-                if i + 1 < para.line_segs.len() {
-                    trim_trailing_spaces(&mut items);
-                }
-                let natural_width: f32 = items_width(&items, &tabs);
+                let natural_width =
+                    cached_line_width(&mut items, &tabs, i + 1 < para.line_segs.len());
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
                 let seg_width_pt = seg.seg_width as f32 / 100.0;
@@ -5283,10 +5281,7 @@ fn layout_box_para_iter<'a>(
                     page_number,
                     warnings,
                 );
-                if i + 1 < line_segs.len() {
-                    trim_trailing_spaces(&mut items);
-                }
-                let natural_width = items_width(&items, &tabs);
+                let natural_width = cached_line_width(&mut items, &tabs, i + 1 < line_segs.len());
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
@@ -5746,6 +5741,20 @@ fn trim_trailing_spaces(items: &mut [InlineItem]) {
             return;
         }
     }
+}
+
+/// Measure the saved line without its terminating breaks, preserving them for placement.
+fn cached_line_width(items: &mut [InlineItem], tabs: &[TabStop], has_next_line: bool) -> f32 {
+    let visible_len = items
+        .iter()
+        .rposition(|item| !matches!(item, InlineItem::LineBreak(_)))
+        .map_or(0, |last| last + 1);
+    let ends_with_break = visible_len < items.len();
+    let visible = &mut items[..visible_len];
+    if has_next_line || ends_with_break {
+        trim_trailing_spaces(visible);
+    }
+    items_width(visible, tabs)
 }
 
 fn items_width(items: &[InlineItem], tabs: &[TabStop]) -> f32 {
@@ -7239,7 +7248,10 @@ mod control_classification_tests {
 mod tab_width_tests {
     use std::sync::Arc;
 
-    use super::{LEADER_DASH_SCALE, items_width, place_wrapped, trim_trailing_spaces};
+    use super::{
+        LEADER_DASH_SCALE, align_line, cached_line_width, items_width, place_wrapped,
+        trim_trailing_spaces,
+    };
     use crate::display::{Item, PageList, PathCmd};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
@@ -7439,6 +7451,46 @@ mod tab_width_tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn cached_line_break_alignment_uses_visible_glyph_width() {
+        for (align, expected) in [(2, 177.4498), (3, 131.2449)] {
+            for trailing_spaces in [false, true] {
+                let run = if trailing_spaces {
+                    dummy_glyph_run_with_widths("A  ", &[7.5902, 5.0, 5.0])
+                } else {
+                    dummy_glyph_run_with_widths("A", &[7.5902])
+                };
+                let expected_break_offset = if trailing_spaces { 4 } else { 2 };
+                let mut items = vec![run, InlineItem::LineBreak(expected_break_offset)];
+                let natural = cached_line_width(&mut items, &[], true);
+                let shift = align_line(&mut items, align, 100.0, natural, false);
+                assert!(
+                    (85.04 + shift - expected).abs() < 0.0001,
+                    "alignment {align}, trailing spaces {trailing_spaces}: x {}, expected {expected}",
+                    85.04 + shift
+                );
+                assert!(matches!(
+                    items.last(),
+                    Some(InlineItem::LineBreak(offset)) if *offset == expected_break_offset
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn cached_line_break_trims_only_ordinary_spaces_before_the_control() {
+        let mut items = vec![
+            dummy_glyph_run("A"),
+            fw_space_run_item(),
+            dummy_glyph_run(" "),
+            InlineItem::LineBreak(4),
+        ];
+        assert_eq!(cached_line_width(&mut items, &[], false), 20.0);
+        assert!(matches!(&items[1], InlineItem::Run(run) if run.width_pt == 10.0));
+        assert!(matches!(&items[2], InlineItem::Run(run) if run.width_pt == 0.0));
+        assert!(matches!(items.last(), Some(InlineItem::LineBreak(4))));
     }
 
     fn dummy_glyph_run(text: &str) -> InlineItem {
