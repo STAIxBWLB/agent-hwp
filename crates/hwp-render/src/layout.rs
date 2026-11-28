@@ -6097,7 +6097,9 @@ fn place_wrapped(
                     let over = piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
-                    let break_allowed = !previous_no_break && !current_no_break;
+                    let break_allowed = !previous_no_break
+                        && !current_no_break
+                        && !crate::shape::source_is_space(&sources[i]);
                     if over && line_has_content && break_allowed {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
@@ -7296,6 +7298,45 @@ mod tab_width_tests {
             })
             .collect();
         assert_eq!(baselines, [100.0, 100.0, 100.0]);
+    }
+
+    /// #643: a space that overflows the line stays at its end. Before the fix it opened the
+    /// next line, so `b` landed on a third line instead of the second.
+    #[test]
+    fn overflowing_space_stays_at_line_end() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![
+                dummy_glyph_run("a"),
+                dummy_glyph_run(" "),
+                dummy_glyph_run("b"),
+            ],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            None,
+            &mut warns,
+        );
+
+        let baselines: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, .. } => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(baselines, [100.0, 100.0, 116.0]);
     }
 
     /// A tab landing on a leadered stop emits exactly one dashed `Item::Path` between the

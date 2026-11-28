@@ -159,6 +159,14 @@ pub(crate) fn source_has_no_break_space(source: &str) -> bool {
     source.contains('\u{00a0}')
 }
 
+/// Returns true when a shaped source cluster is an ordinary space. Hangul-saved caches almost
+/// never start a line with one (0 of 10,892 genuine HWPX line starts, 16 of 1,009 HWP5, #643), and
+/// Hancom's PDF of the T4 HWPX keeps the overflowing space at the line end, so a space never
+/// opens a new line here.
+pub(crate) fn source_is_space(source: &str) -> bool {
+    !source.is_empty() && source.chars().all(|c| c == ' ')
+}
+
 fn sources_from_clusters(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
     if infos.is_empty() {
         return Vec::new();

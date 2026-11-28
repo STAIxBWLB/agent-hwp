@@ -1381,7 +1381,9 @@ pub(crate) fn compute_linesegs(
                 let mut wchar_offset = 0u32;
                 for (g, source) in run.glyphs.iter().zip(&sources) {
                     let current_no_break = source_has_no_break_space(source);
-                    let break_allowed = !previous_no_break && !current_no_break;
+                    let break_allowed = !previous_no_break
+                        && !current_no_break
+                        && !crate::shape::source_is_space(source);
                     if content && acc + g.x_advance > line_limit_pt(segs.len()) && break_allowed {
                         place(&mut segs, v_pos, line_start);
                         line_start = run.start_wchar.saturating_add(wchar_offset);
