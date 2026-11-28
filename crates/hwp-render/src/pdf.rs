@@ -1263,6 +1263,7 @@ mod tests {
             glyphs,
             text: text.to_string(),
             start_wchar: 0,
+            fw_space: false,
         }
     }
 

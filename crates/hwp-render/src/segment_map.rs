@@ -1664,6 +1664,7 @@ mod tests {
                 width_pt: 10.0,
                 text: text.into(),
                 start_wchar,
+                fw_space: false,
             },
         }
     }
