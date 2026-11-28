@@ -109,6 +109,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Right- and center-aligned cached lines ending in a forced line break use their visible
+  width, including in table cells. Ordinary trailing spaces before the break collapse
+  as on other non-final lines ([#656](https://github.com/STAIxBWLB/agent-hwp/issues/656)).
 - A top-level floating table anchored to the paragraph and column, aligned top and left, with zero
   offsets now draws its grid one left and one top outer margin in from its anchor, as Hancom does;
   a Hancom-authored table was drawn 2.83 pt high and left (rule B14,
