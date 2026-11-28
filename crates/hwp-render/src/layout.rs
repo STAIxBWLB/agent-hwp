@@ -2857,8 +2857,7 @@ fn place_caption_items(
 /// the grid. Other relations, other alignments, negative offsets and nested lists (cells, text
 /// boxes; `top_level` false) are unmeasured and keep (0, 0). The caller lays the table out at the
 /// shifted origin so pagination and the following flow clear the grid, and keeps the anchor
-/// origin when the shifted grid would cross the column width (the paper width when flowWithText
-/// is set).
+/// origin when the shifted grid would cross the paper's right edge.
 /// Fields: the HWPX placement, or the HWP5 object-common payload (HWP 5.0 §4.3.9 table 69:
 /// attr @0, vertical offset @4, horizontal offset @8, outer margins left/right/top/bottom @24).
 /// `para_left_pt` is the anchor paragraph's left margin in pt.
@@ -2914,17 +2913,6 @@ fn floating_table_margin_shift(table: &Table, top_level: bool, para_left_pt: f32
         para + ho as f32 / 100.0 + f32::from(left) / 100.0,
         vo as f32 / 100.0 + f32::from(top) / 100.0,
     )
-}
-
-/// Whether a floating table's flowWithText is set (HWPX `hp:pos`, HWP5 object attr bit13).
-fn floating_table_flows_with_text(table: &Table) -> bool {
-    match &table.placement {
-        Some(p) => p.flow_with_text,
-        None => table
-            .common_data
-            .get(0..4)
-            .is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) & (1 << 13) != 0),
-    }
 }
 
 /// Column widths in pt exactly as `layout_table` draws them: the widest span-1 cell of each
@@ -3008,19 +2996,15 @@ fn layout_para_objects(
                         .get(para.para_shape.0 as usize)
                         .map_or(0.0, |shape| shape.margin_left as f32 / 200.0),
                 );
-                // Column guard (B14): fail closed when the shifted grid would cross the column's
-                // right edge. The width is the one `layout_table` draws (every row's cells, derived
-                // widths). B16 (#659): with flowWithText set, Hancom draws the grid past the column
-                // (probe d1/d2 right edges 535.75/564.05 against a 510.24 body edge), so only a
-                // grid past the paper's right edge fails closed. That paper limit is a guard, not
-                // a measured rule: no probe reached it. flowWithText clear stays column-bounded.
+                // Paper guard (B16, #659): Hancom draws the shifted grid past the column's right
+                // edge (probe d1/d2 right edges 535.75/564.05 against a 510.24 body edge, the same
+                // with flowWithText and allowOverlap 0 or 1), so only a grid that would cross the
+                // paper's right edge fails closed. That limit is a guard, not a measured rule: no
+                // probe reached it. The width is the one `layout_table` draws (every row's cells,
+                // derived widths).
                 let cols = table.cols.max(1) as usize;
                 let grid_width: f32 = table_col_widths(table, cols, avail_width).iter().sum();
-                let limit = if floating_table_flows_with_text(table) {
-                    page.width_pt - x
-                } else {
-                    avail_width
-                };
+                let limit = page.width_pt - x;
                 let (margin_dx, margin_dy) = if grid_width + margin_dx > limit + 0.01 {
                     (0.0, 0.0)
                 } else {

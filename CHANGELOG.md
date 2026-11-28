@@ -121,10 +121,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   paragraph, now draws its grid where Hancom does: the offsets add to the outer margins, and a
   paragraph-relative table also starts at the anchor paragraph's left margin (not its first-line
   indent). Such tables were drawn up to 28 pt left and 14 pt above Hancom's grid (rule B16,
-  [#659](https://github.com/STAIxBWLB/agent-hwp/issues/659)). A table with text flow set may now
-  extend past the column edge as in Hancom; only one that would cross the paper edge keeps its
-  old position. Negative offsets, other alignments, nested tables and the text after the table
-  are unchanged until measured.
+  [#659](https://github.com/STAIxBWLB/agent-hwp/issues/659)). Such a table may now extend past
+  the column edge as in Hancom, whatever its text-flow and overlap settings; only one that would
+  cross the paper edge keeps its old position. Negative offsets, other alignments, nested tables
+  and the text after the table are unchanged until measured.
 - Rendering and synthesized line caches no longer push an overflowing ordinary space to the start
   of the next line. Hangul keeps it at the line end with no width, so lines now fill to the right
   margin as in Hancom's output (rule B12, [#643](https://github.com/STAIxBWLB/agent-hwp/issues/643)).

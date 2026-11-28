@@ -295,34 +295,30 @@ fn shifted_grid_never_overlaps_the_following_content() {
 }
 
 #[test]
-fn grid_that_would_cross_the_column_keeps_the_anchor_origin() {
-    // flowWithText clear is unmeasured: a full-width grid shifted right would cross the column's
-    // right edge, so it stays at the anchor and inside the previously available width.
+fn shifted_grid_may_cross_the_column_for_both_flow_values() {
+    // #659 Hancom probe d1/d2 and the d2 flowWithText=0 / allowOverlap=0 variants: Hancom draws
+    // the shifted grid past the column's right edge (535.75 / 564.05 pt against a 510.24 body
+    // edge) whatever those attributes say, so a full-width grid shifts.
     let full = 42520; // the default body width from_markdown sets up, in HWPUNIT
-    let (shifted, _) = grid_and_next([567, 1134, 850, 283], full);
-    let (plain, _) = grid_and_next([0; 4], full);
-    assert_eq!(shifted, plain);
+    for flow in [false, true] {
+        let (shifted, _) = grid_and_next_flow([567, 1134, 850, 283], full, flow);
+        let (plain, _) = grid_and_next_flow([0; 4], full, flow);
+        assert!(
+            (shifted.0 - plain.0 - 5.67).abs() < 0.01 && (shifted.1 - plain.1 - 8.50).abs() < 0.01,
+            "flowWithText {flow}: grid {shifted:?} must shift from {plain:?} by (5.67, 8.50)"
+        );
+    }
 }
 
 #[test]
-fn flowing_grid_may_cross_the_column_but_not_the_paper() {
-    // #659 Hancom probe d1/d2: with flowWithText set, Hancom draws the grid past the column's right
-    // edge (535.75 / 564.05 pt against a 510.24 body edge), so the full-width grid shifts.
-    let full = 42520;
-    let (shifted, _) = grid_and_next_flow([567, 1134, 850, 283], full, true);
-    let (plain, _) = grid_and_next_flow([0; 4], full, true);
-    assert!(
-        (shifted.0 - plain.0 - 5.67).abs() < 0.01 && (shifted.1 - plain.1 - 8.50).abs() < 0.01,
-        "flowing grid {shifted:?} must shift from {plain:?} by (5.67, 8.50)"
-    );
+fn grid_that_would_cross_the_paper_keeps_the_anchor_origin() {
     // The paper's right edge is a guard (no probe reached it): a grid that would cross it keeps
     // the anchor origin. The 425.20 pt grid at the 85.04 pt body left, offset 90 pt, would end
     // past the 595.28 pt paper.
+    let full = 42520;
     let far = |out_margins: [u16; 4]| {
         let mut t = floating_table(2, 0, out_margins);
-        let p = t.placement.as_mut().unwrap();
-        p.flow_with_text = true;
-        p.horz_offset = 9000;
+        t.placement.as_mut().unwrap().horz_offset = 9000;
         t.cells[0].width = HwpUnit(full);
         grid_origin(t)
     };
@@ -331,13 +327,14 @@ fn flowing_grid_may_cross_the_column_but_not_the_paper() {
 }
 
 #[test]
-fn column_guard_uses_the_drawn_width_from_later_rows() {
+fn paper_guard_uses_the_drawn_width_from_later_rows() {
     // codex review of 56bc40e: row 0 is one narrow merged cell, but row 1's span-1 cells make the
-    // drawn grid full-width. The guard must use that width: with flowWithText clear (unmeasured)
-    // the grid keeps the anchor origin; with it set (#659) it follows the drawn width and shifts.
-    let layout = |out_margins: [u16; 4], flow: bool| {
+    // drawn grid full-width. The guard must use that width. Without an offset the 425.20 pt grid
+    // shifts past the column (#659); with a 90 pt offset the drawn width would cross the paper
+    // (row 0's 100 pt would not), so the grid keeps the anchor origin.
+    let layout = |out_margins: [u16; 4], horz_offset: i32| {
         let mut table = floating_table(2, 0, out_margins);
-        table.placement.as_mut().unwrap().flow_with_text = flow;
+        table.placement.as_mut().unwrap().horz_offset = horz_offset;
         table.rows = 2;
         table.cols = 2;
         table.row_cell_counts = vec![1, 2];
@@ -381,11 +378,11 @@ fn column_guard_uses_the_drawn_width_from_later_rows() {
         assert!(b.0.is_finite(), "the grid must draw");
         b
     };
-    assert_eq!(layout([567, 1134, 850, 283], false), layout([0; 4], false));
-    let (shifted, plain) = (layout([567, 1134, 850, 283], true), layout([0; 4], true));
+    assert_eq!(layout([567, 1134, 850, 283], 9000), layout([0; 4], 9000));
+    let (shifted, plain) = (layout([567, 1134, 850, 283], 0), layout([0; 4], 0));
     assert!(
         (shifted.0 - plain.0 - 5.67).abs() < 0.01 && (shifted.2 - plain.2 - 5.67).abs() < 0.01,
-        "flowing grid {shifted:?} must shift its drawn width from {plain:?} by 5.67"
+        "grid {shifted:?} must shift its drawn width from {plain:?} by 5.67"
     );
 }
 
