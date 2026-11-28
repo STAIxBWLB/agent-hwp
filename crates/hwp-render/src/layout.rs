@@ -1717,6 +1717,9 @@ fn layout_document_pages(
                     warnings,
                 );
                 crate::shape::apply_link_style(&mut items, &links);
+                if i + 1 < para.line_segs.len() {
+                    trim_trailing_spaces(&mut items);
+                }
                 let natural_width: f32 = items_width(&items, &tabs);
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
@@ -5186,6 +5189,9 @@ fn layout_box_para_iter<'a>(
                     page_number,
                     warnings,
                 );
+                if i + 1 < line_segs.len() {
+                    trim_trailing_spaces(&mut items);
+                }
                 let natural_width = items_width(&items, &tabs);
 
                 // Alignment uses width after subtracting indent, so compute it below after resolving indent.
@@ -5621,6 +5627,28 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
             spacing_bottom: (p.spacing_bottom as f32 / 200.0).max(0.0),
         },
         None => ParaGeom::default(),
+    }
+}
+
+/// Drops the ordinary spaces that end a line. Hangul keeps an overflowing space at the line end
+/// (rule B12, #643) where it is invisible, so alignment and drawing use the line without it:
+/// otherwise right and center alignment push the visible text past the edge.
+fn trim_trailing_spaces(items: &mut Vec<InlineItem>) {
+    while let Some(InlineItem::Run(run)) = items.last_mut() {
+        let sources = crate::shape::glyph_source_sequences(run);
+        let keep = sources
+            .iter()
+            .rposition(|source| !crate::shape::source_is_space(source))
+            .map_or(0, |i| i + 1);
+        if keep == run.glyphs.len() {
+            return;
+        }
+        if keep == 0 {
+            items.pop();
+            continue;
+        }
+        *run = run.slice_with_sources(0, keep, &sources);
+        return;
     }
 }
 
