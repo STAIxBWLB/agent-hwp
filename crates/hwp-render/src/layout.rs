@@ -6084,6 +6084,10 @@ fn place_wrapped(
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
     let mut previous_no_break = false;
+    // Set once an ordinary space overflowed and stayed on the line at zero advance (rule B12):
+    // the next non-space glyph opens a new line even if it fits the width the space left, the
+    // same as `lineseg::compute_linesegs`.
+    let mut space_overflowed = false;
 
     if std::env::var_os("HWP_RENDER_TRACE").is_some() {
         let preview: String = items
@@ -6109,7 +6113,7 @@ fn place_wrapped(
         match item {
             InlineItem::Run(mut run) => {
                 let sources = crate::shape::glyph_source_sequences(&run);
-                if max_width.is_infinite() || x + run.width_pt <= limit {
+                if !space_overflowed && (max_width.is_infinite() || x + run.width_pt <= limit) {
                     let w = run.width_pt;
                     previous_no_break = sources
                         .last()
@@ -6125,18 +6129,20 @@ fn place_wrapped(
                 let mut acc = 0.0f32;
                 for i in 0..run.glyphs.len() {
                     let g = run.glyphs[i];
-                    let over = piece_x + acc + g.x_advance > limit;
+                    let is_space = crate::shape::source_is_space(&run, &sources[i]);
+                    let over = space_overflowed || piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
                     let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
-                    let is_space = crate::shape::source_is_space(&run, &sources[i]);
                     // An overflowing space stays on the outgoing line (rule B12) with no advance,
                     // so its underline or background never paints past the right edge.
                     if over && line_has_content && is_space {
                         run.glyphs[i].x_advance = 0.0;
+                        space_overflowed = true;
                         previous_no_break = false;
                         continue;
                     }
-                    let break_allowed = !previous_no_break && !current_no_break;
+                    let break_allowed =
+                        space_overflowed || (!previous_no_break && !current_no_break);
                     if over && line_has_content && break_allowed {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
@@ -6149,6 +6155,7 @@ fn place_wrapped(
                         piece_x = x0;
                         acc = 0.0;
                         start = i;
+                        space_overflowed = false;
                     }
                     acc += g.x_advance;
                     previous_no_break = current_no_break;
@@ -6209,6 +6216,7 @@ fn place_wrapped(
                 }
                 x = next_x;
                 previous_no_break = false;
+                space_overflowed = false;
                 idx += 1;
             }
             InlineItem::LineBreak(_) => {
@@ -6218,6 +6226,7 @@ fn place_wrapped(
                 }
                 x = x0;
                 previous_no_break = false;
+                space_overflowed = false;
                 idx += 1;
             }
         }
@@ -7241,6 +7250,50 @@ mod tab_width_tests {
         let mut items = vec![dummy_glyph_run("a"), dummy_glyph_run(" ")];
         trim_trailing_spaces(&mut items);
         assert!(matches!(&items[1], InlineItem::Run(r) if r.width_pt == 0.0));
+    }
+
+    /// #643 review: after an overflowing space stays on the line at zero advance, a following
+    /// glyph small enough to fit the freed width still opens a new line, the same as synthesis.
+    /// Line limit 15: "a" (10) + space (10) overflows; "i" (4) would fit at 10 + 4 = 14.
+    #[test]
+    fn small_glyph_after_overflowing_space_starts_a_new_line() {
+        for items in [
+            vec![
+                dummy_glyph_run("a"),
+                dummy_glyph_run(" "),
+                dummy_glyph_run_with_widths("i", &[4.0]),
+            ],
+            vec![dummy_glyph_run_with_widths("a i", &[10.0, 10.0, 4.0])],
+        ] {
+            let mut page = PageList {
+                width_pt: 600.0,
+                height_pt: 800.0,
+                items: Vec::new(),
+            };
+            let mut warns = RenderIssueAccumulator::new();
+            place_wrapped(
+                &mut page,
+                items,
+                0.0,
+                100.0,
+                15.0,
+                16.0,
+                &[],
+                0.0,
+                &[],
+                None,
+                &mut warns,
+            );
+            let last_y = page
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Glyphs { y, run, .. } if run.text.ends_with('i') => Some(*y),
+                    _ => None,
+                })
+                .next();
+            assert_eq!(last_y, Some(116.0));
+        }
     }
 
     fn dummy_glyph_run(text: &str) -> InlineItem {

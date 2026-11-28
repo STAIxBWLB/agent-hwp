@@ -1448,6 +1448,66 @@ mod advance_tests {
         assert_eq!(source_wchar_len("x\u{301}"), 2);
     }
 
+    /// #643 review: synthesis matches `place_wrapped` when the glyph after an overflowing
+    /// space is small enough to fit the freed width: it still opens a new line. The box holds
+    /// "aa" plus less than one space, so the space overflows and "i" would fit only in the
+    /// space's former width. Skips on a host with no font.
+    #[test]
+    fn synthesis_breaks_after_overflowing_space_before_small_glyph() {
+        use crate::shape::{InlineItem, shape_range};
+        use hwp_model::{HwpChar, Paragraph};
+        let doc = hwp_convert::from_markdown("x\n");
+        let mut store = crate::FontStore::new();
+        let mut warns = crate::RenderIssueAccumulator::new();
+        let width_of = |store: &mut crate::FontStore, chars: Vec<HwpChar>| {
+            let mut warns = crate::RenderIssueAccumulator::new();
+            let mut para = Paragraph {
+                chars,
+                ..Paragraph::default()
+            };
+            para.para_shape = doc.sections[0].paragraphs[0].para_shape;
+            let total = para.wchar_len();
+            shape_range(store, &doc, &para, (0, total), &mut warns)
+                .iter()
+                .map(|i| match i {
+                    InlineItem::Run(r) => r.width_pt,
+                    _ => 0.0,
+                })
+                .sum::<f32>()
+        };
+        let aa = width_of(&mut store, vec![HwpChar::Text('a'), HwpChar::Text('a')]);
+        let space = width_of(&mut store, vec![HwpChar::Text(' ')]);
+        let i = width_of(&mut store, vec![HwpChar::Text('i')]);
+        if aa == 0.0 || space == 0.0 || i == 0.0 || i >= space {
+            return;
+        }
+        // "aa" + (space - tiny): the space overflows, yet "i" fits in the remainder.
+        let room = aa + (space + i) / 2.0;
+        assert!(aa + space > room && aa + i <= room);
+        let mut para = Paragraph {
+            chars: vec![
+                HwpChar::Text('a'),
+                HwpChar::Text('a'),
+                HwpChar::Text(' '),
+                HwpChar::Text('i'),
+            ],
+            ..Paragraph::default()
+        };
+        para.para_shape = doc.sections[0].paragraphs[0].para_shape;
+        let mut v = 0;
+        let segs = super::compute_linesegs(
+            &mut store,
+            &doc,
+            &para,
+            (room * 100.0).floor() as i32,
+            i32::MAX,
+            &mut v,
+            &mut warns,
+        );
+        let starts: Vec<u32> = segs.iter().map(|s| s.text_start).collect();
+        assert_eq!(starts, [0, 3]);
+    }
+
     /// #643 B12 in synthesis: an overflowing ordinary space stays on the line, but a FW_SPACE
     /// control (shaped from a literal space too) still breaks before it. The box is sized from
     /// the shaped widths so the boundary character overflows, so no font metric is hard-coded.
